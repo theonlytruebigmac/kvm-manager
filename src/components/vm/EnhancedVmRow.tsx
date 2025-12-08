@@ -1,0 +1,317 @@
+import { useState, useEffect } from 'react'
+import { useNavigate } from 'react-router-dom'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { api } from '@/lib/tauri'
+import { toast } from 'sonner'
+import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
+import { Card } from '@/components/ui/card'
+import { Checkbox } from '@/components/ui/checkbox'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
+import {
+  Play,
+  Square,
+  Pause,
+  RotateCcw,
+  Trash2,
+  Monitor,
+  Copy,
+  MoreVertical,
+  Activity,
+  Cpu,
+  HardDrive,
+  Info,
+} from 'lucide-react'
+import type { VM } from '@/lib/types'
+
+interface EnhancedVmRowProps {
+  vm: VM
+  isSelected: boolean
+  onToggleSelect: () => void
+  isFocused?: boolean
+  onFocus?: () => void
+}
+
+export function EnhancedVmRow({ vm, isSelected, onToggleSelect, isFocused = false, onFocus }: EnhancedVmRowProps) {
+  const navigate = useNavigate()
+  const queryClient = useQueryClient()
+  const [stats, setStats] = useState<{ cpu: number; memory: number } | null>(null)
+
+  // Poll stats for running VMs
+  const { data: vmStats } = useQuery({
+    queryKey: ['vm-stats', vm.id],
+    queryFn: () => api.getVmStats(vm.id),
+    enabled: vm.state === 'running',
+    refetchInterval: 2000,
+  })
+
+  useEffect(() => {
+    if (vmStats) {
+      setStats({
+        cpu: Math.round(vmStats.cpuUsagePercent),
+        memory: Math.round((vmStats.memoryUsedMb / vmStats.memoryAvailableMb) * 100),
+      })
+    }
+  }, [vmStats])
+
+  const startMutation = useMutation({
+    mutationFn: () => api.startVm(vm.id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['vms'] })
+      toast.success(`${vm.name} started`)
+    },
+    onError: (error) => toast.error(`Failed to start: ${error}`),
+  })
+
+  const stopMutation = useMutation({
+    mutationFn: () => api.stopVm(vm.id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['vms'] })
+      toast.success(`${vm.name} stopped`)
+    },
+    onError: (error) => toast.error(`Failed to stop: ${error}`),
+  })
+
+  const pauseMutation = useMutation({
+    mutationFn: () => api.pauseVm(vm.id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['vms'] })
+      toast.success(`${vm.name} paused`)
+    },
+    onError: (error) => toast.error(`Failed to pause: ${error}`),
+  })
+
+  const resumeMutation = useMutation({
+    mutationFn: () => api.resumeVm(vm.id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['vms'] })
+      toast.success(`${vm.name} resumed`)
+    },
+    onError: (error) => toast.error(`Failed to resume: ${error}`),
+  })
+
+  const rebootMutation = useMutation({
+    mutationFn: () => api.rebootVm(vm.id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['vms'] })
+      toast.success(`${vm.name} rebooting`)
+    },
+    onError: (error) => toast.error(`Failed to reboot: ${error}`),
+  })
+
+  const openConsoleMutation = useMutation({
+    mutationFn: () => api.openVncConsole(vm.id),
+    onSuccess: () => toast.success('Console opened'),
+    onError: (error) => toast.error(`Failed to open console: ${error}`),
+  })
+
+  const getStateBadgeVariant = () => {
+    switch (vm.state) {
+      case 'running':
+        return 'default'
+      case 'stopped':
+        return 'secondary'
+      case 'paused':
+        return 'outline'
+      default:
+        return 'secondary'
+    }
+  }
+
+  const getStateIndicator = () => {
+    switch (vm.state) {
+      case 'running':
+        return 'bg-green-500'
+      case 'paused':
+        return 'bg-yellow-500'
+      default:
+        return 'bg-gray-400'
+    }
+  }
+
+  return (
+    <Card
+      className={`hover:bg-accent/50 transition-colors ${isFocused ? 'ring-2 ring-primary' : ''}`}
+      onClick={onFocus}
+    >
+      <div className="p-4 flex items-center gap-4">
+        {/* Checkbox */}
+        <Checkbox
+          checked={isSelected}
+          onCheckedChange={onToggleSelect}
+          className="data-[state=checked]:bg-primary"
+        />
+
+        {/* Status Indicator */}
+        <div className="flex items-center gap-3">
+          <div className={`w-3 h-3 rounded-full ${getStateIndicator()} animate-pulse`} />
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => navigate(`/vms/${vm.id}`)}
+                className="font-semibold hover:text-primary transition-colors text-left truncate"
+              >
+                {vm.name}
+              </button>
+              {vm.tags && vm.tags.length > 0 && (
+                <div className="flex gap-1">
+                  {vm.tags.slice(0, 2).map(tag => (
+                    <Badge key={tag} variant="outline" className="text-xs px-1.5 py-0">
+                      {tag}
+                    </Badge>
+                  ))}
+                  {vm.tags.length > 2 && (
+                    <Badge variant="outline" className="text-xs px-1.5 py-0">
+                      +{vm.tags.length - 2}
+                    </Badge>
+                  )}
+                </div>
+              )}
+            </div>
+            <div className="flex items-center gap-2 text-sm text-muted-foreground">
+              <Badge variant={getStateBadgeVariant()} className="text-xs">
+                {vm.state.toUpperCase()}
+              </Badge>
+              {vm.osType && <span className="text-xs">{vm.osType}</span>}
+            </div>
+          </div>
+        </div>
+
+        {/* VM Specs */}
+        <div className="hidden lg:flex items-center gap-6 ml-auto">
+          <div className="flex items-center gap-2 text-sm">
+            <Cpu className="h-4 w-4 text-muted-foreground" />
+            <span>{vm.cpuCount} vCPU</span>
+            {stats && (
+              <span className="text-xs text-muted-foreground">({stats.cpu}%)</span>
+            )}
+          </div>
+          <div className="flex items-center gap-2 text-sm">
+            <Activity className="h-4 w-4 text-muted-foreground" />
+            <span>{(vm.memoryMb / 1024).toFixed(1)} GB</span>
+            {stats && (
+              <span className="text-xs text-muted-foreground">({stats.memory}%)</span>
+            )}
+          </div>
+          <div className="flex items-center gap-2 text-sm">
+            <HardDrive className="h-4 w-4 text-muted-foreground" />
+            <span>{vm.diskSizeGb} GB</span>
+          </div>
+        </div>
+
+        {/* Quick Actions */}
+        <div className="flex items-center gap-1">
+          {vm.state === 'stopped' && (
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={() => startMutation.mutate()}
+              disabled={startMutation.isPending}
+              title="Start VM (Ctrl+P)"
+            >
+              <Play className="h-4 w-4 text-green-600" />
+            </Button>
+          )}
+
+          {vm.state === 'running' && (
+            <>
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={() => pauseMutation.mutate()}
+                disabled={pauseMutation.isPending}
+                title="Pause VM (Ctrl+Z)"
+              >
+                <Pause className="h-4 w-4 text-yellow-600" />
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={() => openConsoleMutation.mutate()}
+                disabled={openConsoleMutation.isPending}
+                title="Open Console (Ctrl+O)"
+              >
+                <Monitor className="h-4 w-4 text-blue-600" />
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={() => stopMutation.mutate()}
+                disabled={stopMutation.isPending}
+                title="Stop VM (Ctrl+S)"
+              >
+                <Square className="h-4 w-4 text-red-600" />
+              </Button>
+            </>
+          )}
+
+          {vm.state === 'paused' && (
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={() => resumeMutation.mutate()}
+              disabled={resumeMutation.isPending}
+              title="Resume VM"
+            >
+              <Play className="h-4 w-4 text-green-600" />
+            </Button>
+          )}
+
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={() => navigate(`/vms/${vm.id}`)}
+            title="VM Details (Ctrl+D)"
+          >
+            <Info className="h-4 w-4" />
+          </Button>
+
+          {/* More Actions Menu */}
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="ghost" size="icon" title="More actions">
+                <MoreVertical className="h-4 w-4" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-48">
+              {vm.state === 'running' && (
+                <>
+                  <DropdownMenuItem onClick={() => rebootMutation.mutate()}>
+                    <RotateCcw className="mr-2 h-4 w-4" />
+                    Reboot
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                </>
+              )}
+              {vm.state === 'stopped' && (
+                <DropdownMenuItem onClick={() => navigate(`/vms/${vm.id}/clone`)}>
+                  <Copy className="mr-2 h-4 w-4" />
+                  Clone VM
+                </DropdownMenuItem>
+              )}
+              <DropdownMenuItem onClick={() => navigate(`/vms/${vm.id}`)}>
+                <Info className="mr-2 h-4 w-4" />
+                View Details
+              </DropdownMenuItem>
+              {vm.state === 'stopped' && (
+                <>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem className="text-destructive">
+                    <Trash2 className="mr-2 h-4 w-4" />
+                    Delete VM
+                  </DropdownMenuItem>
+                </>
+              )}
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
+      </div>
+    </Card>
+  )
+}
