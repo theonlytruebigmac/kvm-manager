@@ -112,17 +112,18 @@ export function StorageManager() {
 
   if (poolsError) {
     return (
-      <Card>
-        <CardHeader>
-          <CardTitle>Storage Management</CardTitle>
-          <CardDescription>Error loading storage pools: {String(poolsError)}</CardDescription>
-        </CardHeader>
-      </Card>
+      <div className="flex items-center justify-center min-h-[400px]">
+        <Card className="max-w-md">
+          <CardHeader>
+            <CardTitle>Storage Management</CardTitle>
+            <CardDescription>Error loading storage pools: {String(poolsError)}</CardDescription>
+          </CardHeader>
+        </Card>
+      </div>
     )
   }
 
   return (
-    <div className="h-full overflow-y-auto">
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
@@ -373,7 +374,6 @@ export function StorageManager() {
           </CardContent>
         </Card>
       )}
-    </div>
     </div>
   )
 }

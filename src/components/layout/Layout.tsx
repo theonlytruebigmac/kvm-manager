@@ -11,7 +11,7 @@ export function Layout({ children }: LayoutProps) {
   return (
     <div className="h-full flex flex-col bg-background">
       <header className="flex-shrink-0 border-b bg-card">
-        <div className="container mx-auto px-6 py-4">
+        <div className="px-6 py-4">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
               <Server className="w-6 h-6 text-primary" />
@@ -78,11 +78,9 @@ export function Layout({ children }: LayoutProps) {
           </div>
         </div>
       </header>
-      <main className="flex-1 overflow-hidden">
-        <div className="h-full overflow-y-auto">
-          <div className="container mx-auto px-6 py-8 h-full">
-            {children}
-          </div>
+      <main className="flex-1 overflow-y-auto">
+        <div className="px-6 py-6">
+          {children}
         </div>
       </main>
     </div>

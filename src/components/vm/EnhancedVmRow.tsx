@@ -111,6 +111,21 @@ export function EnhancedVmRow({ vm, isSelected, onToggleSelect, isFocused = fals
     onError: (error) => toast.error(`Failed to open console: ${error}`),
   })
 
+  const deleteMutation = useMutation({
+    mutationFn: () => api.deleteVm(vm.id, true),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['vms'] })
+      toast.success(`${vm.name} deleted`)
+    },
+    onError: (error) => toast.error(`Failed to delete: ${error}`),
+  })
+
+  const handleDelete = () => {
+    if (confirm(`Are you sure you want to delete ${vm.name}? This cannot be undone.`)) {
+      deleteMutation.mutate()
+    }
+  }
+
   const getStateBadgeVariant = () => {
     switch (vm.state) {
       case 'running':
@@ -302,7 +317,11 @@ export function EnhancedVmRow({ vm, isSelected, onToggleSelect, isFocused = fals
               {vm.state === 'stopped' && (
                 <>
                   <DropdownMenuSeparator />
-                  <DropdownMenuItem className="text-destructive">
+                  <DropdownMenuItem
+                    className="text-destructive"
+                    onClick={handleDelete}
+                    disabled={deleteMutation.isPending}
+                  >
                     <Trash2 className="mr-2 h-4 w-4" />
                     Delete VM
                   </DropdownMenuItem>

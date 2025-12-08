@@ -58,7 +58,6 @@ export function VmDetails() {
   }
 
   return (
-    <div className="h-full overflow-y-auto">
     <div className="space-y-6">
       {/* Header */}
       <div className="flex items-center justify-between">
@@ -165,7 +164,6 @@ export function VmDetails() {
           </CardContent>
         </Card>
       )}
-    </div>
     </div>
   )
 }

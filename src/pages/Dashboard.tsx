@@ -14,20 +14,24 @@ export function Dashboard() {
 
   if (isLoading) {
     return (
-      <div className="flex flex-col items-center justify-center min-h-[400px] gap-3">
-        <Loader2 className="w-8 h-8 animate-spin text-primary" />
-        <p className="text-sm text-muted-foreground">Loading host information...</p>
+      <div className="flex items-center justify-center min-h-[400px]">
+        <div className="flex flex-col items-center gap-3">
+          <Loader2 className="w-8 h-8 animate-spin text-primary" />
+          <p className="text-sm text-muted-foreground">Loading host information...</p>
+        </div>
       </div>
     )
   }
 
   if (error) {
     return (
-      <div className="flex flex-col items-center justify-center min-h-[400px] gap-3">
-        <AlertCircle className="w-8 h-8 text-destructive" />
-        <div className="text-center">
-          <p className="font-medium">Error loading host information</p>
-          <p className="text-sm text-muted-foreground mt-1">{String(error)}</p>
+      <div className="flex items-center justify-center min-h-[400px]">
+        <div className="flex flex-col items-center gap-3">
+          <AlertCircle className="w-8 h-8 text-destructive" />
+          <div className="text-center">
+            <p className="font-medium">Error loading host information</p>
+            <p className="text-sm text-muted-foreground mt-1">{String(error)}</p>
+          </div>
         </div>
       </div>
     )
@@ -35,9 +39,11 @@ export function Dashboard() {
 
   if (!hostInfo) {
     return (
-      <div className="flex flex-col items-center justify-center min-h-[400px] gap-3">
-        <AlertCircle className="w-8 h-8 text-muted-foreground" />
-        <p className="text-sm text-muted-foreground">No host information available</p>
+      <div className="flex items-center justify-center min-h-[400px]">
+        <div className="flex flex-col items-center gap-3">
+          <AlertCircle className="w-8 h-8 text-muted-foreground" />
+          <p className="text-sm text-muted-foreground">No host information available</p>
+        </div>
       </div>
     )
   }
@@ -55,16 +61,7 @@ export function Dashboard() {
   }
 
   return (
-    <div className="h-full overflow-y-auto">
     <div className="space-y-6">
-      {/* Page Header */}
-      <div>
-        <h1 className="text-3xl font-bold tracking-tight">Host Dashboard</h1>
-        <p className="text-muted-foreground mt-1">
-          Monitor your KVM host system and resources
-        </p>
-      </div>
-
       {/* System Overview Card */}
       <Card>
         <CardHeader>
@@ -196,7 +193,6 @@ export function Dashboard() {
           </div>
         </CardContent>
       </Card>
-    </div>
     </div>
   )
 }

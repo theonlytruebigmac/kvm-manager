@@ -116,17 +116,18 @@ export function NetworkManager() {
 
   if (error) {
     return (
-      <Card>
-        <CardHeader>
-          <CardTitle>Network Management</CardTitle>
-          <CardDescription>Error loading networks: {String(error)}</CardDescription>
-        </CardHeader>
-      </Card>
+      <div className="flex items-center justify-center min-h-[400px]">
+        <Card className="max-w-md">
+          <CardHeader>
+            <CardTitle>Network Management</CardTitle>
+            <CardDescription>Error loading networks: {String(error)}</CardDescription>
+          </CardHeader>
+        </Card>
+      </div>
     )
   }
 
   return (
-    <div className="h-full overflow-y-auto">
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
@@ -388,7 +389,6 @@ export function NetworkManager() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-    </div>
     </div>
   )
 }

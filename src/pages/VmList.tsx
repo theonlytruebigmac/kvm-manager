@@ -33,6 +33,8 @@ export function VmList() {
     refetchInterval: 5000, // Poll every 5 seconds
   })
 
+  console.log('VmList render:', { vms, isLoading, error, vmsLength: vms?.length })
+
   // Bulk operations mutations
   const startMutation = useMutation({
     mutationFn: (vmId: string) => api.startVm(vmId),
@@ -51,51 +53,9 @@ export function VmList() {
     },
   })
 
-  if (isLoading) {
-    return (
-      <div className="flex flex-col items-center justify-center min-h-[400px] gap-3">
-        <Loader2 className="w-8 h-8 animate-spin text-primary" />
-        <p className="text-sm text-muted-foreground">Loading virtual machines...</p>
-      </div>
-    )
-  }
-
-  if (error) {
-    return (
-      <div className="flex flex-col items-center justify-center min-h-[400px] gap-3">
-        <AlertCircle className="w-8 h-8 text-destructive" />
-        <div className="text-center">
-          <p className="font-medium">Error loading VMs</p>
-          <p className="text-sm text-muted-foreground mt-1">{String(error)}</p>
-        </div>
-      </div>
-    )
-  }
-
-  if (!vms || vms.length === 0) {
-    return (
-      <>
-        <div className="flex flex-col items-center justify-center min-h-[400px] gap-3">
-          <div className="text-center space-y-4">
-            <div>
-              <p className="font-medium">No virtual machines found</p>
-              <p className="text-sm text-muted-foreground mt-1">
-                Create your first VM to get started
-              </p>
-            </div>
-            <Button onClick={() => setShowCreateWizard(true)}>
-              <Plus className="w-4 h-4 mr-1" />
-              Create VM
-            </Button>
-          </div>
-        </div>
-        {showCreateWizard && <CreateVmWizard onClose={() => setShowCreateWizard(false)} />}
-      </>
-    )
-  }
-
   // Get all unique tags across all VMs
   const allTags = useMemo(() => {
+    if (!vms) return []
     const tagSet = new Set<string>()
     vms.forEach((vm: VM) => {
       vm.tags?.forEach((tag: string) => tagSet.add(tag))
@@ -105,6 +65,7 @@ export function VmList() {
 
   // Filter VMs based on search and tag
   const filteredVms = useMemo(() => {
+    if (!vms) return []
     return vms.filter((vm: VM) => {
       // Filter by search query
       if (searchQuery) {
@@ -182,7 +143,9 @@ export function VmList() {
   // Get the focused VM (first selected, or first in list)
   const focusedVm = focusedVmId
     ? filteredVms.find((vm: VM) => vm.id === focusedVmId)
-    : selectedVms[0] || filteredVms[0]  // Keyboard shortcuts
+    : selectedVms[0] || filteredVms[0]
+
+  // Keyboard shortcuts
   useKeyboardShortcuts([
     {
       key: 'n',
@@ -248,9 +211,57 @@ export function VmList() {
     }
   ])
 
+  // Early returns AFTER all hooks
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center min-h-[400px]">
+        <div className="flex flex-col items-center gap-3">
+          <Loader2 className="w-8 h-8 animate-spin text-primary" />
+          <p className="text-sm text-muted-foreground">Loading virtual machines...</p>
+        </div>
+      </div>
+    )
+  }
+
+  if (error) {
+    return (
+      <div className="flex items-center justify-center min-h-[400px]">
+        <div className="flex flex-col items-center gap-3">
+          <AlertCircle className="w-8 h-8 text-destructive" />
+          <div className="text-center">
+            <p className="font-medium">Error loading VMs</p>
+            <p className="text-sm text-muted-foreground mt-1">{String(error)}</p>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  if (!vms || vms.length === 0) {
+    return (
+      <>
+        <div className="flex items-center justify-center min-h-[400px]">
+          <div className="text-center space-y-4">
+            <div>
+              <p className="font-medium">No virtual machines found</p>
+              <p className="text-sm text-muted-foreground mt-1">
+                Create your first VM to get started
+              </p>
+            </div>
+            <Button onClick={() => setShowCreateWizard(true)}>
+              <Plus className="w-4 h-4 mr-1" />
+              Create VM
+            </Button>
+          </div>
+        </div>
+        {showCreateWizard && <CreateVmWizard onClose={() => setShowCreateWizard(false)} />}
+      </>
+    )
+  }
+
   return (
     <>
-      <div className="h-full flex flex-col gap-6">
+      <div className="space-y-6">
         <div className="flex items-center justify-between">
           <div>
             <h1 className="text-3xl font-bold tracking-tight">Virtual Machines</h1>
@@ -371,7 +382,7 @@ export function VmList() {
         )}
 
         {/* VM List */}
-        <div className="flex-1 overflow-y-auto min-h-0">
+        <div>
         {filteredVms.length === 0 ? (
           <div className="flex flex-col items-center justify-center min-h-[300px] gap-3">
             <p className="text-muted-foreground">
