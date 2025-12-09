@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { CreateStoragePoolWizard } from '@/components/storage/CreateStoragePoolWizard'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -25,17 +26,20 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { Badge } from '@/components/ui/badge'
-import { Database, HardDrive, Plus, FolderOpen, Trash2 } from 'lucide-react'
+import { Database, HardDrive, Plus, FolderOpen, Trash2, Maximize2 } from 'lucide-react'
 import type { StoragePool, VolumeConfig } from '@/lib/types'
 
 export function StorageManager() {
   const queryClient = useQueryClient()
   const [selectedPool, setSelectedPool] = useState<string | null>(null)
   const [showCreateDialog, setShowCreateDialog] = useState(false)
+  const [showCreatePoolWizard, setShowCreatePoolWizard] = useState(false)
   const [volumeName, setVolumeName] = useState('')
   const [volumeSize, setVolumeSize] = useState('10')
   const [volumeFormat, setVolumeFormat] = useState<'qcow2' | 'raw'>('qcow2')
   const [deleteConfirmVolume, setDeleteConfirmVolume] = useState<string | null>(null)
+  const [resizeVolume, setResizeVolume] = useState<{ name: string; currentGb: number } | null>(null)
+  const [newVolumeSize, setNewVolumeSize] = useState('')
 
   // Query storage pools
   const { data: pools = [], isLoading: poolsLoading, error: poolsError } = useQuery({
@@ -81,6 +85,22 @@ export function StorageManager() {
     onError: (error, volumeName) => {
       toast.error(`Failed to delete volume "${volumeName}": ${error}`)
       setDeleteConfirmVolume(null)
+    },
+  })
+
+  // Resize volume mutation
+  const resizeVolumeMutation = useMutation({
+    mutationFn: ({ volumeName, newCapacityGb }: { volumeName: string; newCapacityGb: number }) =>
+      api.resizeVolume(selectedPool!, volumeName, newCapacityGb),
+    onSuccess: (_data, { volumeName }) => {
+      queryClient.invalidateQueries({ queryKey: ['volumes', selectedPool] })
+      queryClient.invalidateQueries({ queryKey: ['storage-pools'] })
+      toast.success(`Volume "${volumeName}" resized successfully`)
+      setResizeVolume(null)
+      setNewVolumeSize('')
+    },
+    onError: (error, { volumeName }) => {
+      toast.error(`Failed to resize volume "${volumeName}": ${error}`)
     },
   })
 
@@ -130,6 +150,10 @@ export function StorageManager() {
           <h1 className="text-3xl font-bold">Storage Management</h1>
           <p className="text-muted-foreground">Manage storage pools and volumes</p>
         </div>
+        <Button onClick={() => setShowCreatePoolWizard(true)}>
+          <Plus className="w-4 h-4 mr-2" />
+          Create Pool
+        </Button>
       </div>
 
       {/* Storage Pools */}
@@ -324,20 +348,34 @@ export function StorageManager() {
                           </Badge>
                         </div>
                       </div>
-                      <AlertDialog
-                        open={deleteConfirmVolume === volume.name}
-                        onOpenChange={(open) => !open && setDeleteConfirmVolume(null)}
-                      >
-                        <AlertDialogTrigger asChild>
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            className="opacity-0 group-hover:opacity-100 transition-opacity"
-                            onClick={() => setDeleteConfirmVolume(volume.name)}
-                          >
-                            <Trash2 className="h-4 w-4 text-destructive" />
-                          </Button>
-                        </AlertDialogTrigger>
+                      <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          title="Resize volume"
+                          onClick={() => {
+                            setResizeVolume({
+                              name: volume.name,
+                              currentGb: Math.ceil(volume.capacityBytes / (1024 ** 3))
+                            })
+                            setNewVolumeSize((Math.ceil(volume.capacityBytes / (1024 ** 3)) + 10).toString())
+                          }}
+                        >
+                          <Maximize2 className="h-4 w-4" />
+                        </Button>
+                        <AlertDialog
+                          open={deleteConfirmVolume === volume.name}
+                          onOpenChange={(open) => !open && setDeleteConfirmVolume(null)}
+                        >
+                          <AlertDialogTrigger asChild>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => setDeleteConfirmVolume(volume.name)}
+                            >
+                              <Trash2 className="h-4 w-4 text-destructive" />
+                            </Button>
+                          </AlertDialogTrigger>
                         <AlertDialogContent>
                           <AlertDialogHeader>
                             <AlertDialogTitle>Delete Volume?</AlertDialogTitle>
@@ -357,6 +395,7 @@ export function StorageManager() {
                           </AlertDialogFooter>
                         </AlertDialogContent>
                       </AlertDialog>
+                      </div>
                     </div>
                   </div>
                 ))}
@@ -374,6 +413,76 @@ export function StorageManager() {
           </CardContent>
         </Card>
       )}
+
+      {/* Create Storage Pool Wizard */}
+      {showCreatePoolWizard && (
+        <CreateStoragePoolWizard onClose={() => setShowCreatePoolWizard(false)} />
+      )}
+
+      {/* Resize Volume Dialog */}
+      <AlertDialog
+        open={!!resizeVolume}
+        onOpenChange={(open) => !open && setResizeVolume(null)}
+      >
+        <AlertDialogContent className="max-w-md">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Resize Volume</AlertDialogTitle>
+            <AlertDialogDescription>
+              Increase the capacity of volume "{resizeVolume?.name}". The new size must be larger than the current size.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <div className="space-y-4 py-4">
+            <div className="space-y-2">
+              <Label>Current Size</Label>
+              <Input
+                value={`${resizeVolume?.currentGb || 0} GB`}
+                disabled
+                className="bg-muted"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="new-volume-size">New Size (GB)</Label>
+              <Input
+                id="new-volume-size"
+                type="number"
+                min={(resizeVolume?.currentGb || 0) + 1}
+                max="10000"
+                value={newVolumeSize}
+                onChange={(e) => setNewVolumeSize(e.target.value)}
+                placeholder={`Minimum: ${(resizeVolume?.currentGb || 0) + 1} GB`}
+              />
+              <p className="text-xs text-muted-foreground">
+                Note: Volumes can only be expanded, not shrunk. Make sure the VM's filesystem is also expanded after resizing.
+              </p>
+            </div>
+          </div>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                if (resizeVolume && newVolumeSize) {
+                  const newSize = parseInt(newVolumeSize)
+                  if (newSize > resizeVolume.currentGb) {
+                    resizeVolumeMutation.mutate({
+                      volumeName: resizeVolume.name,
+                      newCapacityGb: newSize,
+                    })
+                  } else {
+                    toast.error('New size must be larger than current size')
+                  }
+                }
+              }}
+              disabled={
+                !newVolumeSize ||
+                parseInt(newVolumeSize) <= (resizeVolume?.currentGb || 0) ||
+                resizeVolumeMutation.isPending
+              }
+            >
+              {resizeVolumeMutation.isPending ? 'Resizing...' : 'Resize Volume'}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   )
 }

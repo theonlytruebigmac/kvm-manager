@@ -36,7 +36,7 @@ pub struct VM {
 }
 
 /// VM Configuration for creating new VMs
-#[derive(Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct VmConfig {
     pub name: String,
@@ -49,14 +49,22 @@ pub struct VmConfig {
     pub iso_path: Option<String>,
     #[serde(default = "default_network")]
     pub network: String,
+    #[serde(default = "default_disk_format")]
+    pub disk_format: String,
+    #[serde(default)]
+    pub boot_menu: bool,
 }
 
 fn default_os_type() -> String {
-    "generic".to_string()
+    "linux".to_string()
 }
 
 fn default_network() -> String {
     "default".to_string()
+}
+
+fn default_disk_format() -> String {
+    "qcow2".to_string()
 }
 
 /// VM Performance Statistics

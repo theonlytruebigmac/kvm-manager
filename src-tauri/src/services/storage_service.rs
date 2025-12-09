@@ -269,4 +269,155 @@ impl StorageService {
         tracing::info!("Volume deleted successfully: {}", volume_name);
         Ok(())
     }
+
+    /// Create a new storage pool
+    pub fn create_storage_pool(
+        libvirt: &LibvirtService,
+        config: crate::models::storage::StoragePoolConfig,
+    ) -> Result<String, AppError> {
+        tracing::info!("Creating storage pool: {} (type: {})", config.name, config.pool_type);
+
+        let conn = libvirt.get_connection();
+
+        // Build XML based on pool type
+        let pool_xml = match config.pool_type.as_str() {
+            "dir" => Self::build_dir_pool_xml(&config)?,
+            "logical" => Self::build_logical_pool_xml(&config)?,
+            "netfs" => Self::build_netfs_pool_xml(&config)?,
+            _ => return Err(AppError::InvalidConfig(format!("Unsupported pool type: {}", config.pool_type))),
+        };
+
+        tracing::debug!("Storage pool XML:\n{}", pool_xml);
+
+        // Define the pool
+        let pool = StoragePool::define_xml(conn, &pool_xml, 0)
+            .map_err(|e| AppError::LibvirtError(format!("Failed to define storage pool: {}", e)))?;
+
+        // Build the pool (create directory structure, etc.)
+        pool.build(0)
+            .map_err(|e| AppError::LibvirtError(format!("Failed to build storage pool: {}", e)))?;
+
+        // Set autostart if requested
+        if config.autostart {
+            pool.set_autostart(true)
+                .map_err(map_libvirt_error)?;
+        }
+
+        // Start the pool
+        pool.create(0)
+            .map_err(|e| AppError::LibvirtError(format!("Failed to start storage pool: {}", e)))?;
+
+        let uuid = pool.get_uuid_string()
+            .map_err(map_libvirt_error)?;
+
+        tracing::info!("Storage pool created successfully: {} (UUID: {})", config.name, uuid);
+        Ok(uuid)
+    }
+
+    /// Build XML for directory-based storage pool
+    fn build_dir_pool_xml(config: &crate::models::storage::StoragePoolConfig) -> Result<String, AppError> {
+        let xml = format!(
+            r#"<pool type='dir'>
+  <name>{}</name>
+  <target>
+    <path>{}</path>
+    <permissions>
+      <mode>0711</mode>
+    </permissions>
+  </target>
+</pool>"#,
+            config.name, config.target_path
+        );
+        Ok(xml)
+    }
+
+    /// Build XML for LVM logical volume storage pool
+    fn build_logical_pool_xml(config: &crate::models::storage::StoragePoolConfig) -> Result<String, AppError> {
+        if config.source_devices.is_empty() {
+            return Err(AppError::InvalidConfig("Logical pool requires at least one source device".to_string()));
+        }
+
+        let devices_xml = config.source_devices.iter()
+            .map(|dev| format!("    <device path='{}'/>\n", dev))
+            .collect::<String>();
+
+        let xml = format!(
+            r#"<pool type='logical'>
+  <name>{}</name>
+  <source>
+{}  </source>
+  <target>
+    <path>{}</path>
+  </target>
+</pool>"#,
+            config.name, devices_xml, config.target_path
+        );
+        Ok(xml)
+    }
+
+    /// Build XML for network filesystem storage pool
+    fn build_netfs_pool_xml(config: &crate::models::storage::StoragePoolConfig) -> Result<String, AppError> {
+        let host = config.source_host.as_ref()
+            .ok_or_else(|| AppError::InvalidConfig("Network pool requires source_host".to_string()))?;
+        let source_path = config.source_path.as_ref()
+            .ok_or_else(|| AppError::InvalidConfig("Network pool requires source_path".to_string()))?;
+
+        let xml = format!(
+            r#"<pool type='netfs'>
+  <name>{}</name>
+  <source>
+    <host name='{}'/>
+    <dir path='{}'/>
+    <format type='nfs'/>
+  </source>
+  <target>
+    <path>{}</path>
+  </target>
+</pool>"#,
+            config.name, host, source_path, config.target_path
+        );
+        Ok(xml)
+    }
+
+    /// Resize a volume in a storage pool
+    pub fn resize_volume(
+        libvirt: &LibvirtService,
+        pool_id: &str,
+        volume_name: &str,
+        new_capacity_gb: u64,
+    ) -> Result<(), AppError> {
+        tracing::info!("Resizing volume {} in pool {} to {}GB", volume_name, pool_id, new_capacity_gb);
+
+        let conn = libvirt.get_connection();
+        let pool = StoragePool::lookup_by_uuid_string(conn, pool_id)
+            .map_err(|_| AppError::LibvirtError(format!("Storage pool not found: {}", pool_id)))?;
+
+        // Lookup the volume
+        let volume = StorageVol::lookup_by_name(&pool, volume_name)
+            .map_err(|_| AppError::LibvirtError(format!("Volume not found: {}", volume_name)))?;
+
+        // Get current capacity
+        let info = volume.get_info()
+            .map_err(map_libvirt_error)?;
+
+        let current_capacity_gb = info.capacity / (1024 * 1024 * 1024);
+
+        if new_capacity_gb <= current_capacity_gb {
+            return Err(AppError::InvalidConfig(
+                format!("New capacity ({}GB) must be greater than current capacity ({}GB)",
+                        new_capacity_gb, current_capacity_gb)
+            ));
+        }
+
+        // Convert GB to bytes
+        let new_capacity_bytes = new_capacity_gb * 1024 * 1024 * 1024;
+
+        // Resize the volume
+        volume.resize(new_capacity_bytes, 0)
+            .map_err(|e| AppError::LibvirtError(format!("Failed to resize volume: {}", e)))?;
+
+        tracing::info!("Volume resized successfully: {} ({}GB -> {}GB)",
+                      volume_name, current_capacity_gb, new_capacity_gb);
+        Ok(())
+    }
 }

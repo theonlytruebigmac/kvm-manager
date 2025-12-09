@@ -319,3 +319,296 @@ pub async fn remove_vm_tags(
 
     Ok(())
 }
+
+/// Export VM configuration to XML
+#[tauri::command]
+pub async fn export_vm(
+    state: State<'_, AppState>,
+    vm_id: String,
+) -> Result<String, String> {
+    tracing::info!("export_vm command called for VM: {}", vm_id);
+
+    VmService::export_vm(&state.libvirt, &vm_id)
+        .map_err(|e| e.to_string())
+}
+
+/// Import VM from XML configuration
+#[tauri::command]
+pub async fn import_vm(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    xml: String,
+) -> Result<String, String> {
+    tracing::info!("import_vm command called");
+
+    let vm_id = VmService::import_vm(&state.libvirt, &xml)
+        .map_err(|e| e.to_string())?;
+
+    // Emit event
+    let _ = app.emit("vm-imported", serde_json::json!({
+        "vmId": vm_id,
+        "timestamp": chrono::Utc::now().timestamp_millis(),
+    }));
+
+    Ok(vm_id)
+}
+
+/// Attach a disk to a VM
+#[tauri::command]
+pub async fn attach_disk(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    vm_id: String,
+    disk_path: String,
+    device_target: String,
+    bus_type: String,
+) -> Result<(), String> {
+    tracing::info!("attach_disk command called for VM: {}", vm_id);
+
+    VmService::attach_disk(&state.libvirt, &vm_id, &disk_path, &device_target, &bus_type)
+        .map_err(|e| e.to_string())?;
+
+    // Emit event
+    let _ = app.emit("vm-disk-attached", serde_json::json!({
+        "vmId": vm_id,
+        "diskPath": disk_path,
+        "deviceTarget": device_target,
+        "timestamp": chrono::Utc::now().timestamp_millis(),
+    }));
+
+    Ok(())
+}
+
+/// Detach a disk from a VM
+#[tauri::command]
+pub async fn detach_disk(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    vm_id: String,
+    device_target: String,
+) -> Result<(), String> {
+    tracing::info!("detach_disk command called for VM: {}", vm_id);
+
+    VmService::detach_disk(&state.libvirt, &vm_id, &device_target)
+        .map_err(|e| e.to_string())?;
+
+    // Emit event
+    let _ = app.emit("vm-disk-detached", serde_json::json!({
+        "vmId": vm_id,
+        "deviceTarget": device_target,
+        "timestamp": chrono::Utc::now().timestamp_millis(),
+    }));
+
+    Ok(())
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchOperationResult {
+    vm_id: String,
+    vm_name: String,
+    success: bool,
+    error: Option<String>,
+}
+
+/// Start multiple VMs in batch
+#[tauri::command]
+pub async fn batch_start_vms(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    vm_ids: Vec<String>,
+) -> Result<Vec<BatchOperationResult>, String> {
+    tracing::info!("batch_start_vms command called for {} VMs", vm_ids.len());
+
+    let mut results = Vec::new();
+
+    for vm_id in vm_ids {
+        let vm = match VmService::get_vm(&state.libvirt, &vm_id) {
+            Ok(v) => v,
+            Err(e) => {
+                results.push(BatchOperationResult {
+                    vm_id: vm_id.clone(),
+                    vm_name: "Unknown".to_string(),
+                    success: false,
+                    error: Some(e.to_string()),
+                });
+                continue;
+            }
+        };
+
+        let old_state = vm.state.clone();
+        let vm_name = vm.name.clone();
+
+        let result = match VmService::start_vm(&state.libvirt, &vm_id) {
+            Ok(_) => {
+                let _ = app.emit("vm-state-changed", VmStateChangedPayload {
+                    vm_id: vm_id.clone(),
+                    vm_name: vm_name.clone(),
+                    old_state,
+                    new_state: VmState::Running,
+                    timestamp: chrono::Utc::now().timestamp_millis(),
+                });
+
+                BatchOperationResult {
+                    vm_id: vm_id.clone(),
+                    vm_name,
+                    success: true,
+                    error: None,
+                }
+            }
+            Err(e) => BatchOperationResult {
+                vm_id: vm_id.clone(),
+                vm_name,
+                success: false,
+                error: Some(e.to_string()),
+            },
+        };
+
+        results.push(result);
+    }
+
+    Ok(results)
+}
+
+/// Stop multiple VMs in batch
+#[tauri::command]
+pub async fn batch_stop_vms(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    vm_ids: Vec<String>,
+    force: bool,
+) -> Result<Vec<BatchOperationResult>, String> {
+    tracing::info!("batch_stop_vms command called for {} VMs (force: {})", vm_ids.len(), force);
+
+    let mut results = Vec::new();
+
+    for vm_id in vm_ids {
+        let vm = match VmService::get_vm(&state.libvirt, &vm_id) {
+            Ok(v) => v,
+            Err(e) => {
+                results.push(BatchOperationResult {
+                    vm_id: vm_id.clone(),
+                    vm_name: "Unknown".to_string(),
+                    success: false,
+                    error: Some(e.to_string()),
+                });
+                continue;
+            }
+        };
+
+        let old_state = vm.state.clone();
+        let vm_name = vm.name.clone();
+
+        let result = if force {
+            match VmService::force_stop_vm(&state.libvirt, &vm_id) {
+                Ok(_) => {
+                    let _ = app.emit("vm-state-changed", VmStateChangedPayload {
+                        vm_id: vm_id.clone(),
+                        vm_name: vm_name.clone(),
+                        old_state,
+                        new_state: VmState::Stopped,
+                        timestamp: chrono::Utc::now().timestamp_millis(),
+                    });
+
+                    BatchOperationResult {
+                        vm_id: vm_id.clone(),
+                        vm_name,
+                        success: true,
+                        error: None,
+                    }
+                }
+                Err(e) => BatchOperationResult {
+                    vm_id: vm_id.clone(),
+                    vm_name,
+                    success: false,
+                    error: Some(e.to_string()),
+                },
+            }
+        } else {
+            match VmService::stop_vm(&state.libvirt, &vm_id) {
+                Ok(_) => {
+                    let _ = app.emit("vm-state-changed", VmStateChangedPayload {
+                        vm_id: vm_id.clone(),
+                        vm_name: vm_name.clone(),
+                        old_state,
+                        new_state: VmState::Stopped,
+                        timestamp: chrono::Utc::now().timestamp_millis(),
+                    });
+
+                    BatchOperationResult {
+                        vm_id: vm_id.clone(),
+                        vm_name,
+                        success: true,
+                        error: None,
+                    }
+                }
+                Err(e) => BatchOperationResult {
+                    vm_id: vm_id.clone(),
+                    vm_name,
+                    success: false,
+                    error: Some(e.to_string()),
+                },
+            }
+        };
+
+        results.push(result);
+    }
+
+    Ok(results)
+}
+
+/// Reboot multiple VMs in batch
+#[tauri::command]
+pub async fn batch_reboot_vms(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    vm_ids: Vec<String>,
+) -> Result<Vec<BatchOperationResult>, String> {
+    tracing::info!("batch_reboot_vms command called for {} VMs", vm_ids.len());
+
+    let mut results = Vec::new();
+
+    for vm_id in vm_ids {
+        let vm = match VmService::get_vm(&state.libvirt, &vm_id) {
+            Ok(v) => v,
+            Err(e) => {
+                results.push(BatchOperationResult {
+                    vm_id: vm_id.clone(),
+                    vm_name: "Unknown".to_string(),
+                    success: false,
+                    error: Some(e.to_string()),
+                });
+                continue;
+            }
+        };
+
+        let vm_name = vm.name.clone();
+
+        let result = match VmService::reboot_vm(&state.libvirt, &vm_id) {
+            Ok(_) => {
+                let _ = app.emit("vm-rebooted", serde_json::json!({
+                    "vmId": vm_id.clone(),
+                    "vmName": vm_name.clone(),
+                    "timestamp": chrono::Utc::now().timestamp_millis(),
+                }));
+
+                BatchOperationResult {
+                    vm_id: vm_id.clone(),
+                    vm_name,
+                    success: true,
+                    error: None,
+                }
+            }
+            Err(e) => BatchOperationResult {
+                vm_id: vm_id.clone(),
+                vm_name,
+                success: false,
+                error: Some(e.to_string()),
+            },
+        };
+
+        results.push(result);
+    }
+
+    Ok(results)
+}

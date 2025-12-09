@@ -69,3 +69,22 @@ pub struct VolumeConfig {
 fn default_volume_format() -> String {
     "qcow2".to_string()
 }
+
+/// Storage Pool Configuration for creating new storage pools
+#[derive(Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct StoragePoolConfig {
+    pub name: String,
+    pub pool_type: String, // "dir", "logical", "netfs", etc.
+    pub target_path: String,
+    #[serde(default)]
+    pub autostart: bool,
+    // For logical pools
+    #[serde(default)]
+    pub source_devices: Vec<String>,
+    // For netfs pools
+    #[serde(default)]
+    pub source_host: Option<String>,
+    #[serde(default)]
+    pub source_path: Option<String>,
+}

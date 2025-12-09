@@ -293,7 +293,7 @@ impl VmService {
     pub fn create_vm(libvirt: &LibvirtService, config: crate::models::vm::VmConfig) -> Result<String, AppError> {
         use virt::storage_pool::StoragePool;
 
-        tracing::info!("Creating VM: {}", config.name);
+        tracing::info!("Creating VM: {} (OS: {}, Network: {})", config.name, config.os_type, config.network);
 
         let conn = libvirt.get_connection();
 
@@ -301,23 +301,24 @@ impl VmService {
         let pool = StoragePool::lookup_by_name(conn, "default")
             .map_err(|e| AppError::LibvirtError(format!("Failed to find default storage pool: {}", e)))?;
 
-        // Define volume name and size
-        let volume_name = format!("{}.qcow2", config.name);
+        // Define volume name with proper extension based on disk format
+        let volume_name = format!("{}.{}", config.name, config.disk_format);
         let disk_size_bytes = config.disk_size_gb * 1024 * 1024 * 1024; // Convert GB to bytes
 
-        // Create storage volume XML
+        // Create storage volume XML with proper disk format
         let volume_xml = format!(
             r#"<volume>
   <name>{}</name>
   <capacity unit='bytes'>{}</capacity>
   <target>
-    <format type='qcow2'/>
+    <format type='{}'/>
   </target>
 </volume>"#,
-            volume_name, disk_size_bytes
+            volume_name, disk_size_bytes, config.disk_format
         );
 
-        tracing::info!("Creating storage volume: {} ({}GB)", volume_name, config.disk_size_gb);
+        tracing::info!("Creating storage volume: {} ({}GB, format: {})",
+                      volume_name, config.disk_size_gb, config.disk_format);
 
         // Create the volume using libvirt storage pool API
         let volume = virt::storage_vol::StorageVol::create_xml(&pool, &volume_xml, 0)
@@ -328,6 +329,55 @@ impl VmService {
 
         tracing::info!("Storage volume created: {}", disk_path);
 
+        // Determine OS-specific settings
+        let (os_type_str, machine_type) = match config.os_type.as_str() {
+            "windows" => ("hvm", "pc-q35-6.2"), // Q35 chipset for Windows
+            "linux" => ("hvm", "pc"),
+            _ => ("hvm", "pc"),
+        };
+
+        // Build boot device order
+        // If ISO is provided, boot from CD first, then HDD
+        // Otherwise, boot from HDD only
+        let boot_order = if config.iso_path.is_some() {
+            r#"    <boot dev='cdrom'/>
+    <boot dev='hd'/>"#
+        } else {
+            "    <boot dev='hd'/>"
+        };
+
+        // Build disk XML for the main system disk
+        let main_disk_xml = format!(
+            r#"    <disk type='file' device='disk'>
+      <driver name='qemu' type='{}'/>
+      <source file='{}'/>
+      <target dev='vda' bus='virtio'/>
+    </disk>"#,
+            config.disk_format, disk_path
+        );
+
+        // Build CDROM/ISO disk XML if ISO path is provided
+        let cdrom_xml = if let Some(ref iso_path) = config.iso_path {
+            format!(
+                r#"    <disk type='file' device='cdrom'>
+      <driver name='qemu' type='raw'/>
+      <source file='{}'/>
+      <target dev='hdc' bus='ide'/>
+      <readonly/>
+    </disk>"#,
+                iso_path
+            )
+        } else {
+            String::new()
+        };
+
+        // Build boot menu option
+        let boot_menu = if config.boot_menu {
+            "    <bootmenu enable='yes' timeout='3000'/>"
+        } else {
+            ""
+        };
+
         // Generate XML configuration for the VM
         let xml = format!(
             r#"<domain type='qemu'>
@@ -335,18 +385,16 @@ impl VmService {
   <memory unit='MiB'>{}</memory>
   <vcpu>{}</vcpu>
   <os>
-    <type arch='x86_64' machine='pc'>hvm</type>
-    <boot dev='hd'/>
+    <type arch='x86_64' machine='{}'>{}</type>
+{}
+{}
   </os>
   <devices>
     <emulator>/usr/bin/qemu-system-x86_64</emulator>
-    <disk type='file' device='disk'>
-      <driver name='qemu' type='qcow2'/>
-      <source file='{}'/>
-      <target dev='vda' bus='virtio'/>
-    </disk>
+{}
+{}
     <interface type='network'>
-      <source network='default'/>
+      <source network='{}'/>
       <model type='virtio'/>
     </interface>
     <graphics type='vnc' port='-1' autoport='yes'/>
@@ -356,8 +404,19 @@ impl VmService {
     <console type='pty'/>
   </devices>
 </domain>"#,
-            config.name, config.memory_mb, config.cpu_count, disk_path
+            config.name,
+            config.memory_mb,
+            config.cpu_count,
+            machine_type,
+            os_type_str,
+            boot_order,
+            boot_menu,
+            main_disk_xml,
+            cdrom_xml,
+            config.network
         );
+
+        tracing::debug!("VM XML:\n{}", xml);
 
         // Define the domain (create VM configuration)
         let domain = Domain::define_xml(conn, &xml)
@@ -640,6 +699,145 @@ impl VmService {
         }
 
         tracing::info!("Tags removed successfully from VM {}", vm_id);
+        Ok(())
+    }
+
+    /// Export a VM's configuration to XML
+    pub fn export_vm(libvirt: &LibvirtService, vm_id: &str) -> Result<String, AppError> {
+        tracing::info!("Exporting VM configuration for {}", vm_id);
+
+        let conn = libvirt.get_connection();
+        let domain = Domain::lookup_by_uuid_string(conn, vm_id)
+            .map_err(|_| AppError::VmNotFound(vm_id.to_string()))?;
+
+        // Get XML description with secure flag to include sensitive data
+        let xml = domain.get_xml_desc(sys::VIR_DOMAIN_XML_SECURE)
+            .map_err(map_libvirt_error)?;
+
+        tracing::info!("Successfully exported VM configuration for {}", vm_id);
+        Ok(xml)
+    }
+
+    /// Import a VM from XML configuration
+    pub fn import_vm(libvirt: &LibvirtService, xml: &str) -> Result<String, AppError> {
+        tracing::info!("Importing VM from XML configuration");
+
+        let conn = libvirt.get_connection();
+
+        // Define domain from XML
+        let domain = Domain::define_xml(conn, xml)
+            .map_err(map_libvirt_error)?;
+
+        // Get UUID of newly created domain
+        let uuid = domain.get_uuid_string()
+            .map_err(map_libvirt_error)?;
+
+        tracing::info!("Successfully imported VM with UUID {}", uuid);
+        Ok(uuid)
+    }
+
+    /// Attach a disk to a VM
+    pub fn attach_disk(
+        libvirt: &LibvirtService,
+        vm_id: &str,
+        disk_path: &str,
+        device_target: &str,
+        bus_type: &str,
+    ) -> Result<(), AppError> {
+        tracing::info!("Attaching disk {} to VM {} as {}", disk_path, vm_id, device_target);
+
+        let conn = libvirt.get_connection();
+        let domain = Domain::lookup_by_uuid_string(conn, vm_id)
+            .map_err(|_| AppError::VmNotFound(vm_id.to_string()))?;
+
+        // Validate bus type
+        let valid_bus_types = ["virtio", "scsi", "sata", "ide"];
+        if !valid_bus_types.contains(&bus_type) {
+            return Err(AppError::InvalidConfig(format!(
+                "Invalid bus type '{}'. Must be one of: {:?}",
+                bus_type, valid_bus_types
+            )));
+        }
+
+        // Build disk XML
+        let disk_xml = format!(
+            r#"<disk type='file' device='disk'>
+  <driver name='qemu' type='qcow2'/>
+  <source file='{}'/>
+  <target dev='{}' bus='{}'/>
+</disk>"#,
+            disk_path, device_target, bus_type
+        );
+
+        // Attach disk (persistent and live if VM is running)
+        let flags = if domain.is_active().map_err(map_libvirt_error)? {
+            sys::VIR_DOMAIN_AFFECT_LIVE | sys::VIR_DOMAIN_AFFECT_CONFIG
+        } else {
+            sys::VIR_DOMAIN_AFFECT_CONFIG
+        };
+
+        domain.attach_device_flags(&disk_xml, flags)
+            .map_err(map_libvirt_error)?;
+
+        tracing::info!("Successfully attached disk {} to VM {}", disk_path, vm_id);
+        Ok(())
+    }
+
+    /// Detach a disk from a VM
+    pub fn detach_disk(
+        libvirt: &LibvirtService,
+        vm_id: &str,
+        device_target: &str,
+    ) -> Result<(), AppError> {
+        tracing::info!("Detaching disk {} from VM {}", device_target, vm_id);
+
+        let conn = libvirt.get_connection();
+        let domain = Domain::lookup_by_uuid_string(conn, vm_id)
+            .map_err(|_| AppError::VmNotFound(vm_id.to_string()))?;
+
+        // Get current XML to find the disk
+        let xml = domain.get_xml_desc(0)
+            .map_err(map_libvirt_error)?;
+
+        // Find disk device XML by target
+        let disk_start_pattern = format!("<disk");
+        let target_pattern = format!("target dev='{}'", device_target);
+
+        let mut search_pos = 0;
+        let mut disk_xml = None;
+
+        while let Some(disk_pos) = xml[search_pos..].find(&disk_start_pattern) {
+            let abs_disk_pos = search_pos + disk_pos;
+            if let Some(disk_end) = xml[abs_disk_pos..].find("</disk>") {
+                let disk_section = &xml[abs_disk_pos..abs_disk_pos + disk_end + 7];
+
+                // Check if this disk has the target we're looking for
+                if disk_section.contains(&target_pattern) {
+                    disk_xml = Some(disk_section.to_string());
+                    break;
+                }
+
+                search_pos = abs_disk_pos + disk_end + 7;
+            } else {
+                break;
+            }
+        }
+
+        let disk_xml = disk_xml.ok_or_else(|| {
+            AppError::InvalidConfig(format!("Disk with target '{}' not found", device_target))
+        })?;
+
+        // Detach disk (persistent and live if VM is running)
+        let flags = if domain.is_active().map_err(map_libvirt_error)? {
+            sys::VIR_DOMAIN_AFFECT_LIVE | sys::VIR_DOMAIN_AFFECT_CONFIG
+        } else {
+            sys::VIR_DOMAIN_AFFECT_CONFIG
+        };
+
+        domain.detach_device_flags(&disk_xml, flags)
+            .map_err(map_libvirt_error)?;
+
+        tracing::info!("Successfully detached disk {} from VM {}", device_target, vm_id);
         Ok(())
     }
 }

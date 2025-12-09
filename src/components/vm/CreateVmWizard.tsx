@@ -6,6 +6,8 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Checkbox } from '@/components/ui/checkbox'
 import { ChevronLeft, ChevronRight, Check } from 'lucide-react'
 
 interface VmFormData {
@@ -17,11 +19,13 @@ interface VmFormData {
   network: string
   diskFormat: 'qcow2' | 'raw'
   bootMenu: boolean
+  isoPath?: string
 }
 
 const steps = [
   { id: 1, name: 'Basic Info', description: 'VM name and resources' },
-  { id: 2, name: 'Review', description: 'Confirm settings' },
+  { id: 2, name: 'Configuration', description: 'OS, network, and disk settings' },
+  { id: 3, name: 'Review', description: 'Confirm settings' },
 ]
 
 interface CreateVmWizardProps {
@@ -40,6 +44,7 @@ export function CreateVmWizard({ onClose }: CreateVmWizardProps) {
     network: 'default',
     diskFormat: 'qcow2',
     bootMenu: false,
+    isoPath: undefined,
   })
 
   const createMutation = useMutation({
@@ -71,6 +76,13 @@ export function CreateVmWizard({ onClose }: CreateVmWizardProps) {
       }
       if (formData.diskSizeGb < 1 || formData.diskSizeGb > 500) {
         toast.error('Disk size must be between 1 GB and 500 GB')
+        return
+      }
+    }
+    if (currentStep === 2) {
+      // Validate step 2
+      if (!formData.network.trim()) {
+        toast.error('Please select a network')
         return
       }
     }
@@ -176,8 +188,91 @@ export function CreateVmWizard({ onClose }: CreateVmWizardProps) {
             </div>
           )}
 
-          {/* Step 2: Review */}
+          {/* Step 2: Configuration */}
           {currentStep === 2 && (
+            <div className="space-y-4">
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <Label htmlFor="osType">Operating System Type *</Label>
+                  <Select value={formData.osType} onValueChange={(value: any) => setFormData({ ...formData, osType: value })}>
+                    <SelectTrigger id="osType">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="linux">Linux</SelectItem>
+                      <SelectItem value="windows">Windows</SelectItem>
+                      <SelectItem value="other">Other</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="network">Network *</Label>
+                  <Input
+                    id="network"
+                    placeholder="default"
+                    value={formData.network}
+                    onChange={(e) => setFormData({ ...formData, network: e.target.value })}
+                  />
+                  <p className="text-xs text-muted-foreground">Libvirt network name (e.g., 'default')</p>
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="isoPath">ISO Path (optional)</Label>
+                <Input
+                  id="isoPath"
+                  placeholder="/path/to/installation.iso"
+                  value={formData.isoPath || ''}
+                  onChange={(e) => setFormData({ ...formData, isoPath: e.target.value || undefined })}
+                />
+                <p className="text-xs text-muted-foreground">
+                  Full path to an ISO image for OS installation. Leave empty to attach later.
+                </p>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <Label htmlFor="diskFormat">Disk Format *</Label>
+                  <Select value={formData.diskFormat} onValueChange={(value: any) => setFormData({ ...formData, diskFormat: value })}>
+                    <SelectTrigger id="diskFormat">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="qcow2">QCOW2 (Recommended)</SelectItem>
+                      <SelectItem value="raw">RAW</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <p className="text-xs text-muted-foreground">
+                    QCOW2 supports snapshots and compression
+                  </p>
+                </div>
+
+                <div className="space-y-2">
+                  <Label>Boot Options</Label>
+                  <div className="flex items-center space-x-2 pt-2">
+                    <Checkbox
+                      id="bootMenu"
+                      checked={formData.bootMenu}
+                      onCheckedChange={(checked) => setFormData({ ...formData, bootMenu: checked === true })}
+                    />
+                    <label
+                      htmlFor="bootMenu"
+                      className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70"
+                    >
+                      Enable boot menu
+                    </label>
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    Show BIOS boot menu on startup
+                  </p>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Step 3: Review */}
+          {currentStep === 3 && (
             <div className="space-y-4">
               <div className="bg-muted p-4 rounded-lg space-y-3">
                 <h4 className="font-medium">VM Configuration Summary</h4>
@@ -185,6 +280,10 @@ export function CreateVmWizard({ onClose }: CreateVmWizardProps) {
                   <div className="flex justify-between">
                     <span className="text-muted-foreground">Name:</span>
                     <span className="font-medium">{formData.name}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">OS Type:</span>
+                    <span className="font-medium capitalize">{formData.osType}</span>
                   </div>
                   <div className="flex justify-between">
                     <span className="text-muted-foreground">CPU:</span>
@@ -196,15 +295,31 @@ export function CreateVmWizard({ onClose }: CreateVmWizardProps) {
                   </div>
                   <div className="flex justify-between">
                     <span className="text-muted-foreground">Disk:</span>
-                    <span className="font-medium">{formData.diskSizeGb} GB</span>
+                    <span className="font-medium">{formData.diskSizeGb} GB ({formData.diskFormat.toUpperCase()})</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">Network:</span>
+                    <span className="font-medium">{formData.network}</span>
+                  </div>
+                  {formData.isoPath && (
+                    <div className="flex justify-between">
+                      <span className="text-muted-foreground">ISO:</span>
+                      <span className="font-medium text-xs truncate max-w-[200px]" title={formData.isoPath}>
+                        {formData.isoPath}
+                      </span>
+                    </div>
+                  )}
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">Boot Menu:</span>
+                    <span className="font-medium">{formData.bootMenu ? 'Enabled' : 'Disabled'}</span>
                   </div>
                 </div>
               </div>
 
               <div className="bg-blue-50 dark:bg-blue-950 p-4 rounded-lg text-sm">
                 <p className="text-blue-900 dark:text-blue-100">
-                  <strong>Note:</strong> The VM will be created in a stopped state. You'll need to install an
-                  operating system or attach an ISO image before starting it.
+                  <strong>Note:</strong> The VM will be created in a stopped state.
+                  {formData.isoPath ? ' You can start it to begin the installation.' : ' Attach an ISO image to install an operating system.'}
                 </p>
               </div>
             </div>

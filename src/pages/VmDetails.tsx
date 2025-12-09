@@ -1,12 +1,16 @@
 import { useParams, useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { api } from '@/lib/tauri'
+import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { SnapshotManager } from '@/components/vm/SnapshotManager'
 import { ResourceGraphs } from '@/components/vm/ResourceGraphs'
-import { ArrowLeft, Cpu, HardDrive, Network, Settings } from 'lucide-react'
+import { DiskManager } from '@/components/vm/DiskManager'
+import { VncConsole } from '@/components/vm/VncConsole'
+import { OptimizationSuggestions } from '@/components/vm/OptimizationSuggestions'
+import { ArrowLeft, Cpu, HardDrive, Network, Settings, Download } from 'lucide-react'
 
 export function VmDetails() {
   const { vmId } = useParams<{ vmId: string }>()
@@ -80,6 +84,30 @@ export function VmDetails() {
             </div>
           </div>
         </div>
+        <Button
+          variant="outline"
+          onClick={async () => {
+            try {
+              const xml = await api.exportVm(vm.id)
+              // Download XML file
+              const blob = new Blob([xml], { type: 'application/xml' })
+              const url = URL.createObjectURL(blob)
+              const a = document.createElement('a')
+              a.href = url
+              a.download = `${vm.name}.xml`
+              document.body.appendChild(a)
+              a.click()
+              document.body.removeChild(a)
+              URL.revokeObjectURL(url)
+              toast.success(`Exported ${vm.name} configuration`)
+            } catch (error) {
+              toast.error(`Failed to export VM: ${error}`)
+            }
+          }}
+        >
+          <Download className="mr-2 h-4 w-4" />
+          Export Configuration
+        </Button>
       </div>
 
       {/* VM Info Cards */}
@@ -145,13 +173,24 @@ export function VmDetails() {
         </Card>
       )}
 
+      {/* VNC Console - Only show for running VMs */}
+      {vm.state === 'running' && (
+        <VncConsole vmId={vm.id} vmName={vm.name} />
+      )}
+
       {/* Resource Monitoring - Only show for running VMs */}
       {vm.state === 'running' && (
         <ResourceGraphs vmId={vm.id} vmName={vm.name} />
       )}
 
+      {/* Optimization Suggestions */}
+      <OptimizationSuggestions vmId={vm.id} vmName={vm.name} />
+
       {/* Snapshot Manager */}
       <SnapshotManager vmId={vm.id} vmName={vm.name} />
+
+      {/* Disk Manager */}
+      <DiskManager vmId={vm.id} vmName={vm.name} />
 
       {/* Additional Info */}
       {vm.description && (

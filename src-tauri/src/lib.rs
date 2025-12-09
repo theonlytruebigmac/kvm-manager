@@ -27,6 +27,9 @@ pub fn run() {
         }
     };
 
+    // Start background tasks
+    app_state.start_background_tasks();
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .manage(app_state)
@@ -46,6 +49,13 @@ pub fn run() {
             commands::vm::get_vm_stats,
             commands::vm::add_vm_tags,
             commands::vm::remove_vm_tags,
+            commands::vm::export_vm,
+            commands::vm::import_vm,
+            commands::vm::attach_disk,
+            commands::vm::detach_disk,
+            commands::vm::batch_start_vms,
+            commands::vm::batch_stop_vms,
+            commands::vm::batch_reboot_vms,
             // Network Commands
             commands::network::get_networks,
             commands::network::get_network,
@@ -53,11 +63,15 @@ pub fn run() {
             commands::network::delete_network,
             commands::network::start_network,
             commands::network::stop_network,
+            commands::network::add_port_forward,
+            commands::network::remove_port_forward,
             // Storage Commands
             commands::storage::get_storage_pools,
             commands::storage::get_volumes,
             commands::storage::create_volume,
             commands::storage::delete_volume,
+            commands::storage::create_storage_pool,
+            commands::storage::resize_volume,
             // Snapshot Commands
             commands::snapshot::get_snapshots,
             commands::snapshot::create_snapshot,
@@ -68,6 +82,47 @@ pub fn run() {
             commands::system::get_connection_status,
             commands::system::get_vnc_info,
             commands::system::open_vnc_console,
+            // Metrics Commands
+            commands::metrics::store_vm_metrics,
+            commands::metrics::get_historical_metrics,
+            commands::metrics::cleanup_old_metrics,
+            commands::metrics::get_metrics_count,
+            // Template Commands
+            commands::template::create_template,
+            commands::template::list_templates,
+            commands::template::get_template,
+            commands::template::update_template,
+            commands::template::delete_template,
+            // Scheduler Commands
+            commands::scheduler::create_schedule,
+            commands::scheduler::list_schedules,
+            commands::scheduler::get_schedule,
+            commands::scheduler::update_schedule_status,
+            commands::scheduler::delete_schedule,
+            commands::scheduler::get_vm_schedules,
+            // Alert Commands
+            commands::alert::create_alert,
+            commands::alert::list_alerts,
+            commands::alert::get_alert,
+            commands::alert::update_alert_status,
+            commands::alert::delete_alert,
+            commands::alert::get_vm_alerts,
+            commands::alert::check_alert_threshold,
+            // Backup Commands
+            commands::backup::create_backup_config,
+            commands::backup::list_backup_configs,
+            commands::backup::get_backup_config,
+            commands::backup::update_backup_status,
+            commands::backup::delete_backup_config,
+            commands::backup::get_vm_backup_configs,
+            commands::backup::record_backup,
+            // Optimization Commands
+            commands::optimization::analyze_vm_performance,
+            commands::optimization::analyze_all_vms,
+            // Retention Commands
+            commands::retention::get_retention_policy,
+            commands::retention::update_retention_policy,
+            commands::retention::execute_retention_cleanup,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

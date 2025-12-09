@@ -2,13 +2,26 @@ import { useState, useMemo } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { api } from '@/lib/tauri'
+import { toast } from 'sonner'
 import { EnhancedVmRow } from '@/components/vm/EnhancedVmRow'
 import { CreateVmWizard } from '@/components/vm/CreateVmWizard'
 import { KeyboardShortcutsDialog } from '@/components/ui/keyboard-shortcuts-dialog'
+import { BatchOperations } from '@/components/vm/BatchOperations'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
-import { AlertCircle, Loader2, Plus, Search, X, Play, Square, Trash2, Keyboard } from 'lucide-react'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog'
+import { Label } from '@/components/ui/label'
+import { AlertCircle, Loader2, Plus, Search, X, Keyboard, Upload } from 'lucide-react'
 import { useVmEvents } from '@/hooks/useVmEvents'
 import { useKeyboardShortcuts } from '@/hooks/useKeyboardShortcuts'
 import type { VM } from '@/lib/types'
@@ -22,6 +35,8 @@ export function VmList() {
 
   const [showCreateWizard, setShowCreateWizard] = useState(false)
   const [showShortcuts, setShowShortcuts] = useState(false)
+  const [showImportDialog, setShowImportDialog] = useState(false)
+  const [importXml, setImportXml] = useState('')
   const [searchQuery, setSearchQuery] = useState('')
   const [selectedTag, setSelectedTag] = useState<string | null>(null)
   const [selectedVmIds, setSelectedVmIds] = useState<Set<string>>(new Set())
@@ -50,6 +65,19 @@ export function VmList() {
     mutationFn: (vmId: string) => api.deleteVm(vmId, true),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['vms'] })
+    },
+  })
+
+  const importMutation = useMutation({
+    mutationFn: (xml: string) => api.importVm(xml),
+    onSuccess: (vmId) => {
+      queryClient.invalidateQueries({ queryKey: ['vms'] })
+      toast.success(`VM imported successfully (ID: ${vmId})`)
+      setShowImportDialog(false)
+      setImportXml('')
+    },
+    onError: (error) => {
+      toast.error(`Failed to import VM: ${error}`)
     },
   })
 
@@ -106,39 +134,8 @@ export function VmList() {
 
   const clearSelection = () => setSelectedVmIds(new Set())
 
-  // Bulk action handlers
-  const handleBulkStart = async () => {
-    const selectedVms = filteredVms.filter((vm: VM) => selectedVmIds.has(vm.id) && vm.state === 'stopped')
-    for (const vm of selectedVms) {
-      await startMutation.mutateAsync(vm.id)
-    }
-    clearSelection()
-  }
-
-  const handleBulkStop = async () => {
-    const selectedVms = filteredVms.filter((vm: VM) => selectedVmIds.has(vm.id) && vm.state === 'running')
-    for (const vm of selectedVms) {
-      await stopMutation.mutateAsync(vm.id)
-    }
-    clearSelection()
-  }
-
-  const handleBulkDelete = async () => {
-    if (!confirm(`Are you sure you want to delete ${selectedVmIds.size} VMs? This cannot be undone.`)) {
-      return
-    }
-    const selectedVms = filteredVms.filter((vm: VM) => selectedVmIds.has(vm.id))
-    for (const vm of selectedVms) {
-      await deleteMutation.mutateAsync(vm.id)
-    }
-    clearSelection()
-  }
-
-  // Check if any bulk actions are available
+  // Get the focused VM (first selected, or first in list)
   const selectedVms = filteredVms.filter((vm: VM) => selectedVmIds.has(vm.id))
-  const canStartAny = selectedVms.some((vm: VM) => vm.state === 'stopped')
-  const canStopAny = selectedVms.some((vm: VM) => vm.state === 'running')
-  const hasSelection = selectedVmIds.size > 0
 
   // Get the focused VM (first selected, or first in list)
   const focusedVm = focusedVmId
@@ -281,6 +278,10 @@ export function VmList() {
             >
               <Keyboard className="w-4 h-4" />
             </Button>
+            <Button variant="outline" onClick={() => setShowImportDialog(true)}>
+              <Upload className="w-4 h-4 mr-1" />
+              Import VM
+            </Button>
             <Button onClick={() => setShowCreateWizard(true)}>
               <Plus className="w-4 h-4 mr-1" />
               Create VM
@@ -332,54 +333,11 @@ export function VmList() {
           )}
         </div>
 
-        {/* Bulk Actions Toolbar */}
-        {hasSelection && (
-          <div className="flex items-center gap-3 p-3 bg-muted/50 rounded-lg border">
-            <span className="text-sm font-medium">
-              {selectedVmIds.size} {selectedVmIds.size === 1 ? 'VM' : 'VMs'} selected
-            </span>
-            <div className="flex items-center gap-2 ml-auto">
-              {canStartAny && (
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={handleBulkStart}
-                  disabled={startMutation.isPending}
-                >
-                  <Play className="w-4 h-4 mr-1" />
-                  Start Selected
-                </Button>
-              )}
-              {canStopAny && (
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={handleBulkStop}
-                  disabled={stopMutation.isPending}
-                >
-                  <Square className="w-4 h-4 mr-1" />
-                  Stop Selected
-                </Button>
-              )}
-              <Button
-                size="sm"
-                variant="destructive"
-                onClick={handleBulkDelete}
-                disabled={deleteMutation.isPending}
-              >
-                <Trash2 className="w-4 h-4 mr-1" />
-                Delete Selected
-              </Button>
-              <Button
-                size="sm"
-                variant="ghost"
-                onClick={clearSelection}
-              >
-                Clear
-              </Button>
-            </div>
-          </div>
-        )}
+        {/* Batch Operations Toolbar */}
+        <BatchOperations
+          selectedVmIds={Array.from(selectedVmIds)}
+          onClearSelection={clearSelection}
+        />
 
         {/* VM List */}
         <div>
@@ -433,6 +391,42 @@ export function VmList() {
 
       {showCreateWizard && <CreateVmWizard onClose={() => setShowCreateWizard(false)} />}
       <KeyboardShortcutsDialog open={showShortcuts} onOpenChange={setShowShortcuts} />
+
+      {/* Import VM Dialog */}
+      <AlertDialog open={showImportDialog} onOpenChange={setShowImportDialog}>
+        <AlertDialogContent className="max-w-2xl">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Import Virtual Machine</AlertDialogTitle>
+            <AlertDialogDescription>
+              Import a VM from its XML configuration. Paste the exported configuration below.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <div className="space-y-4 py-4">
+            <div className="space-y-2">
+              <Label htmlFor="import-xml">VM Configuration (XML)</Label>
+              <textarea
+                id="import-xml"
+                className="w-full h-64 px-3 py-2 text-sm border rounded-md font-mono resize-none"
+                placeholder="Paste VM XML configuration here..."
+                value={importXml}
+                onChange={(e) => setImportXml(e.target.value)}
+              />
+              <p className="text-xs text-muted-foreground">
+                You can also import from file by pasting its contents here. Make sure disk images are accessible at the paths specified in the XML.
+              </p>
+            </div>
+          </div>
+          <AlertDialogFooter>
+            <AlertDialogCancel onClick={() => setImportXml('')}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => importMutation.mutate(importXml)}
+              disabled={!importXml.trim() || importMutation.isPending}
+            >
+              {importMutation.isPending ? 'Importing...' : 'Import VM'}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </>
   )
 }

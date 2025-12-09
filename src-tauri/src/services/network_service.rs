@@ -258,4 +258,128 @@ impl NetworkService {
         tracing::info!("Network stopped successfully: {}", network_name);
         Ok(())
     }
+
+    /// Add a port forwarding rule using iptables
+    pub fn add_port_forward(
+        host_port: u16,
+        guest_ip: &str,
+        guest_port: u16,
+        protocol: &str,
+    ) -> Result<(), AppError> {
+        tracing::info!(
+            "Adding port forward: {}:{} -> {}:{}",
+            protocol, host_port, guest_ip, guest_port
+        );
+
+        // Validate protocol
+        if protocol != "tcp" && protocol != "udp" {
+            return Err(AppError::InvalidConfig(format!(
+                "Invalid protocol '{}'. Must be 'tcp' or 'udp'",
+                protocol
+            )));
+        }
+
+        // Add DNAT rule using iptables
+        let dnat_cmd = format!(
+            "iptables -t nat -A PREROUTING -p {} --dport {} -j DNAT --to-destination {}:{}",
+            protocol, host_port, guest_ip, guest_port
+        );
+
+        let output = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(&dnat_cmd)
+            .output()
+            .map_err(|e| AppError::Other(format!("Failed to execute iptables: {}", e)))?;
+
+        if !output.status.success() {
+            return Err(AppError::Other(format!(
+                "iptables command failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            )));
+        }
+
+        // Add FORWARD rule to allow forwarded traffic
+        let forward_cmd = format!(
+            "iptables -A FORWARD -p {} -d {} --dport {} -j ACCEPT",
+            protocol, guest_ip, guest_port
+        );
+
+        let output = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(&forward_cmd)
+            .output()
+            .map_err(|e| AppError::Other(format!("Failed to execute iptables: {}", e)))?;
+
+        if !output.status.success() {
+            return Err(AppError::Other(format!(
+                "iptables FORWARD command failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            )));
+        }
+
+        tracing::info!("Port forward rule added successfully");
+        Ok(())
+    }
+
+    /// Remove a port forwarding rule
+    pub fn remove_port_forward(
+        host_port: u16,
+        guest_ip: &str,
+        guest_port: u16,
+        protocol: &str,
+    ) -> Result<(), AppError> {
+        tracing::info!(
+            "Removing port forward: {}:{} -> {}:{}",
+            protocol, host_port, guest_ip, guest_port
+        );
+
+        // Validate protocol
+        if protocol != "tcp" && protocol != "udp" {
+            return Err(AppError::InvalidConfig(format!(
+                "Invalid protocol '{}'. Must be 'tcp' or 'udp'",
+                protocol
+            )));
+        }
+
+        // Remove DNAT rule
+        let dnat_cmd = format!(
+            "iptables -t nat -D PREROUTING -p {} --dport {} -j DNAT --to-destination {}:{}",
+            protocol, host_port, guest_ip, guest_port
+        );
+
+        let output = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(&dnat_cmd)
+            .output()
+            .map_err(|e| AppError::Other(format!("Failed to execute iptables: {}", e)))?;
+
+        if !output.status.success() {
+            tracing::warn!(
+                "iptables DNAT delete failed (rule may not exist): {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+
+        // Remove FORWARD rule
+        let forward_cmd = format!(
+            "iptables -D FORWARD -p {} -d {} --dport {} -j ACCEPT",
+            protocol, guest_ip, guest_port
+        );
+
+        let output = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(&forward_cmd)
+            .output()
+            .map_err(|e| AppError::Other(format!("Failed to execute iptables: {}", e)))?;
+
+        if !output.status.success() {
+            tracing::warn!(
+                "iptables FORWARD delete failed (rule may not exist): {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+
+        tracing::info!("Port forward rule removed");
+        Ok(())
+    }
 }

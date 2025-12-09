@@ -26,6 +26,7 @@ import {
 } from '@/components/ui/select'
 import { Badge } from '@/components/ui/badge'
 import { Checkbox } from '@/components/ui/checkbox'
+import { PortForwardingManager } from '@/components/network/PortForwardingManager'
 import { Network, Plus, Play, Square, Trash2, Wifi } from 'lucide-react'
 import type { Network as NetworkType, NetworkConfig } from '@/lib/types'
 
@@ -389,6 +390,9 @@ export function NetworkManager() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {/* Port Forwarding Manager */}
+      <PortForwardingManager />
     </div>
   )
 }

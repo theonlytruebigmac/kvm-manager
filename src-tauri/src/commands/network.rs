@@ -68,3 +68,31 @@ pub async fn stop_network(
     NetworkService::stop_network(&state.libvirt, &network_name)
         .map_err(|e| e.to_string())
 }
+
+/// Add a port forwarding rule
+#[tauri::command]
+pub async fn add_port_forward(
+    host_port: u16,
+    guest_ip: String,
+    guest_port: u16,
+    protocol: String,
+) -> Result<(), String> {
+    tracing::info!("add_port_forward command called: {}:{} -> {}:{}", protocol, host_port, guest_ip, guest_port);
+
+    NetworkService::add_port_forward(host_port, &guest_ip, guest_port, &protocol)
+        .map_err(|e| e.to_string())
+}
+
+/// Remove a port forwarding rule
+#[tauri::command]
+pub async fn remove_port_forward(
+    host_port: u16,
+    guest_ip: String,
+    guest_port: u16,
+    protocol: String,
+) -> Result<(), String> {
+    tracing::info!("remove_port_forward command called: {}:{} -> {}:{}", protocol, host_port, guest_ip, guest_port);
+
+    NetworkService::remove_port_forward(host_port, &guest_ip, guest_port, &protocol)
+        .map_err(|e| e.to_string())
+}

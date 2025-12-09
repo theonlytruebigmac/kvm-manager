@@ -1,6 +1,6 @@
 import { ReactNode } from 'react'
 import { NavLink } from 'react-router-dom'
-import { Server, LayoutDashboard, Box, Database, Network } from 'lucide-react'
+import { Server, LayoutDashboard, Box, Database, Network, FileText, Clock, Bell, HardDrive, Settings } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 interface LayoutProps {
@@ -73,6 +73,76 @@ export function Layout({ children }: LayoutProps) {
               >
                 <Network className="w-4 h-4" />
                 Networks
+              </NavLink>
+              <NavLink
+                to="/templates"
+                className={({ isActive }) =>
+                  cn(
+                    'flex items-center gap-2 text-sm font-medium transition-colors hover:text-primary',
+                    isActive
+                      ? 'text-primary'
+                      : 'text-muted-foreground'
+                  )
+                }
+              >
+                <FileText className="w-4 h-4" />
+                Templates
+              </NavLink>
+              <NavLink
+                to="/schedules"
+                className={({ isActive }) =>
+                  cn(
+                    'flex items-center gap-2 text-sm font-medium transition-colors hover:text-primary',
+                    isActive
+                      ? 'text-primary'
+                      : 'text-muted-foreground'
+                  )
+                }
+              >
+                <Clock className="w-4 h-4" />
+                Schedules
+              </NavLink>
+              <NavLink
+                to="/alerts"
+                className={({ isActive }) =>
+                  cn(
+                    'flex items-center gap-2 text-sm font-medium transition-colors hover:text-primary',
+                    isActive
+                      ? 'text-primary'
+                      : 'text-muted-foreground'
+                  )
+                }
+              >
+                <Bell className="w-4 h-4" />
+                Alerts
+              </NavLink>
+              <NavLink
+                to="/backups"
+                className={({ isActive }) =>
+                  cn(
+                    'flex items-center gap-2 text-sm font-medium transition-colors hover:text-primary',
+                    isActive
+                      ? 'text-primary'
+                      : 'text-muted-foreground'
+                  )
+                }
+              >
+                <HardDrive className="w-4 h-4" />
+                Backups
+              </NavLink>
+              <NavLink
+                to="/settings"
+                className={({ isActive }) =>
+                  cn(
+                    'flex items-center gap-2 text-sm font-medium transition-colors hover:text-primary',
+                    isActive
+                      ? 'text-primary'
+                      : 'text-muted-foreground'
+                  )
+                }
+              >
+                <Settings className="w-4 h-4" />
+                Settings
               </NavLink>
             </nav>
           </div>

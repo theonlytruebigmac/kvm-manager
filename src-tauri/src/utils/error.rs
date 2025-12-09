@@ -30,6 +30,15 @@ pub enum AppError {
     #[error("IO error: {0}")]
     IoError(#[from] std::io::Error),
 
+    #[error("Template error: {0}")]
+    TemplateError(String),
+
+    #[error("Schedule error: {0}")]
+    ScheduleError(String),
+
+    #[error("Alert error: {0}")]
+    AlertError(String),
+
     #[error("Other error: {0}")]
     Other(String),
 }

@@ -767,61 +767,66 @@ kvm-manager/
 ### 4.1 Phase 1: Foundation (Weeks 1-4)
 
 **Week 1: Project Setup & Spike**
-- [ ] Initialize Tauri project (`npm create tauri-app`)
-- [ ] Choose and set up frontend framework (React/Svelte + TypeScript)
-- [ ] Configure Tailwind CSS and component library
-- [ ] Add rust-libvirt dependency to backend
-- [ ] Verify libvirt connectivity (create basic "list VMs" command)
-- [ ] Set up frontend to call backend command and display results
-- [ ] Establish build/dev workflow (npm run tauri dev)
+- [x] Initialize Tauri project (`npm create tauri-app`)
+- [x] Choose and set up frontend framework (React/Svelte + TypeScript)
+- [x] Configure Tailwind CSS and component library
+- [x] Add rust-libvirt dependency to backend
+- [x] Verify libvirt connectivity (create basic "list VMs" command)
+- [x] Set up frontend to call backend command and display results
+- [x] Establish build/dev workflow (npm run tauri dev)
 
 **Week 2-3: Core VM Operations**
-- [ ] Create Tauri commands for VM operations (start, stop, pause, resume, reboot)
-- [ ] Implement backend services for VM lifecycle management
-- [ ] Build frontend UI for VM list with cards/table view
-- [ ] Display VM details (name, state, CPU, memory, disk)
-- [ ] Set up Tauri event system for real-time VM state updates
-- [ ] Implement error handling and user notifications (toast messages)
+- [x] Create Tauri commands for VM operations (start, stop, pause, resume, reboot)
+- [x] Implement backend services for VM lifecycle management
+- [x] Build frontend UI for VM list with cards/table view
+- [x] Display VM details (name, state, CPU, memory, disk)
+- [x] Set up Tauri event system for real-time VM state updates
+- [x] Implement error handling and user notifications (toast messages)
 
 **Week 4: Basic Console & Creation**
-- [ ] Research and integrate web-based VNC viewer (noVNC)
-- [ ] Create backend proxy for VNC connections
-- [ ] Build simple VM creation wizard UI (multi-step form)
-- [ ] Implement create_vm Tauri command
-- [ ] Add VM deletion capability with confirmation dialog
+- [x] Research and integrate web-based VNC viewer (noVNC)
+- [x] Create backend proxy for VNC connections
+- [x] Build simple VM creation wizard UI (multi-step form)
+- [x] Implement create_vm Tauri command
+- [x] Add VM deletion capability with confirmation dialog
 
-**Milestone 1**: Can list VMs, start/stop them, view console, and create basic VMs
+**Milestone 1**: ✅ COMPLETE - Can list VMs, start/stop them, view console, and create basic VMs
 
 ### 4.2 Phase 2: Storage & Networking (Weeks 5-8)
 
 **Week 5-6: Storage Management**
-- [ ] List storage pools and volumes
-- [ ] Create/delete storage volumes
-- [ ] Attach/detach disks to VMs
-- [ ] Storage pool creation
+- [x] List storage pools and volumes
+- [x] Create/delete storage volumes
+- [x] Attach/detach disks to VMs
+- [x] Storage pool creation
+- [x] Volume resize functionality
 
 **Week 7-8: Network Management**
-- [ ] List virtual networks
-- [ ] Create/delete networks
-- [ ] Configure DHCP ranges
-- [ ] Network selection in VM creation wizard
+- [x] List virtual networks
+- [x] Create/delete networks
+- [x] Configure DHCP ranges
+- [x] Network selection in VM creation wizard
+- [x] Network start/stop controls
+- [x] Port forwarding rules
 
-**Milestone 2**: Full storage and network management capabilities
+**Milestone 2**: ✅ COMPLETE - Full storage and network management capabilities
 
 ### 4.3 Phase 3: Advanced VM Features (Weeks 9-12)
 
 **Week 9-10: Snapshots & Cloning**
-- [ ] Snapshot creation/deletion/revert
-- [ ] Snapshot tree visualization
-- [ ] VM cloning
+- [x] Snapshot creation/deletion/revert
+- [x] Snapshot tree visualization
+- [x] VM cloning
+- [x] VM export/import
 
 **Week 11-12: Enhanced Creation & Monitoring**
-- [ ] Advanced VM creation wizard
-- [ ] Real-time resource graphs
-- [ ] Host resource monitoring
-- [ ] VM grouping/tagging
+- [x] Advanced VM creation wizard
+- [x] Real-time resource graphs
+- [x] Host resource monitoring
+- [x] VM grouping/tagging
+- [x] Historical performance data (SQLite-based metrics storage)
 
-**Milestone 3**: Production-ready VM management with snapshots
+**Milestone 3**: ✅ COMPLETE - Production-ready VM management with snapshots and monitoring
 
 ### 4.4 Phase 4: Polish & Advanced (Weeks 13+)
 
