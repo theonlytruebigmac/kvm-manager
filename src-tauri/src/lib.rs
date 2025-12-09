@@ -6,6 +6,7 @@ mod state;
 mod utils;
 
 use state::app_state::AppState;
+use tauri::Manager;
 use tracing_subscriber;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -27,12 +28,15 @@ pub fn run() {
         }
     };
 
-    // Start background tasks
-    app_state.start_background_tasks();
-
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .manage(app_state)
+        .setup(|app| {
+            // Start background tasks after Tauri runtime is initialized
+            let app_state = app.state::<AppState>();
+            app_state.start_background_tasks();
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             // VM Commands
             commands::vm::get_vms,
@@ -56,6 +60,8 @@ pub fn run() {
             commands::vm::batch_start_vms,
             commands::vm::batch_stop_vms,
             commands::vm::batch_reboot_vms,
+            commands::vm::mount_guest_agent_iso,
+            commands::vm::eject_cdrom,
             // Network Commands
             commands::network::get_networks,
             commands::network::get_network,
@@ -123,6 +129,16 @@ pub fn run() {
             commands::retention::get_retention_policy,
             commands::retention::update_retention_policy,
             commands::retention::execute_retention_cleanup,
+            // Guest Agent Commands
+            commands::guest_agent::check_guest_agent_status,
+            commands::guest_agent::get_guest_system_info,
+            commands::guest_agent::get_guest_network_info,
+            commands::guest_agent::get_guest_disk_usage,
+            commands::guest_agent::execute_guest_command,
+            commands::guest_agent::read_guest_file,
+            commands::guest_agent::write_guest_file,
+            commands::guest_agent::guest_agent_shutdown,
+            commands::guest_agent::guest_agent_reboot,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

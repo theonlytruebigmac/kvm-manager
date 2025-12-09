@@ -10,3 +10,4 @@ pub mod alert;
 pub mod backup;
 pub mod optimization;
 pub mod retention;
+pub mod guest_agent;

@@ -216,15 +216,14 @@ export default function Settings() {
           </div>
 
           {/* Information */}
-          <div className="bg-blue-50 dark:bg-blue-950 p-4 rounded-lg text-sm">
-            <div className="font-medium mb-2">How it works:</div>
-            <ul className="list-disc list-inside space-y-1 text-muted-foreground">
+          <div className="bg-muted/50 border border-border rounded-lg p-4 text-sm">
+            <div className="font-medium mb-2 text-foreground">How it works:</div>
+            <ul className="list-disc list-inside space-y-1.5 text-muted-foreground">
               <li>
                 Cleanup runs automatically every day at {currentPolicy.cleanupHour}:00
               </li>
               <li>
-                Metrics older than {currentPolicy.retentionDays} days are permanently
-                deleted
+                Metrics older than {currentPolicy.retentionDays} days are permanently deleted
               </li>
               <li>You can manually trigger cleanup at any time using the button above</li>
               <li>

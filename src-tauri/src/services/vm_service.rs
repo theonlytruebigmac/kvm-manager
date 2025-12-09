@@ -67,6 +67,9 @@ impl VmService {
         let disk_size_gb = 0;
         let network_interfaces = Vec::new();
 
+        // Extract disk information from XML
+        let disks = Self::get_vm_disks(domain).unwrap_or_default();
+
         // Extract tags from metadata
         let tags = Self::get_vm_tags(domain).unwrap_or_default();
 
@@ -78,6 +81,7 @@ impl VmService {
             memory_mb,
             disk_size_gb,
             network_interfaces,
+            disks,
             tags,
         })
     }
@@ -235,28 +239,30 @@ impl VmService {
             use virt::storage_vol::StorageVol;
 
             for disk_path in disk_paths {
-                tracing::info!("Deleting disk: {}", disk_path);
+                tracing::info!("Attempting to delete disk: {}", disk_path);
 
-                // Try to delete via libvirt storage API first
+                // Try to delete via libvirt storage API
                 match StorageVol::lookup_by_path(conn, &disk_path) {
                     Ok(vol) => {
-                        if let Err(e) = vol.delete(0) {
-                            tracing::warn!("Failed to delete volume via libvirt API {}: {}", disk_path, e);
-                            // Fallback to direct file deletion
-                            if let Err(e2) = std::fs::remove_file(&disk_path) {
-                                tracing::warn!("Failed to delete disk file {}: {}", disk_path, e2);
+                        // Use VIR_STORAGE_VOL_DELETE_NORMAL flag (0)
+                        match vol.delete(0) {
+                            Ok(_) => {
+                                tracing::info!("Successfully deleted volume: {}", disk_path);
                             }
-                        } else {
-                            tracing::info!("Successfully deleted volume: {}", disk_path);
+                            Err(e) => {
+                                let error_msg = format!("Failed to delete volume {}: {}. You may need to delete it manually with: sudo rm {}",
+                                    disk_path, e, disk_path);
+                                tracing::error!("{}", error_msg);
+                                // Return error so user knows deletion failed
+                                return Err(AppError::LibvirtError(error_msg));
+                            }
                         }
                     }
-                    Err(_) => {
-                        // Volume not in libvirt, try direct file deletion
-                        if let Err(e) = std::fs::remove_file(&disk_path) {
-                            tracing::warn!("Failed to delete disk file {}: {}", disk_path, e);
-                        } else {
-                            tracing::info!("Successfully deleted disk file: {}", disk_path);
-                        }
+                    Err(e) => {
+                        let error_msg = format!("Volume not found in libvirt storage pool: {}. Error: {}. You may need to delete it manually with: sudo rm {}",
+                            disk_path, e, disk_path);
+                        tracing::error!("{}", error_msg);
+                        return Err(AppError::LibvirtError(error_msg));
                     }
                 }
             }
@@ -287,6 +293,129 @@ impl VmService {
         }
 
         Ok(disk_paths)
+    }
+
+    /// Get disk devices from a VM
+    fn get_vm_disks(domain: &Domain) -> Result<Vec<crate::models::vm::DiskDevice>, AppError> {
+        let xml = domain.get_xml_desc(0)
+            .map_err(map_libvirt_error)?;
+
+        let mut disks = Vec::new();
+        let mut current_disk: Option<(String, String, String, String)> = None; // (device, path, type, bus)
+
+        for line in xml.lines() {
+            let trimmed = line.trim();
+
+            // Start of a disk device (only device='disk', skip cdrom)
+            if trimmed.starts_with("<disk type=") && trimmed.contains("device='disk'") {
+                // Extract disk type (handle both single and double quotes)
+                let disk_type = if let Some(start) = trimmed.find("type='") {
+                    let start_idx = start + 6;
+                    if let Some(end) = trimmed[start_idx..].find('\'') {
+                        trimmed[start_idx..start_idx + end].to_string()
+                    } else {
+                        "file".to_string()
+                    }
+                } else if let Some(start) = trimmed.find("type=\"") {
+                    let start_idx = start + 6;
+                    if let Some(end) = trimmed[start_idx..].find('\"') {
+                        trimmed[start_idx..start_idx + end].to_string()
+                    } else {
+                        "file".to_string()
+                    }
+                } else {
+                    "file".to_string()
+                };
+                current_disk = Some((String::new(), String::new(), disk_type, String::new()));
+            }
+
+            // Extract source path (handle both single and double quotes)
+            if trimmed.contains("<source file=") && current_disk.is_some() {
+                let path = if let Some(start) = trimmed.find("file='") {
+                    let start_idx = start + 6;
+                    if let Some(end) = trimmed[start_idx..].find('\'') {
+                        Some(trimmed[start_idx..start_idx + end].to_string())
+                    } else {
+                        None
+                    }
+                } else if let Some(start) = trimmed.find("file=\"") {
+                    let start_idx = start + 6;
+                    if let Some(end) = trimmed[start_idx..].find('\"') {
+                        Some(trimmed[start_idx..start_idx + end].to_string())
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+
+                if let Some(path) = path {
+                    if let Some((device, _, disk_type, bus)) = &current_disk {
+                        current_disk = Some((device.clone(), path, disk_type.clone(), bus.clone()));
+                    }
+                }
+            }
+
+            // Extract target device and bus (handle both single and double quotes)
+            if trimmed.contains("<target dev=") && current_disk.is_some() {
+                let device = if let Some(start) = trimmed.find("dev='") {
+                    let start_idx = start + 5;
+                    if let Some(end) = trimmed[start_idx..].find('\'') {
+                        trimmed[start_idx..start_idx + end].to_string()
+                    } else {
+                        String::new()
+                    }
+                } else if let Some(start) = trimmed.find("dev=\"") {
+                    let start_idx = start + 5;
+                    if let Some(end) = trimmed[start_idx..].find('\"') {
+                        trimmed[start_idx..start_idx + end].to_string()
+                    } else {
+                        String::new()
+                    }
+                } else {
+                    String::new()
+                };
+
+                let bus = if let Some(start) = trimmed.find("bus='") {
+                    let start_idx = start + 5;
+                    if let Some(end) = trimmed[start_idx..].find('\'') {
+                        trimmed[start_idx..start_idx + end].to_string()
+                    } else {
+                        "virtio".to_string()
+                    }
+                } else if let Some(start) = trimmed.find("bus=\"") {
+                    let start_idx = start + 5;
+                    if let Some(end) = trimmed[start_idx..].find('\"') {
+                        trimmed[start_idx..start_idx + end].to_string()
+                    } else {
+                        "virtio".to_string()
+                    }
+                } else {
+                    "virtio".to_string()
+                };
+
+                if let Some((_, path, disk_type, _)) = &current_disk {
+                    current_disk = Some((device, path.clone(), disk_type.clone(), bus));
+                }
+            }
+
+            // End of disk device - save it
+            if trimmed == "</disk>" && current_disk.is_some() {
+                if let Some((device, path, disk_type, bus)) = current_disk {
+                    if !device.is_empty() && !path.is_empty() {
+                        disks.push(crate::models::vm::DiskDevice {
+                            device,
+                            path,
+                            disk_type,
+                            bus,
+                        });
+                    }
+                }
+                current_disk = None;
+            }
+        }
+
+        Ok(disks)
     }
 
     /// Create a new VM
@@ -838,6 +967,147 @@ impl VmService {
             .map_err(map_libvirt_error)?;
 
         tracing::info!("Successfully detached disk {} from VM {}", device_target, vm_id);
+        Ok(())
+    }
+
+    /// Mount an ISO image as a CDROM to a VM
+    pub fn mount_cd_iso(
+        libvirt: &LibvirtService,
+        vm_id: &str,
+        iso_path: &str,
+    ) -> Result<(), AppError> {
+        tracing::info!("Mounting ISO {} to VM {}", iso_path, vm_id);
+
+        let conn = libvirt.get_connection();
+        let domain = Domain::lookup_by_uuid_string(conn, vm_id)
+            .map_err(|_| AppError::VmNotFound(vm_id.to_string()))?;
+
+        // Check if ISO file exists
+        if !std::path::Path::new(iso_path).exists() {
+            return Err(AppError::InvalidConfig(format!("ISO file not found: {}", iso_path)));
+        }
+
+        let is_running = domain.is_active().map_err(map_libvirt_error)?;
+
+        // Get current XML to check for existing CDROM
+        let xml = domain.get_xml_desc(0).map_err(map_libvirt_error)?;
+
+        // Check if there's already a CDROM device we can update
+        if let Some(cdrom_start) = xml.find("<disk type='file' device='cdrom'")
+            .or_else(|| xml.find("<disk type='block' device='cdrom'")) {
+
+            if let Some(cdrom_end) = xml[cdrom_start..].find("</disk>") {
+                let existing_cdrom = &xml[cdrom_start..cdrom_start + cdrom_end + 7];
+
+                // Extract target device and bus from existing CDROM
+                let target_dev = if let Some(target_start) = existing_cdrom.find("target dev='") {
+                    let dev_start = target_start + 12;
+                    if let Some(dev_end) = existing_cdrom[dev_start..].find("'") {
+                        &existing_cdrom[dev_start..dev_start + dev_end]
+                    } else { "hda" }
+                } else { "hda" };
+
+                let bus_type = if let Some(bus_start) = existing_cdrom.find("bus='") {
+                    let bus_val_start = bus_start + 5;
+                    if let Some(bus_end) = existing_cdrom[bus_val_start..].find("'") {
+                        &existing_cdrom[bus_val_start..bus_val_start + bus_end]
+                    } else { "ide" }
+                } else { "ide" };
+
+                // Create updated CDROM XML with the ISO
+                let updated_cdrom_xml = format!(
+                    r#"<disk type='file' device='cdrom'>
+  <driver name='qemu' type='raw'/>
+  <source file='{}'/>
+  <target dev='{}' bus='{}'/>
+  <readonly/>
+</disk>"#,
+                    iso_path, target_dev, bus_type
+                );
+
+                // Update the device
+                let flags = if is_running {
+                    sys::VIR_DOMAIN_DEVICE_MODIFY_LIVE | sys::VIR_DOMAIN_DEVICE_MODIFY_CONFIG
+                } else {
+                    sys::VIR_DOMAIN_DEVICE_MODIFY_CONFIG
+                };
+
+                domain.update_device_flags(&updated_cdrom_xml, flags)
+                    .map_err(map_libvirt_error)?;
+
+                tracing::info!("Successfully mounted ISO to VM {} using existing CDROM", vm_id);
+                return Ok(());
+            }
+        }
+
+        // No existing CDROM, try to add a new one with SATA bus (hotplug-capable)
+        let cdrom_xml = format!(
+            r#"<disk type='file' device='cdrom'>
+  <driver name='qemu' type='raw'/>
+  <source file='{}'/>
+  <target dev='sda' bus='sata'/>
+  <readonly/>
+</disk>"#,
+            iso_path
+        );
+
+        let flags = if is_running {
+            sys::VIR_DOMAIN_AFFECT_LIVE | sys::VIR_DOMAIN_AFFECT_CONFIG
+        } else {
+            sys::VIR_DOMAIN_AFFECT_CONFIG
+        };
+
+        domain.attach_device_flags(&cdrom_xml, flags)
+            .map_err(|e| {
+                if is_running {
+                    AppError::InvalidConfig(
+                        "Cannot add CDROM to running VM (no existing CDROM found). Please stop the VM, mount the ISO, then start it again.".to_string()
+                    )
+                } else {
+                    map_libvirt_error(e)
+                }
+            })?;
+
+        tracing::info!("Successfully mounted ISO to VM {}", vm_id);
+        Ok(())
+    }
+
+    /// Eject CD/DVD from a VM
+    pub fn eject_cd(
+        libvirt: &LibvirtService,
+        vm_id: &str,
+    ) -> Result<(), AppError> {
+        tracing::info!("Ejecting CD from VM {}", vm_id);
+
+        let conn = libvirt.get_connection();
+        let domain = Domain::lookup_by_uuid_string(conn, vm_id)
+            .map_err(|_| AppError::VmNotFound(vm_id.to_string()))?;
+
+        // Get current XML to find the CDROM device
+        let xml = domain.get_xml_desc(0)
+            .map_err(map_libvirt_error)?;
+
+        // Find CDROM device
+        let disk_start = xml.find("<disk type='file' device='cdrom'")
+            .or_else(|| xml.find("<disk type='block' device='cdrom'"))
+            .ok_or_else(|| AppError::InvalidConfig("No CD ROM device found".to_string()))?;
+
+        let disk_end = xml[disk_start..].find("</disk>")
+            .ok_or_else(|| AppError::InvalidConfig("Malformed CDROM device XML".to_string()))?;
+
+        let cdrom_xml = &xml[disk_start..disk_start + disk_end + 7];
+
+        // Detach CD (persistent and live if VM is running)
+        let flags = if domain.is_active().map_err(map_libvirt_error)? {
+            sys::VIR_DOMAIN_AFFECT_LIVE | sys::VIR_DOMAIN_AFFECT_CONFIG
+        } else {
+            sys::VIR_DOMAIN_AFFECT_CONFIG
+        };
+
+        domain.detach_device_flags(cdrom_xml, flags)
+            .map_err(map_libvirt_error)?;
+
+        tracing::info!("Successfully ejected CD from VM {}", vm_id);
         Ok(())
     }
 }

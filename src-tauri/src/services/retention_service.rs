@@ -2,7 +2,6 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::time::{sleep, Duration};
 use chrono::{Datelike, Timelike};
 use crate::services::metrics_service::MetricsService;
 use crate::utils::error::AppError;
@@ -145,13 +144,13 @@ impl RetentionService {
     }
 
     /// Start background cleanup task
-    pub async fn start_cleanup_task(self: Arc<Self>) {
+    pub fn start_cleanup_task(self: Arc<Self>) {
         tracing::info!("Starting retention policy cleanup task");
 
-        tokio::spawn(async move {
+        tauri::async_runtime::spawn(async move {
             loop {
                 // Check every hour
-                sleep(Duration::from_secs(3600)).await;
+                tokio::time::sleep(tokio::time::Duration::from_secs(3600)).await;
 
                 match self.should_run_cleanup() {
                     Ok(true) => {

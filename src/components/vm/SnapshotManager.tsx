@@ -115,11 +115,11 @@ export function SnapshotManager({ vmId, vmName }: SnapshotManagerProps) {
 
   return (
     <>
-      <Card>
+      <Card className="border-border/40 shadow-sm">
         <CardHeader>
           <div className="flex items-center justify-between">
             <div>
-              <CardTitle>Snapshots</CardTitle>
+              <CardTitle className="text-lg font-semibold">Snapshots</CardTitle>
               <CardDescription>Manage VM snapshots for {vmName}</CardDescription>
             </div>
             <Button

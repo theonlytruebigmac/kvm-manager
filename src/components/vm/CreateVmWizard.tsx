@@ -222,13 +222,18 @@ export function CreateVmWizard({ onClose }: CreateVmWizardProps) {
                 <Label htmlFor="isoPath">ISO Path (optional)</Label>
                 <Input
                   id="isoPath"
-                  placeholder="/path/to/installation.iso"
+                  placeholder="/var/lib/libvirt/images/alpine.iso"
                   value={formData.isoPath || ''}
                   onChange={(e) => setFormData({ ...formData, isoPath: e.target.value || undefined })}
                 />
-                <p className="text-xs text-muted-foreground">
-                  Full path to an ISO image for OS installation. Leave empty to attach later.
-                </p>
+                <div className="space-y-1">
+                  <p className="text-xs text-muted-foreground">
+                    Full path to an ISO image for OS installation. Leave empty to attach later.
+                  </p>
+                  <p className="text-xs text-amber-600 dark:text-amber-500">
+                    ⚠️ ISO must be accessible by libvirt (copy to /var/lib/libvirt/images/ or fix permissions)
+                  </p>
+                </div>
               </div>
 
               <div className="grid grid-cols-2 gap-4">

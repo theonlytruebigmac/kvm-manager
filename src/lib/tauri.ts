@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core'
-import type { VM, HostInfo, ConnectionStatus, VmConfig, VncInfo, VmStats, Network, NetworkConfig, StoragePool, Volume, VolumeConfig, StoragePoolConfig, Snapshot, SnapshotConfig, VmMetrics, HistoricalMetrics, VmTemplate, CreateTemplateRequest, ScheduledOperation, CreateScheduleRequest, ResourceAlert, CreateAlertRequest, AlertEvent, BackupConfig, CreateBackupRequest, BatchOperationResult, OptimizationSuggestion, RetentionPolicy } from './types'
+import type { VM, HostInfo, ConnectionStatus, VmConfig, VncInfo, VmStats, Network, NetworkConfig, StoragePool, Volume, VolumeConfig, StoragePoolConfig, Snapshot, SnapshotConfig, VmMetrics, HistoricalMetrics, VmTemplate, CreateTemplateRequest, ScheduledOperation, CreateScheduleRequest, ResourceAlert, CreateAlertRequest, AlertEvent, BackupConfig, CreateBackupRequest, BatchOperationResult, OptimizationSuggestion, RetentionPolicy, GuestAgentStatus, GuestSystemInfo, GuestNetworkInfo, GuestDiskUsage, GuestCommandResult } from './types'
 
 /**
  * Tauri API wrapper for KVM Manager
@@ -16,7 +16,7 @@ export const api = {
   pauseVm: (vmId: string) => invoke<void>('pause_vm', { vmId }),
   resumeVm: (vmId: string) => invoke<void>('resume_vm', { vmId }),
   rebootVm: (vmId: string) => invoke<void>('reboot_vm', { vmId }),
-  deleteVm: (vmId: string, deleteDisks: boolean) => invoke<void>('delete_vm', { vmId, deleteDisks }),
+  deleteVm: (vmId: string, deleteDisks: boolean, deleteSnapshots: boolean) => invoke<void>('delete_vm', { vmId, deleteDisks, deleteSnapshots }),
   cloneVm: (sourceVmId: string, newName: string) => invoke<string>('clone_vm', { sourceVmId, newName }),
   createVm: (config: VmConfig) => invoke<string>('create_vm', { config }),
   addVmTags: (vmId: string, tags: string[]) => invoke<void>('add_vm_tags', { vmId, tags }),
@@ -113,4 +113,19 @@ export const api = {
   getRetentionPolicy: () => invoke<RetentionPolicy>('get_retention_policy'),
   updateRetentionPolicy: (policy: RetentionPolicy) => invoke<RetentionPolicy>('update_retention_policy', { policy }),
   executeRetentionCleanup: () => invoke<number>('execute_retention_cleanup'),
+
+  // Guest Agent Operations
+  checkGuestAgentStatus: (vmName: string) => invoke<GuestAgentStatus>('check_guest_agent_status', { vmName }),
+  getGuestSystemInfo: (vmName: string) => invoke<GuestSystemInfo>('get_guest_system_info', { vmName }),
+  getGuestNetworkInfo: (vmName: string) => invoke<GuestNetworkInfo>('get_guest_network_info', { vmName }),
+  getGuestDiskUsage: (vmName: string) => invoke<GuestDiskUsage>('get_guest_disk_usage', { vmName }),
+  executeGuestCommand: (vmName: string, command: string, args: string[], timeoutSeconds?: number) => invoke<GuestCommandResult>('execute_guest_command', { vmName, command, args, timeoutSeconds }),
+  readGuestFile: (vmName: string, path: string) => invoke<string>('read_guest_file', { vmName, path }),
+  writeGuestFile: (vmName: string, path: string, content: string, createDirs?: boolean) => invoke<void>('write_guest_file', { vmName, path, content, createDirs }),
+  guestAgentShutdown: (vmName: string, force?: boolean) => invoke<void>('guest_agent_shutdown', { vmName, force }),
+  guestAgentReboot: (vmName: string, force?: boolean) => invoke<void>('guest_agent_reboot', { vmName, force }),
+
+  // Guest Agent Installation
+  mountGuestAgentIso: (vmId: string) => invoke<void>('mount_guest_agent_iso', { vmId }),
+  ejectCdrom: (vmId: string) => invoke<void>('eject_cdrom', { vmId }),
 }

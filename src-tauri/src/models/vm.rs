@@ -19,6 +19,16 @@ pub struct NetworkInterface {
     pub network: String,
 }
 
+/// Disk Device information
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct DiskDevice {
+    pub device: String,
+    pub path: String,
+    pub disk_type: String,
+    pub bus: String,
+}
+
 /// Virtual Machine model
 /// Matches the contract defined in .agents/integration/tauri-commands.md
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -31,6 +41,8 @@ pub struct VM {
     pub memory_mb: u64,
     pub disk_size_gb: u64,
     pub network_interfaces: Vec<NetworkInterface>,
+    #[serde(default)]
+    pub disks: Vec<DiskDevice>,
     #[serde(default)]
     pub tags: Vec<String>,
 }

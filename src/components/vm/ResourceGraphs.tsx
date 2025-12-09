@@ -116,7 +116,7 @@ export function ResourceGraphs({ vmId }: ResourceGraphsProps) {
       }
       storeMetrics.mutate(vmMetrics)
     }
-  }, [stats, vmId, timeRange, storeMetrics])
+  }, [stats, vmId, timeRange]) // Removed storeMetrics from dependencies
 
   // Convert historical data to chart format
   useEffect(() => {

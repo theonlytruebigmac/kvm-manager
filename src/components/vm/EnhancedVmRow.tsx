@@ -7,6 +7,17 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { Checkbox } from '@/components/ui/checkbox'
+import { Label } from '@/components/ui/label'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -42,6 +53,9 @@ export function EnhancedVmRow({ vm, isSelected, onToggleSelect, isFocused = fals
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const [stats, setStats] = useState<{ cpu: number; memory: number } | null>(null)
+  const [showDeleteDialog, setShowDeleteDialog] = useState(false)
+  const [deleteDisks, setDeleteDisks] = useState(false)
+  const [deleteSnapshots, setDeleteSnapshots] = useState(false)
 
   // Poll stats for running VMs
   const { data: vmStats } = useQuery({
@@ -66,7 +80,14 @@ export function EnhancedVmRow({ vm, isSelected, onToggleSelect, isFocused = fals
       queryClient.invalidateQueries({ queryKey: ['vms'] })
       toast.success(`${vm.name} started`)
     },
-    onError: (error) => toast.error(`Failed to start: ${error}`),
+    onError: (error) => {
+      const errorMsg = String(error)
+      if (errorMsg.includes('Permission denied') || errorMsg.includes('Could not open')) {
+        toast.error(`Failed to start ${vm.name}: Permission denied on disk/ISO file. Copy to /var/lib/libvirt/images/ or fix permissions.`, { duration: 6000 })
+      } else {
+        toast.error(`Failed to start: ${error}`)
+      }
+    },
   })
 
   const stopMutation = useMutation({
@@ -112,18 +133,20 @@ export function EnhancedVmRow({ vm, isSelected, onToggleSelect, isFocused = fals
   })
 
   const deleteMutation = useMutation({
-    mutationFn: () => api.deleteVm(vm.id, true),
+    mutationFn: ({ deleteDisks, deleteSnapshots }: { deleteDisks: boolean; deleteSnapshots: boolean }) =>
+      api.deleteVm(vm.id, deleteDisks, deleteSnapshots),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['vms'] })
       toast.success(`${vm.name} deleted`)
+      setShowDeleteDialog(false)
+      setDeleteDisks(false)
+      setDeleteSnapshots(false)
     },
     onError: (error) => toast.error(`Failed to delete: ${error}`),
   })
 
   const handleDelete = () => {
-    if (confirm(`Are you sure you want to delete ${vm.name}? This cannot be undone.`)) {
-      deleteMutation.mutate()
-    }
+    deleteMutation.mutate({ deleteDisks, deleteSnapshots })
   }
 
   const getStateBadgeVariant = () => {
@@ -319,8 +342,7 @@ export function EnhancedVmRow({ vm, isSelected, onToggleSelect, isFocused = fals
                   <DropdownMenuSeparator />
                   <DropdownMenuItem
                     className="text-destructive"
-                    onClick={handleDelete}
-                    disabled={deleteMutation.isPending}
+                    onClick={() => setShowDeleteDialog(true)}
                   >
                     <Trash2 className="mr-2 h-4 w-4" />
                     Delete VM
@@ -331,6 +353,50 @@ export function EnhancedVmRow({ vm, isSelected, onToggleSelect, isFocused = fals
           </DropdownMenu>
         </div>
       </div>
+
+      {/* Delete Confirmation Dialog */}
+      <AlertDialog open={showDeleteDialog} onOpenChange={setShowDeleteDialog}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete Virtual Machine?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Are you sure you want to delete <strong>{vm.name}</strong>? This action cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <div className="space-y-4 py-4">
+            <div className="flex items-center space-x-2">
+              <Checkbox
+                id="delete-disks"
+                checked={deleteDisks}
+                onCheckedChange={(checked) => setDeleteDisks(checked as boolean)}
+              />
+              <Label htmlFor="delete-disks" className="text-sm font-normal cursor-pointer">
+                Delete attached storage disks (cannot be recovered)
+              </Label>
+            </div>
+            <div className="flex items-center space-x-2">
+              <Checkbox
+                id="delete-snapshots"
+                checked={deleteSnapshots}
+                onCheckedChange={(checked) => setDeleteSnapshots(checked as boolean)}
+              />
+              <Label htmlFor="delete-snapshots" className="text-sm font-normal cursor-pointer">
+                Delete all snapshots
+              </Label>
+            </div>
+          </div>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleDelete}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              disabled={deleteMutation.isPending}
+            >
+              {deleteMutation.isPending ? 'Deleting...' : 'Delete VM'}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </Card>
   )
 }

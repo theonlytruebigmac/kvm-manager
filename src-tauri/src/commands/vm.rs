@@ -198,13 +198,35 @@ pub async fn delete_vm(
     state: State<'_, AppState>,
     vm_id: String,
     delete_disks: bool,
+    delete_snapshots: bool,
 ) -> Result<(), String> {
-    tracing::info!("delete_vm command called for VM: {} (delete_disks: {})", vm_id, delete_disks);
+    tracing::info!("delete_vm command called for VM: {} (delete_disks: {}, delete_snapshots: {})", vm_id, delete_disks, delete_snapshots);
 
     // Get VM info before deletion
     let vm = VmService::get_vm(&state.libvirt, &vm_id)
         .map_err(|e| e.to_string())?;
     let vm_name = vm.name.clone();
+
+    // Delete snapshots if requested
+    if delete_snapshots {
+        tracing::info!("Deleting all snapshots for VM: {}", vm_id);
+        use crate::services::snapshot_service::SnapshotService;
+
+        match SnapshotService::list_snapshots(&state.libvirt, &vm_id) {
+            Ok(snapshots) => {
+                for snapshot in snapshots {
+                    if let Err(e) = SnapshotService::delete_snapshot(&state.libvirt, &vm_id, &snapshot.name) {
+                        tracing::warn!("Failed to delete snapshot {}: {}", snapshot.name, e);
+                    } else {
+                        tracing::info!("Deleted snapshot: {}", snapshot.name);
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!("Failed to list snapshots for deletion: {}", e);
+            }
+        }
+    }
 
     VmService::delete_vm(&state.libvirt, &vm_id, delete_disks)
         .map_err(|e| e.to_string())?;
@@ -214,6 +236,7 @@ pub async fn delete_vm(
         "vmId": vm_id,
         "vmName": vm_name,
         "deleteDisks": delete_disks,
+        "deleteSnapshots": delete_snapshots,
         "timestamp": chrono::Utc::now().timestamp_millis(),
     }));
 
@@ -611,4 +634,28 @@ pub async fn batch_reboot_vms(
     }
 
     Ok(results)
+}
+
+/// Mount guest agent ISO to a VM
+#[tauri::command]
+pub async fn mount_guest_agent_iso(
+    state: State<'_, AppState>,
+    vm_id: String,
+) -> Result<(), String> {
+    tracing::info!("mount_guest_agent_iso command called for VM: {}", vm_id);
+
+    VmService::mount_cd_iso(&state.libvirt, &vm_id, "/var/lib/libvirt/images/kvmmanager-guest-agent.iso")
+        .map_err(|e| e.to_string())
+}
+
+/// Unmount (eject) ISO from a VM
+#[tauri::command]
+pub async fn eject_cdrom(
+    state: State<'_, AppState>,
+    vm_id: String,
+) -> Result<(), String> {
+    tracing::info!("eject_cdrom command called for VM: {}", vm_id);
+
+    VmService::eject_cd(&state.libvirt, &vm_id)
+        .map_err(|e| e.to_string())
 }

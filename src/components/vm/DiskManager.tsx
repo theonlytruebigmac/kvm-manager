@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { Alert, AlertDescription } from '@/components/ui/alert'
 import {
   Select,
   SelectContent,
@@ -25,15 +26,12 @@ import {
   AlertDialogTrigger,
 } from '@/components/ui/alert-dialog'
 import { HardDrive, Plus, Trash2 } from 'lucide-react'
+import type { DiskDevice } from '@/lib/types'
 
 interface DiskManagerProps {
   vmId: string
   vmName: string
-  disks?: Array<{
-    device: string
-    path: string
-    type: string
-  }>
+  disks?: DiskDevice[]
 }
 
 export function DiskManager({ vmId, vmName, disks = [] }: DiskManagerProps) {
@@ -57,7 +55,12 @@ export function DiskManager({ vmId, vmName, disks = [] }: DiskManagerProps) {
       setBusType('virtio')
     },
     onError: (error) => {
-      toast.error(`Failed to attach disk: ${error}`)
+      const errorMsg = String(error)
+      if (errorMsg.includes('Permission denied') || errorMsg.includes('permission')) {
+        toast.error('Permission denied: Copy file to /var/lib/libvirt/images/ or run: sudo chmod 644 <file> && sudo chown libvirt-qemu:kvm <file>')
+      } else {
+        toast.error(`Failed to attach disk: ${error}`)
+      }
     },
   })
 
@@ -89,12 +92,12 @@ export function DiskManager({ vmId, vmName, disks = [] }: DiskManagerProps) {
   }
 
   return (
-    <Card>
+    <Card className="border-border/40 shadow-sm">
       <CardHeader>
         <div className="flex items-center justify-between">
           <div>
-            <CardTitle className="flex items-center gap-2">
-              <HardDrive className="h-5 w-5" />
+            <CardTitle className="flex items-center gap-2 text-lg font-semibold">
+              <HardDrive className="h-5 w-5 text-muted-foreground" />
               Disk Management
             </CardTitle>
             <CardDescription>Attach and detach disks from this VM</CardDescription>
@@ -122,19 +125,36 @@ export function DiskManager({ vmId, vmName, disks = [] }: DiskManagerProps) {
           </div>
         ) : (
           <div className="space-y-2">
-            {disks.map((disk) => (
+            {disks.map((disk) => {
+              const isInUserDir = disk.path.startsWith('/home/') || disk.path.includes('/Downloads/')
+              const isInLibvirtDir = disk.path.startsWith('/var/lib/libvirt/')
+              const hasPermissionRisk = isInUserDir && !isInLibvirtDir
+
+              return (
               <div
                 key={disk.device}
                 className="flex items-center justify-between p-3 border rounded-lg hover:bg-accent/50 transition-colors group"
               >
                 <div className="flex-1">
-                  <p className="font-medium">{disk.device}</p>
+                  <div className="flex items-center gap-2">
+                    <p className="font-medium">{disk.device}</p>
+                    {hasPermissionRisk && (
+                      <span className="text-xs text-amber-600 dark:text-amber-500" title="File in user directory may cause permission issues">
+                        ⚠️
+                      </span>
+                    )}
+                  </div>
                   <p className="text-xs text-muted-foreground truncate max-w-md">
                     {disk.path}
                   </p>
+                  {hasPermissionRisk && (
+                    <p className="text-xs text-amber-600 dark:text-amber-500 mt-1">
+                      Permission risk: Run <code className="bg-muted px-1 rounded">sudo chmod 644 {disk.path} && sudo chown libvirt-qemu:kvm {disk.path}</code>
+                    </p>
+                  )}
                 </div>
                 <div className="flex items-center gap-2">
-                  <span className="text-xs text-muted-foreground">{disk.type}</span>
+                  <span className="text-xs text-muted-foreground">{disk.diskType} ({disk.bus})</span>
                   <AlertDialog
                     open={detachTarget === disk.device}
                     onOpenChange={(open) => !open && setDetachTarget(null)}
@@ -170,7 +190,7 @@ export function DiskManager({ vmId, vmName, disks = [] }: DiskManagerProps) {
                   </AlertDialog>
                 </div>
               </div>
-            ))}
+            )})}
           </div>
         )}
       </CardContent>
@@ -185,6 +205,13 @@ export function DiskManager({ vmId, vmName, disks = [] }: DiskManagerProps) {
             </AlertDialogDescription>
           </AlertDialogHeader>
           <div className="space-y-4 py-4">
+            <Alert className="border-amber-500/50 bg-amber-500/10">
+              <AlertDescription className="text-xs">
+                <strong>Note:</strong> Disk files must be accessible by libvirt. For ISOs and images outside /var/lib/libvirt/images/, you may need to:<br/>
+                • Copy file: <code className="text-xs">sudo cp file.iso /var/lib/libvirt/images/</code><br/>
+                • Or fix permissions: <code className="text-xs">sudo chmod 644 file && sudo chown libvirt-qemu:kvm file</code>
+              </AlertDescription>
+            </Alert>
             <div className="space-y-2">
               <Label htmlFor="disk-path">Disk Image Path</Label>
               <Input
@@ -194,7 +221,7 @@ export function DiskManager({ vmId, vmName, disks = [] }: DiskManagerProps) {
                 placeholder="/var/lib/libvirt/images/disk.qcow2"
               />
               <p className="text-xs text-muted-foreground">
-                Full path to an existing disk image file
+                Full path to an existing disk image or ISO file
               </p>
             </div>
             <div className="space-y-2">

@@ -4,6 +4,7 @@ import { api } from '@/lib/tauri'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { PageContainer, PageHeader, PageContent } from '@/components/layout/PageContainer'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import {
@@ -129,19 +130,18 @@ export function NetworkManager() {
   }
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-3xl font-bold">Network Management</h1>
-          <p className="text-muted-foreground">Manage virtual networks</p>
-        </div>
-        <AlertDialog open={showCreateDialog} onOpenChange={setShowCreateDialog}>
-          <AlertDialogTrigger asChild>
-            <Button>
-              <Plus className="mr-2 h-4 w-4" />
-              Create Network
-            </Button>
-          </AlertDialogTrigger>
+    <PageContainer>
+      <PageHeader
+        title="Network Management"
+        description="Manage virtual networks"
+        actions={
+          <AlertDialog open={showCreateDialog} onOpenChange={setShowCreateDialog}>
+            <AlertDialogTrigger asChild>
+              <Button>
+                <Plus className="mr-2 h-4 w-4" />
+                Create Network
+              </Button>
+            </AlertDialogTrigger>
           <AlertDialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
             <AlertDialogHeader>
               <AlertDialogTitle>Create Virtual Network</AlertDialogTitle>
@@ -268,10 +268,12 @@ export function NetworkManager() {
             </AlertDialogFooter>
           </AlertDialogContent>
         </AlertDialog>
-      </div>
-
-      {/* Networks List */}
-      <div className="grid grid-cols-1 gap-4">
+        }
+      />
+      <PageContent>
+        <div className="space-y-8">
+          {/* Networks List */}
+          <div className="grid grid-cols-1 gap-4">
         {isLoading ? (
           <Card>
             <CardContent className="p-6">
@@ -291,31 +293,31 @@ export function NetworkManager() {
           </Card>
         ) : (
           networks.map((network) => (
-            <Card key={network.uuid}>
+            <Card key={network.uuid} className="border-border/40 shadow-sm">
               <CardHeader>
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-3">
-                    <Network className="h-6 w-6 text-primary" />
+                    <Network className="h-5 w-5 text-muted-foreground" />
                     <div>
-                      <CardTitle>{network.name}</CardTitle>
+                      <CardTitle className="text-lg font-semibold">{network.name}</CardTitle>
                       <CardDescription>Bridge: {network.bridge}</CardDescription>
                     </div>
                   </div>
                   <div className="flex items-center gap-2">
-                    <Badge variant={network.active ? 'default' : 'secondary'}>
+                    <Badge variant={network.active ? 'default' : 'secondary'} className="border-border/40">
                       {network.active ? 'Active' : 'Inactive'}
                     </Badge>
                     {network.autostart && (
-                      <Badge variant="outline">Autostart</Badge>
+                      <Badge variant="outline" className="border-border/40">Autostart</Badge>
                     )}
                   </div>
                 </div>
               </CardHeader>
               <CardContent>
                 <div className="space-y-4">
-                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-6 text-sm">
                     <div>
-                      <p className="text-muted-foreground">UUID</p>
+                      <p className="text-xs text-muted-foreground mb-1">UUID</p>
                       <p className="font-mono text-xs">{network.uuid.slice(0, 8)}...</p>
                     </div>
                     {network.ipRange && (
@@ -393,6 +395,8 @@ export function NetworkManager() {
 
       {/* Port Forwarding Manager */}
       <PortForwardingManager />
-    </div>
+        </div>
+      </PageContent>
+    </PageContainer>
   )
 }

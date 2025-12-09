@@ -10,6 +10,7 @@ import { Schedules } from './pages/Schedules'
 import { Alerts } from './pages/Alerts'
 import Backups from './pages/Backups'
 import Settings from './pages/Settings'
+import Insights from './pages/Insights'
 import { Toaster } from './components/ui/sonner'
 
 function App() {
@@ -24,6 +25,7 @@ function App() {
             <Route path="/vms/:vmId" element={<VmDetails />} />
             <Route path="/storage" element={<StorageManager />} />
             <Route path="/networks" element={<NetworkManager />} />
+            <Route path="/insights" element={<Insights />} />
             <Route path="/templates" element={<Templates />} />
             <Route path="/schedules" element={<Schedules />} />
             <Route path="/alerts" element={<Alerts />} />

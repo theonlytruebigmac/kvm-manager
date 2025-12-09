@@ -4,6 +4,7 @@ import { api } from '@/lib/tauri'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { PageContainer, PageHeader, PageContent } from '@/components/layout/PageContainer'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { CreateStoragePoolWizard } from '@/components/storage/CreateStoragePoolWizard'
@@ -144,20 +145,21 @@ export function StorageManager() {
   }
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-3xl font-bold">Storage Management</h1>
-          <p className="text-muted-foreground">Manage storage pools and volumes</p>
-        </div>
-        <Button onClick={() => setShowCreatePoolWizard(true)}>
-          <Plus className="w-4 h-4 mr-2" />
-          Create Pool
-        </Button>
-      </div>
-
-      {/* Storage Pools */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+    <PageContainer>
+      <PageHeader
+        title="Storage Management"
+        description="Manage storage pools and volumes"
+        actions={
+          <Button onClick={() => setShowCreatePoolWizard(true)}>
+            <Plus className="w-4 h-4 mr-2" />
+            Create Pool
+          </Button>
+        }
+      />
+      <PageContent>
+        <div className="space-y-8">
+          {/* Storage Pools */}
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
         {poolsLoading ? (
           <Card>
             <CardContent className="p-6">
@@ -174,43 +176,43 @@ export function StorageManager() {
           pools.map((pool) => (
             <Card
               key={pool.id}
-              className={`cursor-pointer transition-colors ${
-                selectedPool === pool.id ? 'border-primary' : ''
+              className={`cursor-pointer transition-all border-border/40 shadow-sm hover:shadow-md ${
+                selectedPool === pool.id ? 'border-primary ring-2 ring-primary/20' : ''
               }`}
               onClick={() => setSelectedPool(pool.id)}
             >
               <CardHeader>
                 <div className="flex items-center justify-between">
-                  <CardTitle className="flex items-center gap-2">
-                    <Database className="h-5 w-5" />
+                  <CardTitle className="flex items-center gap-2 text-lg font-semibold">
+                    <Database className="h-5 w-5 text-muted-foreground" />
                     {pool.name}
                   </CardTitle>
-                  <Badge variant={getStateColor(pool.state)}>
+                  <Badge variant={getStateColor(pool.state)} className="border-border/40">
                     {pool.state.toUpperCase()}
                   </Badge>
                 </div>
                 <CardDescription className="capitalize">{pool.poolType}</CardDescription>
               </CardHeader>
               <CardContent>
-                <div className="space-y-2">
+                <div className="space-y-3">
                   <div className="flex justify-between text-sm">
                     <span className="text-muted-foreground">Capacity:</span>
-                    <span className="font-medium">{formatBytes(pool.capacityBytes)}</span>
+                    <span className="text-sm">{formatBytes(pool.capacityBytes)}</span>
                   </div>
                   <div className="flex justify-between text-sm">
                     <span className="text-muted-foreground">Used:</span>
-                    <span className="font-medium">{formatBytes(pool.allocationBytes)}</span>
+                    <span className="text-sm">{formatBytes(pool.allocationBytes)}</span>
                   </div>
                   <div className="flex justify-between text-sm">
                     <span className="text-muted-foreground">Available:</span>
-                    <span className="font-medium">{formatBytes(pool.availableBytes)}</span>
+                    <span className="text-sm">{formatBytes(pool.availableBytes)}</span>
                   </div>
-                  <div className="mt-2">
-                    <div className="flex justify-between text-xs mb-1">
+                  <div className="mt-4 pt-3 border-t border-border/40">
+                    <div className="flex justify-between text-xs mb-2">
                       <span className="text-muted-foreground">Usage</span>
-                      <span className="font-medium">{calculateUsagePercent(pool)}%</span>
+                      <span className="text-sm">{calculateUsagePercent(pool)}%</span>
                     </div>
-                    <div className="h-2 bg-secondary rounded-full overflow-hidden">
+                    <div className="h-1.5 bg-secondary rounded-full overflow-hidden">
                       <div
                         className="h-full bg-primary transition-all"
                         style={{ width: `${calculateUsagePercent(pool)}%` }}
@@ -230,12 +232,12 @@ export function StorageManager() {
 
       {/* Volumes Section */}
       {selectedPool && (
-        <Card>
+        <Card className="border-border/40 shadow-sm">
           <CardHeader>
             <div className="flex items-center justify-between">
               <div>
-                <CardTitle className="flex items-center gap-2">
-                  <HardDrive className="h-5 w-5" />
+                <CardTitle className="flex items-center gap-2 text-lg font-semibold">
+                  <HardDrive className="h-5 w-5 text-muted-foreground" />
                   Volumes in {pools.find((p) => p.id === selectedPool)?.name}
                 </CardTitle>
                 <CardDescription>Disk images and storage volumes</CardDescription>
@@ -483,6 +485,8 @@ export function StorageManager() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-    </div>
+        </div>
+      </PageContent>
+    </PageContainer>
   )
 }

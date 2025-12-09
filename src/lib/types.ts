@@ -9,6 +9,13 @@ export interface NetworkInterface {
   ipAddress?: string
 }
 
+export interface DiskDevice {
+  device: string
+  path: string
+  diskType: string
+  bus: string
+}
+
 export interface VM {
   id: string
   name: string
@@ -19,6 +26,7 @@ export interface VM {
   osVariant?: string
   diskSizeGb: number
   networkInterfaces: NetworkInterface[]
+  disks: DiskDevice[]
   vncPort?: number
   createdAt?: number
   description?: string
@@ -342,4 +350,64 @@ export interface RetentionPolicy {
   retentionDays: number
   cleanupHour: number
   lastCleanup?: number
+}
+
+// ===== Guest Agent Types =====
+
+export interface GuestAgentStatus {
+  available: boolean
+  agentInfo?: AgentInfo
+}
+
+export interface AgentInfo {
+  version: string
+  protocolVersion: string
+  platform: string
+  capabilities: string[]
+}
+
+export interface GuestSystemInfo {
+  osType: string
+  osName: string
+  osVersion: string
+  kernelVersion: string
+  hostname: string
+  architecture: string
+  cpuCount: number
+  totalMemoryKb: number
+  uptimeSeconds: number
+}
+
+export interface GuestNetworkInterface {
+  name: string
+  macAddress: string
+  ipv4Addresses: string[]
+  ipv6Addresses: string[]
+  state: string
+  mtu: number
+}
+
+export interface GuestNetworkInfo {
+  interfaces: GuestNetworkInterface[]
+}
+
+export interface GuestFilesystemInfo {
+  mountPoint: string
+  device: string
+  fsType: string
+  totalBytes: number
+  usedBytes: number
+  availableBytes: number
+  usedPercent: number
+}
+
+export interface GuestDiskUsage {
+  filesystems: GuestFilesystemInfo[]
+}
+
+export interface GuestCommandResult {
+  exitCode: number
+  stdout: string
+  stderr: string
+  executionTimeMs: number
 }

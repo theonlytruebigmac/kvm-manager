@@ -222,10 +222,9 @@ export function PortForwardingManager() {
                 placeholder="80"
               />
             </div>
-            <div className="bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-900 rounded-md p-3">
-              <p className="text-xs text-amber-800 dark:text-amber-200">
-                ⚠️ This feature requires sudo/root privileges to modify iptables.
-                Make sure the application has the necessary permissions.
+            <div className="bg-amber-50 dark:bg-amber-950/30 border border-amber-300 dark:border-amber-700 rounded-md p-3">
+              <p className="text-sm text-amber-900 dark:text-amber-100 leading-relaxed">
+                <span className="font-medium">⚠️ Note:</span> This feature requires sudo/root privileges to modify iptables rules.
               </p>
             </div>
           </div>

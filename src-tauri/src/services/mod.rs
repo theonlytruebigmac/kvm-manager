@@ -10,3 +10,4 @@ pub mod alert_service;
 pub mod backup_service;
 pub mod optimization_service;
 pub mod retention_service;
+pub mod guest_agent_service;

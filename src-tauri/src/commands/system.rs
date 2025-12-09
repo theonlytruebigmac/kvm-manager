@@ -152,6 +152,7 @@ pub async fn open_vnc_console(state: State<'_, AppState>, vm_id: String) -> Resu
             .arg("--connect")
             .arg("qemu:///system")
             .arg(&name)
+            .stderr(std::process::Stdio::null()) // Suppress GTK warnings
             .spawn()
         {
             Ok(_) => {

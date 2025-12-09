@@ -7,6 +7,7 @@ import { EnhancedVmRow } from '@/components/vm/EnhancedVmRow'
 import { CreateVmWizard } from '@/components/vm/CreateVmWizard'
 import { KeyboardShortcutsDialog } from '@/components/ui/keyboard-shortcuts-dialog'
 import { BatchOperations } from '@/components/vm/BatchOperations'
+import { PageContainer, PageHeader, PageToolbar, PageContent } from '@/components/layout/PageContainer'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
@@ -54,6 +55,14 @@ export function VmList() {
   const startMutation = useMutation({
     mutationFn: (vmId: string) => api.startVm(vmId),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['vms'] }),
+    onError: (error) => {
+      const errorMsg = String(error)
+      if (errorMsg.includes('Permission denied') || errorMsg.includes('Could not open')) {
+        toast.error('Failed to start: Permission denied. Check that libvirt can access all disk/ISO files. See VM details for help.')
+      } else {
+        toast.error(`Failed to start: ${error}`)
+      }
+    }
   })
 
   const stopMutation = useMutation({
@@ -62,9 +71,14 @@ export function VmList() {
   })
 
   const deleteMutation = useMutation({
-    mutationFn: (vmId: string) => api.deleteVm(vmId, true),
+    mutationFn: ({ vmId, deleteDisks, deleteSnapshots }: { vmId: string; deleteDisks: boolean; deleteSnapshots: boolean }) =>
+      api.deleteVm(vmId, deleteDisks, deleteSnapshots),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['vms'] })
+      toast.success('VM deleted successfully')
+    },
+    onError: (error) => {
+      toast.error(`Failed to delete VM: ${error}`)
     },
   })
 
@@ -184,11 +198,9 @@ export function VmList() {
       key: 'd',
       ctrlKey: true,
       handler: () => {
-        if (focusedVm && confirm(`Delete ${focusedVm.name}?`)) {
-          deleteMutation.mutate(focusedVm.id)
-        }
+        // This shortcut now just focuses - user should use menu for delete options
       },
-      description: 'Delete focused VM'
+      description: 'Delete focused VM (use menu for options)'
     },
     {
       key: 'a',
@@ -211,7 +223,7 @@ export function VmList() {
   // Early returns AFTER all hooks
   if (isLoading) {
     return (
-      <div className="flex items-center justify-center min-h-[400px]">
+      <div className="h-full flex items-center justify-center">
         <div className="flex flex-col items-center gap-3">
           <Loader2 className="w-8 h-8 animate-spin text-primary" />
           <p className="text-sm text-muted-foreground">Loading virtual machines...</p>
@@ -222,7 +234,7 @@ export function VmList() {
 
   if (error) {
     return (
-      <div className="flex items-center justify-center min-h-[400px]">
+      <div className="h-full flex items-center justify-center">
         <div className="flex flex-col items-center gap-3">
           <AlertCircle className="w-8 h-8 text-destructive" />
           <div className="text-center">
@@ -237,7 +249,7 @@ export function VmList() {
   if (!vms || vms.length === 0) {
     return (
       <>
-        <div className="flex items-center justify-center min-h-[400px]">
+        <div className="h-full flex items-center justify-center">
           <div className="text-center space-y-4">
             <div>
               <p className="font-medium">No virtual machines found</p>
@@ -258,39 +270,39 @@ export function VmList() {
 
   return (
     <>
-      <div className="space-y-6">
-        <div className="flex items-center justify-between">
-          <div>
-            <h1 className="text-3xl font-bold tracking-tight">Virtual Machines</h1>
-            <p className="text-muted-foreground mt-1">
-              Manage and monitor your VMs
-            </p>
-          </div>
-          <div className="flex items-center gap-3">
+      <PageContainer>
+        <PageHeader
+          title="Virtual Machines"
+          description="Manage and monitor your VMs"
+          stats={
             <div className="text-sm text-muted-foreground">
               {filteredVms.length} of {vms.length} {vms.length === 1 ? 'VM' : 'VMs'}
             </div>
-            <Button
-              variant="ghost"
-              size="icon"
-              onClick={() => setShowShortcuts(true)}
-              title="Keyboard shortcuts (?)"
-            >
-              <Keyboard className="w-4 h-4" />
-            </Button>
-            <Button variant="outline" onClick={() => setShowImportDialog(true)}>
-              <Upload className="w-4 h-4 mr-1" />
-              Import VM
-            </Button>
-            <Button onClick={() => setShowCreateWizard(true)}>
-              <Plus className="w-4 h-4 mr-1" />
-              Create VM
-            </Button>
-          </div>
-        </div>
+          }
+          actions={
+            <>
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={() => setShowShortcuts(true)}
+                title="Keyboard shortcuts (?)"
+              >
+                <Keyboard className="w-4 h-4" />
+              </Button>
+              <Button variant="outline" onClick={() => setShowImportDialog(true)}>
+                <Upload className="w-4 h-4 mr-1" />
+                Import VM
+              </Button>
+              <Button onClick={() => setShowCreateWizard(true)}>
+                <Plus className="w-4 h-4 mr-1" />
+                Create VM
+              </Button>
+            </>
+          }
+        />
 
-        {/* Search and Filter */}
-        <div className="flex flex-col gap-3">
+        <PageToolbar>
+          <div className="space-y-3">
           <div className="relative">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
             <Input
@@ -331,16 +343,16 @@ export function VmList() {
               ))}
             </div>
           )}
-        </div>
 
-        {/* Batch Operations Toolbar */}
-        <BatchOperations
-          selectedVmIds={Array.from(selectedVmIds)}
-          onClearSelection={clearSelection}
-        />
+            {/* Batch Operations Toolbar */}
+            <BatchOperations
+              selectedVmIds={Array.from(selectedVmIds)}
+              onClearSelection={clearSelection}
+            />
+          </div>
+        </PageToolbar>
 
-        {/* VM List */}
-        <div>
+        <PageContent>
         {filteredVms.length === 0 ? (
           <div className="flex flex-col items-center justify-center min-h-[300px] gap-3">
             <p className="text-muted-foreground">
@@ -386,8 +398,8 @@ export function VmList() {
             ))}
           </div>
         )}
-        </div>
-      </div>
+        </PageContent>
+      </PageContainer>
 
       {showCreateWizard && <CreateVmWizard onClose={() => setShowCreateWizard(false)} />}
       <KeyboardShortcutsDialog open={showShortcuts} onOpenChange={setShowShortcuts} />

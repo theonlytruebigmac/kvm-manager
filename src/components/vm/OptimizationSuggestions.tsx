@@ -74,7 +74,7 @@ export function OptimizationSuggestions({ vmId, vmName }: OptimizationSuggestion
 
   if (isLoading) {
     return (
-      <Card>
+      <Card className="border-border/40 shadow-sm">
         <CardContent className="flex items-center justify-center p-8">
           <div className="text-muted-foreground">Analyzing performance...</div>
         </CardContent>
@@ -83,35 +83,34 @@ export function OptimizationSuggestions({ vmId, vmName }: OptimizationSuggestion
   }
 
   return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <div>
-          <h3 className="text-lg font-semibold">Performance Optimization Suggestions</h3>
-          <p className="text-sm text-muted-foreground">
-            AI-driven recommendations based on historical metrics
-          </p>
+    <Card className="border-border/40 shadow-sm">
+      <CardHeader>
+        <div className="flex items-center justify-between">
+          <div>
+            <CardTitle className="text-lg font-semibold">Performance Optimization Suggestions</CardTitle>
+            <CardDescription>AI-driven recommendations based on historical metrics</CardDescription>
+          </div>
+          <div className="flex items-center gap-2">
+            <select
+              value={timeRange}
+              onChange={(e) => setTimeRange(parseInt(e.target.value))}
+              className="flex h-9 rounded-md border border-input bg-background px-3 py-1 text-sm ring-offset-background"
+            >
+              <option value="1">Last Hour</option>
+              <option value="6">Last 6 Hours</option>
+              <option value="24">Last 24 Hours</option>
+              <option value="168">Last 7 Days</option>
+              <option value="720">Last 30 Days</option>
+            </select>
+            <Button size="sm" variant="outline" onClick={() => refetch()}>
+              <RefreshCw className="h-3 w-3" />
+            </Button>
+          </div>
         </div>
-        <div className="flex items-center gap-2">
-          <select
-            value={timeRange}
-            onChange={(e) => setTimeRange(parseInt(e.target.value))}
-            className="flex h-9 rounded-md border border-input bg-background px-3 py-1 text-sm ring-offset-background"
-          >
-            <option value="1">Last Hour</option>
-            <option value="6">Last 6 Hours</option>
-            <option value="24">Last 24 Hours</option>
-            <option value="168">Last 7 Days</option>
-            <option value="720">Last 30 Days</option>
-          </select>
-          <Button size="sm" variant="outline" onClick={() => refetch()}>
-            <RefreshCw className="h-3 w-3" />
-          </Button>
-        </div>
-      </div>
-
-      {!suggestions || suggestions.length === 0 ? (
-        <Card>
-          <CardContent className="flex flex-col items-center justify-center p-8 text-center">
+      </CardHeader>
+      <CardContent>
+        {!suggestions || suggestions.length === 0 ? (
+          <div className="flex flex-col items-center justify-center py-8 text-center">
             <Info className="h-12 w-12 text-green-500 mb-4" />
             <p className="font-medium">No optimization suggestions</p>
             <p className="text-sm text-muted-foreground mt-1">
@@ -119,10 +118,9 @@ export function OptimizationSuggestions({ vmId, vmName }: OptimizationSuggestion
                 ? 'This VM is running optimally based on current metrics'
                 : 'All VMs are running optimally based on current metrics'}
             </p>
-          </CardContent>
-        </Card>
-      ) : (
-        <div className="space-y-3">
+          </div>
+        ) : (
+          <div className="space-y-3">
           {suggestions.map((suggestion, index) => (
             <Card key={index} className="border-l-4" style={{
               borderLeftColor:
@@ -174,8 +172,9 @@ export function OptimizationSuggestions({ vmId, vmName }: OptimizationSuggestion
               </CardContent>
             </Card>
           ))}
-        </div>
-      )}
-    </div>
+          </div>
+        )}
+      </CardContent>
+    </Card>
   )
 }
