@@ -116,51 +116,57 @@ export function BatchOperations({ selectedVmIds, onClearSelection }: BatchOperat
 
   return (
     <>
-      <div className="bg-muted border rounded-lg p-4 mb-4">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <span className="font-medium">
-              {selectedVmIds.length} VM{selectedVmIds.length !== 1 ? 's' : ''} selected
-            </span>
-            <Button variant="ghost" size="sm" onClick={onClearSelection}>
-              Clear selection
-            </Button>
-          </div>
-          <div className="flex gap-2">
+      <div className="flex-shrink-0 px-4 py-2 border-b border-primary/20 bg-primary/5">
+        <div className="flex items-center gap-3">
+          <span className="text-sm font-medium">
+            {selectedVmIds.length} VM{selectedVmIds.length !== 1 ? 's' : ''} selected
+          </span>
+          <button
+            onClick={onClearSelection}
+            className="text-sm text-muted-foreground hover:text-foreground"
+          >
+            Clear selection
+          </button>
+          <div className="h-4 w-px bg-border mx-1" />
+          <div className="flex gap-1.5">
             <Button
               size="sm"
-              variant="outline"
+              variant="ghost"
               onClick={handleBatchStart}
               disabled={isLoading}
+              className="h-7 px-2.5 text-xs"
             >
-              <PlayCircle className="mr-1 h-3 w-3" />
+              <PlayCircle className="mr-1 h-3.5 w-3.5" />
               Start All
             </Button>
             <Button
               size="sm"
-              variant="outline"
+              variant="ghost"
               onClick={() => handleBatchStop(false)}
               disabled={isLoading}
+              className="h-7 px-2.5 text-xs"
             >
-              <StopCircle className="mr-1 h-3 w-3" />
+              <StopCircle className="mr-1 h-3.5 w-3.5" />
               Shutdown All
             </Button>
             <Button
               size="sm"
-              variant="outline"
+              variant="ghost"
               onClick={() => handleBatchStop(true)}
               disabled={isLoading}
+              className="h-7 px-2.5 text-xs"
             >
-              <StopCircle className="mr-1 h-3 w-3" />
+              <StopCircle className="mr-1 h-3.5 w-3.5" />
               Force Stop All
             </Button>
             <Button
               size="sm"
-              variant="outline"
+              variant="ghost"
               onClick={handleBatchReboot}
               disabled={isLoading}
+              className="h-7 px-2.5 text-xs"
             >
-              <RotateCw className="mr-1 h-3 w-3" />
+              <RotateCw className="mr-1 h-3.5 w-3.5" />
               Reboot All
             </Button>
           </div>

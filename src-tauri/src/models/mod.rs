@@ -3,3 +3,8 @@ pub mod host;
 pub mod storage;
 pub mod network;
 pub mod snapshot;
+pub mod pci;
+pub mod cloud_init;
+pub mod usb;
+pub mod mdev;
+pub mod nwfilter;

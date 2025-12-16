@@ -11,6 +11,8 @@ import { Button } from '@/components/ui/button'
 interface ResourceGraphsProps {
   vmId: string
   vmName: string
+  compact?: boolean
+  dataOnly?: boolean
 }
 
 interface MetricPoint {
@@ -29,7 +31,7 @@ type TimeRange = 'live' | '1h' | '6h' | '24h' | '7d' | '30d'
 
 const MAX_POINTS = 60 // Keep last 60 data points (1 minute at 1s interval)
 
-export function ResourceGraphs({ vmId }: ResourceGraphsProps) {
+export function ResourceGraphs({ vmId, compact, dataOnly }: ResourceGraphsProps) {
   const [metrics, setMetrics] = useState<MetricPoint[]>([])
   const [timeRange, setTimeRange] = useState<TimeRange>('live')
 
@@ -151,6 +153,219 @@ export function ResourceGraphs({ vmId }: ResourceGraphsProps) {
   const formatBytes = (mb: number) => {
     if (mb >= 1024) return `${(mb / 1024).toFixed(1)} GB`
     return `${mb.toFixed(0)} MB`
+  }
+
+  // Data-only mode - just shows stats without graphs
+  if (dataOnly) {
+    return (
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        {/* CPU */}
+        <div className="p-3 bg-muted/30 rounded-lg text-center">
+          <div className="flex items-center justify-center gap-1.5 mb-1">
+            <Cpu className="w-4 h-4 text-blue-500" />
+            <span className="text-xs text-muted-foreground">CPU</span>
+          </div>
+          <div className="text-2xl font-bold text-blue-500">
+            {stats?.cpuUsagePercent.toFixed(1) || '0.0'}%
+          </div>
+        </div>
+
+        {/* Memory */}
+        <div className="p-3 bg-muted/30 rounded-lg text-center">
+          <div className="flex items-center justify-center gap-1.5 mb-1">
+            <Activity className="w-4 h-4 text-green-500" />
+            <span className="text-xs text-muted-foreground">Memory</span>
+          </div>
+          <div className="text-2xl font-bold text-green-500">
+            {stats ? formatBytes(stats.memoryUsedMb) : '0 MB'}
+          </div>
+          <div className="text-xs text-muted-foreground">
+            of {stats ? formatBytes(stats.memoryAvailableMb) : '0 MB'}
+          </div>
+        </div>
+
+        {/* Network */}
+        <div className="p-3 bg-muted/30 rounded-lg text-center">
+          <div className="flex items-center justify-center gap-1.5 mb-1">
+            <Network className="w-4 h-4 text-purple-500" />
+            <span className="text-xs text-muted-foreground">Network</span>
+          </div>
+          <div className="text-sm">
+            <span className="text-purple-500 font-semibold">↓ {stats ? formatBytes(stats.networkRxBytes / 1024 / 1024) : '0 MB'}</span>
+          </div>
+          <div className="text-sm">
+            <span className="text-pink-500 font-semibold">↑ {stats ? formatBytes(stats.networkTxBytes / 1024 / 1024) : '0 MB'}</span>
+          </div>
+        </div>
+
+        {/* Disk I/O */}
+        <div className="p-3 bg-muted/30 rounded-lg text-center">
+          <div className="flex items-center justify-center gap-1.5 mb-1">
+            <HardDrive className="w-4 h-4 text-orange-500" />
+            <span className="text-xs text-muted-foreground">Disk I/O</span>
+          </div>
+          <div className="text-sm">
+            <span className="text-orange-500 font-semibold">R {stats ? formatBytes(stats.diskReadBytes / 1024 / 1024) : '0 MB'}</span>
+          </div>
+          <div className="text-sm">
+            <span className="text-amber-500 font-semibold">W {stats ? formatBytes(stats.diskWriteBytes / 1024 / 1024) : '0 MB'}</span>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  // Compact mode shows sparkline charts for all metrics
+  if (compact) {
+    const latest = metrics[metrics.length - 1]
+    const chartData = metrics.slice(-30)
+
+    // Calculate domains for proper scaling
+    const maxMemory = stats?.memoryAvailableMb || 4096
+    const maxNetwork = Math.max(
+      ...chartData.map(d => Math.max(d.networkRx, d.networkTx)),
+      1
+    )
+    const maxDisk = Math.max(
+      ...chartData.map(d => Math.max(d.diskRead, d.diskWrite)),
+      1
+    )
+
+    return (
+      <div className="space-y-4">
+        {/* All 4 metrics in a 2x2 grid with sparklines */}
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+          {/* CPU Sparkline - Fixed 0-100% scale */}
+          <div className="p-3 bg-muted/30 rounded-lg">
+            <div className="flex items-center justify-between mb-2">
+              <div className="flex items-center gap-1.5">
+                <Cpu className="w-3.5 h-3.5 text-blue-500" />
+                <span className="text-xs font-medium">CPU</span>
+              </div>
+              <span className="text-xl font-bold text-blue-500">{latest?.cpuUsage.toFixed(1) || '0.0'}%</span>
+            </div>
+            <div className="h-12">
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart data={chartData} margin={{ top: 2, right: 2, bottom: 2, left: 2 }}>
+                  <YAxis domain={[0, 100]} hide />
+                  <Line
+                    type="monotone"
+                    dataKey="cpuUsage"
+                    stroke="#3b82f6"
+                    strokeWidth={2}
+                    dot={false}
+                    isAnimationActive={false}
+                  />
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+
+          {/* Memory Sparkline - Scale to max memory */}
+          <div className="p-3 bg-muted/30 rounded-lg">
+            <div className="flex items-center justify-between mb-1">
+              <div className="flex items-center gap-1.5">
+                <Activity className="w-3.5 h-3.5 text-green-500" />
+                <span className="text-xs font-medium">Memory</span>
+              </div>
+              <span className="text-xl font-bold text-green-500">{latest ? formatBytes(latest.memoryUsage) : '0 MB'}</span>
+            </div>
+            <div className="text-[10px] text-muted-foreground text-right mb-1">
+              of {stats ? formatBytes(stats.memoryAvailableMb) : '0 MB'}
+            </div>
+            <div className="h-10">
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart data={chartData} margin={{ top: 2, right: 2, bottom: 2, left: 2 }}>
+                  <YAxis domain={[0, maxMemory]} hide />
+                  <Line
+                    type="monotone"
+                    dataKey="memoryUsage"
+                    stroke="#22c55e"
+                    strokeWidth={2}
+                    dot={false}
+                    isAnimationActive={false}
+                  />
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+
+          {/* Network Sparkline - Auto scale based on data */}
+          <div className="p-3 bg-muted/30 rounded-lg">
+            <div className="flex items-center justify-between mb-2">
+              <div className="flex items-center gap-1.5">
+                <Network className="w-3.5 h-3.5 text-purple-500" />
+                <span className="text-xs font-medium">Network</span>
+              </div>
+              <div className="text-right text-xs">
+                <span className="text-purple-500 font-bold">↓{latest ? formatBytes(latest.networkRx) : '0'}</span>
+                <span className="text-pink-500 font-bold ml-1">↑{latest ? formatBytes(latest.networkTx) : '0'}</span>
+              </div>
+            </div>
+            <div className="h-12">
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart data={chartData} margin={{ top: 2, right: 2, bottom: 2, left: 2 }}>
+                  <YAxis domain={[0, maxNetwork]} hide />
+                  <Line
+                    type="monotone"
+                    dataKey="networkRx"
+                    stroke="#a855f7"
+                    strokeWidth={2}
+                    dot={false}
+                    isAnimationActive={false}
+                  />
+                  <Line
+                    type="monotone"
+                    dataKey="networkTx"
+                    stroke="#ec4899"
+                    strokeWidth={2}
+                    dot={false}
+                    isAnimationActive={false}
+                  />
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+
+          {/* Disk I/O Sparkline - Auto scale based on data */}
+          <div className="p-3 bg-muted/30 rounded-lg">
+            <div className="flex items-center justify-between mb-2">
+              <div className="flex items-center gap-1.5">
+                <HardDrive className="w-3.5 h-3.5 text-orange-500" />
+                <span className="text-xs font-medium">Disk I/O</span>
+              </div>
+              <div className="text-right text-xs">
+                <span className="text-orange-500 font-bold">R{latest ? formatBytes(latest.diskRead) : '0'}</span>
+                <span className="text-amber-500 font-bold ml-1">W{latest ? formatBytes(latest.diskWrite) : '0'}</span>
+              </div>
+            </div>
+            <div className="h-12">
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart data={chartData} margin={{ top: 2, right: 2, bottom: 2, left: 2 }}>
+                  <YAxis domain={[0, maxDisk]} hide />
+                  <Line
+                    type="monotone"
+                    dataKey="diskRead"
+                    stroke="#f97316"
+                    strokeWidth={2}
+                    dot={false}
+                    isAnimationActive={false}
+                  />
+                  <Line
+                    type="monotone"
+                    dataKey="diskWrite"
+                    stroke="#f59e0b"
+                    strokeWidth={2}
+                    dot={false}
+                    isAnimationActive={false}
+                  />
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+        </div>
+      </div>
+    )
   }
 
   return (

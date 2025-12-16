@@ -382,4 +382,155 @@ impl NetworkService {
         tracing::info!("Port forward rule removed");
         Ok(())
     }
+
+    /// Set network autostart
+    pub fn set_network_autostart(libvirt: &LibvirtService, network_name: &str, autostart: bool) -> Result<(), AppError> {
+        tracing::info!("Setting network {} autostart to {}", network_name, autostart);
+
+        let conn = libvirt.get_connection();
+        let network = Network::lookup_by_name(conn, network_name)
+            .map_err(|_| AppError::NetworkNotFound(network_name.to_string()))?;
+
+        network.set_autostart(autostart)
+            .map_err(map_libvirt_error)?;
+
+        tracing::info!("Network autostart set successfully");
+        Ok(())
+    }
+
+    /// Get DHCP leases for a network by reading dnsmasq lease file
+    pub fn get_dhcp_leases(libvirt: &LibvirtService, network_name: &str) -> Result<Vec<DhcpLease>, AppError> {
+        tracing::debug!("Getting DHCP leases for network: {}", network_name);
+
+        let conn = libvirt.get_connection();
+        let _network = Network::lookup_by_name(conn, network_name)
+            .map_err(|_| AppError::NetworkNotFound(network_name.to_string()))?;
+
+        // Read leases from dnsmasq lease file
+        // The file is typically at /var/lib/libvirt/dnsmasq/<network-name>.leases
+        let lease_file = format!("/var/lib/libvirt/dnsmasq/{}.leases", network_name);
+
+        let mut leases = Vec::new();
+
+        if let Ok(content) = std::fs::read_to_string(&lease_file) {
+            for line in content.lines() {
+                // dnsmasq lease format: <expiry> <mac> <ip> <hostname> <client-id>
+                // Example: 1234567890 00:16:3e:xx:xx:xx 192.168.122.100 myvm *
+                let parts: Vec<&str> = line.split_whitespace().collect();
+                if parts.len() >= 4 {
+                    let expiry_time = parts[0].parse::<i64>().unwrap_or(0);
+                    let mac = parts[1].to_string();
+                    let ip_address = parts[2].to_string();
+                    let hostname = if parts[3] != "*" { Some(parts[3].to_string()) } else { None };
+                    let client_id = if parts.len() >= 5 && parts[4] != "*" {
+                        Some(parts[4].to_string())
+                    } else {
+                        None
+                    };
+
+                    leases.push(DhcpLease {
+                        mac,
+                        ip_address,
+                        hostname,
+                        client_id,
+                        expiry_time,
+                    });
+                }
+            }
+        } else {
+            tracing::debug!("Lease file not found or not readable: {}", lease_file);
+        }
+
+        tracing::debug!("Found {} DHCP leases for network {}", leases.len(), network_name);
+        Ok(leases)
+    }
+
+    /// Get detailed network information including DHCP config
+    pub fn get_network_details(libvirt: &LibvirtService, network_name: &str) -> Result<NetworkDetails, AppError> {
+        tracing::debug!("Getting detailed network info for: {}", network_name);
+
+        let conn = libvirt.get_connection();
+        let network = Network::lookup_by_name(conn, network_name)
+            .map_err(|_| AppError::NetworkNotFound(network_name.to_string()))?;
+
+        let xml = network.get_xml_desc(0)
+            .map_err(map_libvirt_error)?;
+
+        // Parse network details from XML
+        let forward_mode = Self::extract_xml_value(&xml, "forward", "mode")
+            .unwrap_or_else(|| "isolated".to_string());
+
+        let ip_address = Self::extract_xml_value(&xml, "ip", "address");
+        let netmask = Self::extract_xml_value(&xml, "ip", "netmask");
+        let dhcp_start = Self::extract_dhcp_range_value(&xml, "start");
+        let dhcp_end = Self::extract_dhcp_range_value(&xml, "end");
+
+        let basic = Self::network_to_model(&network)?;
+
+        // Get DHCP leases
+        let leases = Self::get_dhcp_leases(libvirt, network_name).unwrap_or_default();
+
+        Ok(NetworkDetails {
+            name: basic.name,
+            uuid: basic.uuid,
+            bridge: basic.bridge,
+            active: basic.active,
+            autostart: basic.autostart,
+            ip_range: basic.ip_range,
+            forward_mode,
+            ip_address,
+            netmask,
+            dhcp_start,
+            dhcp_end,
+            dhcp_leases: leases,
+        })
+    }
+
+    /// Extract DHCP range start/end from XML
+    fn extract_dhcp_range_value(xml: &str, attribute: &str) -> Option<String> {
+        // Look for <range start='...' end='...'/> inside <dhcp>
+        if let Some(dhcp_start) = xml.find("<dhcp>") {
+            let dhcp_section = &xml[dhcp_start..];
+            if let Some(range_start) = dhcp_section.find("<range") {
+                let range_section = &dhcp_section[range_start..];
+                let attr_pattern = format!("{}='", attribute);
+                if let Some(attr_start) = range_section.find(&attr_pattern) {
+                    let value_start = attr_start + attr_pattern.len();
+                    if let Some(value_end) = range_section[value_start..].find('\'') {
+                        return Some(range_section[value_start..value_start + value_end].to_string());
+                    }
+                }
+            }
+        }
+        None
+    }
+}
+
+/// DHCP Lease information
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DhcpLease {
+    pub mac: String,
+    pub ip_address: String,
+    pub hostname: Option<String>,
+    pub client_id: Option<String>,
+    pub expiry_time: i64,
+}
+
+/// Detailed network information
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NetworkDetails {
+    pub name: String,
+    pub uuid: String,
+    pub bridge: String,
+    pub active: bool,
+    pub autostart: bool,
+    pub ip_range: Option<String>,
+    pub forward_mode: String,
+    pub ip_address: Option<String>,
+    pub netmask: Option<String>,
+    pub dhcp_start: Option<String>,
+    pub dhcp_end: Option<String>,
+    pub dhcp_leases: Vec<DhcpLease>,
 }

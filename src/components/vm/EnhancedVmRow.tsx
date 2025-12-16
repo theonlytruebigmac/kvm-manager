@@ -38,7 +38,9 @@ import {
   Cpu,
   HardDrive,
   Info,
+  Pencil,
 } from 'lucide-react'
+import { Input } from '@/components/ui/input'
 import type { VM } from '@/lib/types'
 
 interface EnhancedVmRowProps {
@@ -54,6 +56,8 @@ export function EnhancedVmRow({ vm, isSelected, onToggleSelect, isFocused = fals
   const queryClient = useQueryClient()
   const [stats, setStats] = useState<{ cpu: number; memory: number } | null>(null)
   const [showDeleteDialog, setShowDeleteDialog] = useState(false)
+  const [showRenameDialog, setShowRenameDialog] = useState(false)
+  const [newName, setNewName] = useState(vm.name)
   const [deleteDisks, setDeleteDisks] = useState(false)
   const [deleteSnapshots, setDeleteSnapshots] = useState(false)
 
@@ -145,6 +149,24 @@ export function EnhancedVmRow({ vm, isSelected, onToggleSelect, isFocused = fals
     onError: (error) => toast.error(`Failed to delete: ${error}`),
   })
 
+  const renameMutation = useMutation({
+    mutationFn: (newName: string) => api.renameVm(vm.id, newName),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['vms'] })
+      toast.success(`VM renamed to ${newName}`)
+      setShowRenameDialog(false)
+    },
+    onError: (error) => toast.error(`Failed to rename: ${error}`),
+  })
+
+  const handleRename = () => {
+    if (newName.trim() && newName !== vm.name) {
+      renameMutation.mutate(newName.trim())
+    } else {
+      setShowRenameDialog(false)
+    }
+  }
+
   const handleDelete = () => {
     deleteMutation.mutate({ deleteDisks, deleteSnapshots })
   }
@@ -217,6 +239,16 @@ export function EnhancedVmRow({ vm, isSelected, onToggleSelect, isFocused = fals
                 {vm.state.toUpperCase()}
               </Badge>
               {vm.osType && <span className="text-xs">{vm.osType}</span>}
+              {vm.firmware !== 'bios' && (
+                <Badge variant="outline" className="text-xs px-1.5 py-0 bg-blue-50 dark:bg-blue-950 border-blue-200 dark:border-blue-800">
+                  {vm.firmware === 'uefi-secure' ? '🔒 UEFI' : 'UEFI'}
+                </Badge>
+              )}
+              {vm.tpmEnabled && (
+                <Badge variant="outline" className="text-xs px-1.5 py-0 bg-green-50 dark:bg-green-950 border-green-200 dark:border-green-800">
+                  TPM
+                </Badge>
+              )}
             </div>
           </div>
         </div>
@@ -328,10 +360,19 @@ export function EnhancedVmRow({ vm, isSelected, onToggleSelect, isFocused = fals
                 </>
               )}
               {vm.state === 'stopped' && (
-                <DropdownMenuItem onClick={() => navigate(`/vms/${vm.id}/clone`)}>
-                  <Copy className="mr-2 h-4 w-4" />
-                  Clone VM
-                </DropdownMenuItem>
+                <>
+                  <DropdownMenuItem onClick={() => {
+                    setNewName(vm.name)
+                    setShowRenameDialog(true)
+                  }}>
+                    <Pencil className="mr-2 h-4 w-4" />
+                    Rename VM
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => navigate(`/vms/${vm.id}/clone`)}>
+                    <Copy className="mr-2 h-4 w-4" />
+                    Clone VM
+                  </DropdownMenuItem>
+                </>
               )}
               <DropdownMenuItem onClick={() => navigate(`/vms/${vm.id}`)}>
                 <Info className="mr-2 h-4 w-4" />
@@ -393,6 +434,39 @@ export function EnhancedVmRow({ vm, isSelected, onToggleSelect, isFocused = fals
               disabled={deleteMutation.isPending}
             >
               {deleteMutation.isPending ? 'Deleting...' : 'Delete VM'}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Rename Dialog */}
+      <AlertDialog open={showRenameDialog} onOpenChange={setShowRenameDialog}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Rename Virtual Machine</AlertDialogTitle>
+            <AlertDialogDescription>
+              Enter a new name for this virtual machine. The VM must be stopped to rename.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <div className="py-4">
+            <Input
+              value={newName}
+              onChange={(e) => setNewName(e.target.value)}
+              placeholder="Enter new VM name"
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  handleRename()
+                }
+              }}
+            />
+          </div>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleRename}
+              disabled={renameMutation.isPending || !newName.trim() || newName === vm.name}
+            >
+              {renameMutation.isPending ? 'Renaming...' : 'Rename'}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

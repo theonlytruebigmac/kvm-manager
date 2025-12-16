@@ -40,11 +40,43 @@ export default {
           DEFAULT: "hsl(var(--card))",
           foreground: "hsl(var(--card-foreground))",
         },
+        // Desktop-native color tokens
+        window: {
+          bg: "var(--window-bg)",
+          border: "var(--window-border)",
+        },
+        panel: {
+          bg: "var(--panel-bg)",
+          border: "var(--panel-border)",
+        },
+        toolbar: {
+          bg: "var(--toolbar-bg)",
+          border: "var(--toolbar-border)",
+          hover: "var(--toolbar-hover)",
+        },
+        sidebar: {
+          bg: "var(--sidebar-bg)",
+          border: "var(--sidebar-border)",
+          hover: "var(--sidebar-hover)",
+        },
       },
       borderRadius: {
         lg: "var(--radius)",
         md: "calc(var(--radius) - 2px)",
         sm: "calc(var(--radius) - 4px)",
+      },
+      spacing: {
+        // Desktop-appropriate spacing
+        'toolbar': '0.5rem',  // 8px
+        'panel': '1rem',      // 16px
+        'tight': '0.5rem',    // 8px
+      },
+      fontSize: {
+        // Desktop font sizes
+        'desktop-xs': '11px',
+        'desktop-sm': '12px',
+        'desktop-base': '13px',
+        'desktop-lg': '14px',
       },
     },
   },

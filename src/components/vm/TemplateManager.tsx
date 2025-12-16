@@ -32,6 +32,13 @@ export function TemplateManager({ onCreateFromTemplate }: TemplateManagerProps) 
       network: 'default',
       diskFormat: 'qcow2',
       bootMenu: false,
+      bootOrder: ['cdrom', 'hd'],
+      firmware: 'bios',
+      tpmEnabled: false,
+      chipset: 'pc',
+      cpuSockets: 1,
+      cpuCores: 2,
+      cpuThreads: 1,
     },
   })
 
@@ -95,6 +102,13 @@ export function TemplateManager({ onCreateFromTemplate }: TemplateManagerProps) 
         network: 'default',
         diskFormat: 'qcow2',
         bootMenu: false,
+        bootOrder: ['cdrom', 'hd'],
+        firmware: 'bios',
+        tpmEnabled: false,
+        chipset: 'pc',
+        cpuSockets: 1,
+        cpuCores: 2,
+        cpuThreads: 1,
       },
     })
     setSelectedTemplate(null)

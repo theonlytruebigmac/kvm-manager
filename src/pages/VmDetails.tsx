@@ -13,6 +13,7 @@ import { DiskManager } from '@/components/vm/DiskManager'
 import { GuestInfo } from '@/components/vm/GuestInfo'
 import { VncConsole } from '@/components/vm/VncConsole'
 import { OptimizationSuggestions } from '@/components/vm/OptimizationSuggestions'
+import { BootOrderEditor } from '@/components/vm/BootOrderEditor'
 import { ArrowLeft, Cpu, HardDrive, Network, Settings, Download, Play, Square, Pause, PlayCircle, RotateCcw, Monitor } from 'lucide-react'
 
 export function VmDetails() {
@@ -154,7 +155,7 @@ export function VmDetails() {
 
     const isRunning = vm.state === 'running'
     const isPaused = vm.state === 'paused'
-    const isStopped = vm.state === 'stopped' || vm.state === 'shut off'
+    const isStopped = vm.state === 'stopped' || vm.state === 'shut off' as any
 
     return (
       <div className="flex items-center gap-2 flex-wrap">
@@ -299,6 +300,56 @@ export function VmDetails() {
       />
       <PageContent>
         <div className="space-y-8">
+          {/* Hardware Configuration */}
+          <Card className="border-border/40 shadow-sm">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2 text-lg font-semibold">
+                <Settings className="h-5 w-5 text-muted-foreground" />
+                Hardware Configuration
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+                <div>
+                  <p className="text-sm text-muted-foreground">Firmware</p>
+                  <p className="font-medium">
+                    {vm.firmware === 'bios' && 'BIOS (Legacy)'}
+                    {vm.firmware === 'uefi' && 'UEFI'}
+                    {vm.firmware === 'uefi-secure' && 'UEFI + Secure Boot'}
+                  </p>
+                </div>
+                <div>
+                  <p className="text-sm text-muted-foreground">Chipset</p>
+                  <p className="font-medium">
+                    {vm.chipset === 'q35' ? 'Q35 (PCIe)' : 'i440FX (PC)'}
+                  </p>
+                </div>
+                <div>
+                  <p className="text-sm text-muted-foreground">TPM 2.0</p>
+                  <p className="font-medium">
+                    {vm.tpmEnabled ? (
+                      <Badge variant="default" className="bg-green-600">Enabled</Badge>
+                    ) : (
+                      <Badge variant="secondary">Disabled</Badge>
+                    )}
+                  </p>
+                </div>
+                <div>
+                  <p className="text-sm text-muted-foreground">CPU Sockets</p>
+                  <p className="font-medium">{vm.cpuSockets}</p>
+                </div>
+                <div>
+                  <p className="text-sm text-muted-foreground">Cores per Socket</p>
+                  <p className="font-medium">{vm.cpuCores}</p>
+                </div>
+                <div>
+                  <p className="text-sm text-muted-foreground">Threads per Core</p>
+                  <p className="font-medium">{vm.cpuThreads}</p>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+
           {/* VM Info Cards */}
           <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
             <Card className="border-border/40 shadow-sm">
@@ -309,11 +360,21 @@ export function VmDetails() {
               <CardContent>
                 <div className="text-3xl font-light">{vm.cpuCount}</div>
                 {vmStats && vm.state === 'running' ? (
-                  <p className="text-xs text-muted-foreground mt-1">
-                    {Math.round(vmStats.cpuUsagePercent)}% Usage
-                  </p>
+                  <>
+                    <p className="text-xs text-muted-foreground mt-1">
+                      {Math.round(vmStats.cpuUsagePercent)}% Usage
+                    </p>
+                    <p className="text-xs text-muted-foreground">
+                      {vm.cpuSockets}×{vm.cpuCores}×{vm.cpuThreads} topology
+                    </p>
+                  </>
                 ) : (
-                  <p className="text-xs text-muted-foreground mt-1">vCPUs</p>
+                  <>
+                    <p className="text-xs text-muted-foreground mt-1">vCPUs</p>
+                    <p className="text-xs text-muted-foreground">
+                      {vm.cpuSockets}×{vm.cpuCores}×{vm.cpuThreads} topology
+                    </p>
+                  </>
                 )}
               </CardContent>
             </Card>
@@ -392,6 +453,11 @@ export function VmDetails() {
 
           {/* Disk Manager */}
           <DiskManager vmId={vm.id} vmName={vm.name} disks={vm.disks} />
+
+          {/* Boot Order Editor - Show when VM is stopped */}
+          {vm.state === 'stopped' && (
+            <BootOrderEditor vmId={vm.id} vmName={vm.name} currentBootOrder={[]} />
+          )}
 
           {/* Guest Agent Information - Show for running VMs */}
           {vm.state === 'running' && (

@@ -12,11 +12,16 @@
   "app": {
     "windows": [
       {
+        "label": "main",
         "title": "KVM Manager",
+        "url": "/",
         "width": 1400,
         "height": 900,
         "minWidth": 1200,
-        "minHeight": 700
+        "minHeight": 700,
+        "center": true,
+        "resizable": true,
+        "maximizable": true
       }
     ],
     "security": {

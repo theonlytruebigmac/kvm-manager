@@ -4,9 +4,19 @@
 export type VmState = 'running' | 'stopped' | 'paused' | 'suspended' | 'crashed'
 
 export interface NetworkInterface {
-  mac: string
+  name: string
+  macAddress: string
+  mac: string  // Alias for macAddress for backwards compatibility
   network: string
   ipAddress?: string
+  type?: string  // NIC model type (virtio, e1000, etc.)
+  // Bandwidth/QoS settings (in KB/s for average, peak; KB for burst)
+  inboundAverage?: number
+  inboundPeak?: number
+  inboundBurst?: number
+  outboundAverage?: number
+  outboundPeak?: number
+  outboundBurst?: number
 }
 
 export interface DiskDevice {
@@ -14,6 +24,16 @@ export interface DiskDevice {
   path: string
   diskType: string
   bus: string
+  // I/O tuning options
+  cache?: string  // none, writeback, writethrough, directsync, unsafe
+  io?: string  // native, threads, io_uring
+  discard?: string  // unmap, ignore
+  detectZeroes?: string  // off, on, unmap
+  // I/O throttling
+  readIopsSec?: number
+  writeIopsSec?: number
+  readBytesSec?: number
+  writeBytesSec?: number
 }
 
 export interface VM {
@@ -21,7 +41,9 @@ export interface VM {
   name: string
   state: VmState
   cpuCount: number
+  cpus: number  // Alias for cpuCount
   memoryMb: number
+  maxMemoryMb?: number  // Maximum memory for ballooning
   osType?: string
   osVariant?: string
   diskSizeGb: number
@@ -31,6 +53,33 @@ export interface VM {
   createdAt?: number
   description?: string
   tags: string[]
+  firmware: 'bios' | 'uefi' | 'uefi-secure'
+  tpmEnabled: boolean
+  tpm?: boolean  // Alias for tpmEnabled
+  chipset: 'pc' | 'q35'
+  machine?: string  // Machine type (e.g., 'pc-q35-7.2')
+  arch?: string  // Architecture (e.g., 'x86_64')
+  cpuSockets: number
+  cpuCores: number
+  cpuThreads: number
+  topology?: {
+    sockets: number
+    cores: number
+    threads: number
+  }
+  cdrom?: boolean | string  // CDROM device
+  bootMenu?: boolean
+  bootOrder?: string[]  // Boot device priority order
+  graphics?: {
+    type: string
+  }
+  video?: {
+    model: string
+    heads?: number
+    vram?: number
+    accel3d?: boolean
+  }
+  sound?: boolean
 }
 
 export interface HostInfo {
@@ -53,6 +102,41 @@ export interface ConnectionStatus {
   error: string | null
 }
 
+// Saved Connection Configuration
+export type ConnectionType = 'local' | 'ssh' | 'tls' | 'tcp'
+
+export interface SavedConnection {
+  id: string
+  name: string
+  connectionType: ConnectionType
+  hypervisor: string
+  host?: string
+  username?: string
+  sshPort?: number
+  tlsPort?: number
+  autoConnect: boolean
+  path: string
+}
+
+// Cloud-Init Configuration
+export interface CloudInitNetworkConfig {
+  version: number
+  configYaml?: string
+}
+
+export interface CloudInitConfig {
+  enabled: boolean
+  username?: string
+  password?: string
+  sshAuthorizedKeys: string[]
+  hostname?: string
+  packages: string[]
+  runcmd: string[]
+  customUserData?: string
+  networkConfig?: CloudInitNetworkConfig
+  autoEject: boolean
+}
+
 export interface VmConfig {
   name: string
   cpuCount: number
@@ -64,6 +148,71 @@ export interface VmConfig {
   network: string
   diskFormat: 'qcow2' | 'raw'
   bootMenu: boolean
+  bootOrder: string[]
+  firmware: 'bios' | 'uefi' | 'uefi-secure'
+  tpmEnabled: boolean
+  chipset: 'pc' | 'q35'
+  cpuSockets: number
+  cpuCores: number
+  cpuThreads: number
+  cloudInit?: CloudInitConfig
+  // Installation type: iso, import (existing disk), network (PXE/URL), or manual (no media)
+  installationType?: 'iso' | 'import' | 'network' | 'manual'
+  // Path to existing disk image when installationType is 'import'
+  existingDiskPath?: string
+  // URL for network installation (HTTP/HTTPS/FTP)
+  networkInstallUrl?: string
+  // Direct kernel boot options
+  directKernelBoot?: boolean
+  kernelPath?: string
+  initrdPath?: string
+  kernelArgs?: string
+  dtbPath?: string
+}
+
+export interface KernelBootSettings {
+  enabled: boolean
+  kernelPath?: string
+  initrdPath?: string
+  kernelArgs?: string
+  dtbPath?: string
+}
+
+export interface HugepagesSettings {
+  enabled: boolean
+  /** Page size in KiB (2048 = 2MB, 1048576 = 1GB) */
+  size?: number
+}
+
+export interface HugepageInfo {
+  /** Size in KiB */
+  sizeKb: number
+  /** Total number of hugepages allocated */
+  total: number
+  /** Number of free hugepages */
+  free: number
+  /** Human-readable size (e.g., "2 MB", "1 GB") */
+  sizeHuman: string
+}
+
+export interface CpuModelConfig {
+  /** CPU mode: host-passthrough, host-model, custom */
+  mode: string
+  /** CPU model name (only used when mode is "custom") */
+  model?: string
+}
+
+export interface UsbRedirectionInfo {
+  enabled: boolean
+  channelCount: number
+  hasSpiceGraphics: boolean
+}
+
+export interface EvdevDevice {
+  id: string
+  path: string
+  name: string
+  deviceType: string  // keyboard, mouse, joystick, other
 }
 
 export interface DeleteVmOptions {
@@ -79,7 +228,8 @@ export interface VncInfo {
   host: string
   port: number
   password?: string
-  websocketPort?: number
+  websocket_port?: number
+  graphics_type?: 'vnc' | 'spice'
 }
 
 export interface VmStats {
@@ -94,6 +244,34 @@ export interface VmStats {
   timestamp: number
 }
 
+// Migration types
+export interface MigrationInfo {
+  canLiveMigrate: boolean
+  memoryMb: number
+  diskSizeGb: number
+  estimatedDowntimeSeconds: number
+}
+
+// NUMA configuration types
+export interface HostNumaNode {
+  id: number
+  cpus: number[]
+  memoryMb: number
+}
+
+export interface VmNumaCell {
+  id: number
+  cpus: string
+  memoryMb: number
+  hostNodes?: string
+}
+
+export interface VmNumaConfig {
+  mode: 'strict' | 'preferred' | 'interleave'
+  nodeset?: string
+  cells: VmNumaCell[]
+}
+
 export interface Network {
   name: string
   uuid: string
@@ -101,6 +279,29 @@ export interface Network {
   active: boolean
   autostart: boolean
   ipRange: string | null
+}
+
+export interface DhcpLease {
+  mac: string
+  ipAddress: string
+  hostname: string | null
+  clientId: string | null
+  expiryTime: number
+}
+
+export interface NetworkDetails {
+  name: string
+  uuid: string
+  bridge: string
+  active: boolean
+  autostart: boolean
+  ipRange: string | null
+  forwardMode: string
+  ipAddress: string | null
+  netmask: string | null
+  dhcpStart: string | null
+  dhcpEnd: string | null
+  dhcpLeases: DhcpLease[]
 }
 
 export interface NetworkConfig {
@@ -112,6 +313,40 @@ export interface NetworkConfig {
   dhcpStart: string
   dhcpEnd: string
   autostart: boolean
+}
+
+// Network Filter types
+export interface NwFilter {
+  uuid: string
+  name: string
+  ruleCount: number
+  chain: string | null
+  priority: number | null
+}
+
+export type RuleDirection = 'in' | 'out' | 'inout'
+export type RuleAction = 'accept' | 'drop' | 'reject' | 'return' | 'continue'
+
+export interface NwFilterRule {
+  direction: RuleDirection
+  action: RuleAction
+  priority?: number
+  protocol?: string
+  srcIp?: string
+  srcMac?: string
+  destIp?: string
+  destMac?: string
+  srcPort?: string
+  destPort?: string
+  comment?: string
+}
+
+export interface NwFilterConfig {
+  name: string
+  chain?: string
+  priority?: number
+  rules: NwFilterRule[]
+  filterRefs: string[]
 }
 
 // Storage types
@@ -156,16 +391,68 @@ export interface VolumeConfig {
   name: string
   capacityGb: number
   format: 'qcow2' | 'raw'
+  /** Enable LUKS encryption */
+  encrypted?: boolean
+  /** Encryption passphrase (required if encrypted = true) */
+  passphrase?: string
+}
+
+export interface VolumeEncryptionInfo {
+  encrypted: boolean
+  format?: string  // "luks", "qcow"
+  secretUuid?: string
 }
 
 export interface StoragePoolConfig {
   name: string
-  poolType: 'dir' | 'logical' | 'netfs'
+  poolType: 'dir' | 'logical' | 'netfs' | 'iscsi' | 'gluster' | 'rbd'
   targetPath: string
   autostart: boolean
   sourceDevices?: string[]
   sourceHost?: string
   sourcePath?: string
+  // iSCSI specific
+  iscsiTarget?: string
+  initiatorIqn?: string
+  // Gluster specific
+  glusterVolume?: string
+  // Ceph RBD specific
+  rbdPool?: string
+  cephMonitors?: string[]
+  cephAuthUser?: string
+  cephAuthSecret?: string
+}
+
+// OVA/OVF Import types
+export interface OvfMetadata {
+  name: string
+  description?: string
+  osType?: string
+  cpuCount: number
+  memoryMb: number
+  disks: OvfDisk[]
+  networks: OvfNetwork[]
+}
+
+export interface OvfDisk {
+  id: string
+  fileName: string
+  capacityBytes: number
+  format: string
+}
+
+export interface OvfNetwork {
+  name: string
+  description?: string
+}
+
+export interface OvaImportConfig {
+  sourcePath: string
+  targetPoolPath: string
+  vmName?: string
+  memoryMb?: number
+  cpuCount?: number
+  convertToQcow2?: boolean
 }
 
 // Snapshot types
@@ -352,6 +639,79 @@ export interface RetentionPolicy {
   lastCleanup?: number
 }
 
+// ===== PCI Passthrough Types =====
+
+export type PciDeviceType = 'gpu' | 'audio' | 'usbcontroller' | 'networkadapter' | 'storagecontroller' | 'other'
+
+export interface PciDevice {
+  address: string
+  vendor: string
+  vendorId: string
+  deviceName: string
+  deviceId: string
+  deviceClass: string
+  deviceType: PciDeviceType
+  iommuGroup?: number
+  inUse: boolean
+  attachedToVm?: string
+  driver?: string
+  passthroughSafe: boolean
+}
+
+export interface IommuGroup {
+  groupId: number
+  devices: string[]
+  passthroughSafe: boolean
+}
+
+export interface IommuStatus {
+  enabled: boolean
+  iommuType?: string
+  warning?: string
+}
+
+// ===== USB Device Types =====
+
+export interface UsbDevice {
+  bus: string
+  device: string
+  vendorId: string
+  productId: string
+  vendorName: string
+  productName: string
+  description: string
+  speed?: string
+  deviceClass?: string
+  inUse: boolean
+  usedByVm?: string
+}
+
+// ===== MDEV (vGPU) Types =====
+
+export interface MdevType {
+  name: string
+  description?: string
+  availableInstances: number
+  maxInstances: number
+  deviceApi: string
+  parentDevice: string
+  parentName: string
+}
+
+export interface MdevDevice {
+  uuid: string
+  mdevType: string
+  parentDevice: string
+  inUse: boolean
+  usedByVm?: string
+}
+
+export interface MdevStatus {
+  supported: boolean
+  message: string
+  supportedVendors: string[]
+}
+
 // ===== Guest Agent Types =====
 
 export interface GuestAgentStatus {
@@ -410,4 +770,71 @@ export interface GuestCommandResult {
   stdout: string
   stderr: string
   executionTimeMs: number
+}
+
+// Extended Guest Agent Types for Performance Monitoring
+
+export interface CpuStats {
+  cpu: number
+  user: number
+  system: number
+  idle: number
+  iowait: number
+  steal: number
+  nice: number
+  irq: number
+  softirq: number
+  guest: number
+}
+
+export interface GuestCpuStats {
+  cpus: CpuStats[]
+  totalUser: number
+  totalSystem: number
+  totalIdle: number
+  usagePercent: number
+}
+
+export interface DiskStats {
+  name: string
+  readBytes: number
+  writeBytes: number
+  readIos: number
+  writeIos: number
+}
+
+export interface GuestDiskStats {
+  disks: DiskStats[]
+}
+
+export interface GuestUser {
+  username: string
+  loginTime: number
+}
+
+export interface GuestTimezone {
+  zone: string
+  offset: number
+}
+
+export interface GuestFullInfo {
+  agentVersion: string
+  osName: string
+  osVersion: string
+  kernelVersion: string
+  hostname: string
+  architecture: string
+  timezone?: GuestTimezone
+  users: GuestUser[]
+  cpuCount: number
+  filesystems: GuestFilesystemInfo[]
+  networkInterfaces: GuestNetworkInterface[]
+}
+
+// Serial Console types
+export interface SerialConsoleInfo {
+  vmId: string
+  vmName: string
+  ptyPath: string
+  active: boolean
 }

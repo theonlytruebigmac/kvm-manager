@@ -4,6 +4,7 @@
 
 @layer base {
   :root {
+    /* Shadcn/UI base tokens */
     --background: 0 0% 100%;
     --foreground: 222.2 84% 4.9%;
     --card: 0 0% 99%;
@@ -23,29 +24,82 @@
     --border: 214.3 31.8% 94%;
     --input: 214.3 31.8% 91.4%;
     --ring: 221.2 83.2% 53.3%;
-    --radius: 0.75rem;
+    --radius: 0.5rem;
+
+    /* Desktop-native color tokens - Light Theme */
+    --window-bg: #f5f5f5;
+    --panel-bg: #ffffff;
+    --toolbar-bg: #fafafa;
+    --sidebar-bg: #f0f0f0;
+
+    --window-border: #d0d0d0;
+    --panel-border: #e0e0e0;
+    --toolbar-border: #d0d0d0;
+    --sidebar-border: #d0d0d0;
+
+    --toolbar-hover: #e8e8e8;
+    --sidebar-hover: #e5e5e5;
+
+    --text-primary: #2c2c2c;
+    --text-secondary: #666666;
+    --text-disabled: #999999;
+
+    --accent-blue: #0066cc;
+    --accent-green: #00aa00;
+    --accent-orange: #cc6600;
+    --accent-red: #cc0000;
+
+    --selected-bg: #e3f2fd;
+    --hover-bg: #f5f5f5;
   }
 
   .dark {
-    --background: 222.2 84% 4.9%;
-    --foreground: 210 40% 98%;
-    --card: 222.2 84% 4.9%;
-    --card-foreground: 210 40% 98%;
-    --popover: 222.2 84% 4.9%;
-    --popover-foreground: 210 40% 98%;
-    --primary: 217.2 91.2% 59.8%;
-    --primary-foreground: 222.2 47.4% 11.2%;
-    --secondary: 217.2 32.6% 17.5%;
-    --secondary-foreground: 210 40% 98%;
-    --muted: 217.2 32.6% 17.5%;
-    --muted-foreground: 215 20.2% 65.1%;
-    --accent: 217.2 32.6% 17.5%;
-    --accent-foreground: 210 40% 98%;
+    /* Shadcn/UI dark tokens - Neutral gray palette */
+    --background: 0 0% 9%;
+    --foreground: 0 0% 95%;
+    --card: 0 0% 11%;
+    --card-foreground: 0 0% 95%;
+    --popover: 0 0% 11%;
+    --popover-foreground: 0 0% 95%;
+    --primary: 210 100% 50%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 0 0% 18%;
+    --secondary-foreground: 0 0% 95%;
+    --muted: 0 0% 15%;
+    --muted-foreground: 0 0% 65%;
+    --accent: 0 0% 18%;
+    --accent-foreground: 0 0% 95%;
     --destructive: 0 62.8% 30.6%;
-    --destructive-foreground: 210 40% 98%;
-    --border: 217.2 32.6% 17.5%;
-    --input: 217.2 32.6% 17.5%;
-    --ring: 224.3 76.3% 48%;
+    --destructive-foreground: 0 0% 95%;
+    --border: 0 0% 20%;
+    --input: 0 0% 18%;
+    --ring: 210 100% 50%;
+
+    /* Desktop-native color tokens - Dark Theme (Neutral) */
+    --window-bg: #171717;
+    --panel-bg: #1c1c1c;
+    --toolbar-bg: #212121;
+    --sidebar-bg: #1a1a1a;
+
+    --window-border: #2e2e2e;
+    --panel-border: #2a2a2a;
+    --toolbar-border: #2e2e2e;
+    --sidebar-border: #2e2e2e;
+
+    --toolbar-hover: #2a2a2a;
+    --sidebar-hover: #262626;
+
+    --text-primary: #f0f0f0;
+    --text-secondary: #a0a0a0;
+    --text-disabled: #606060;
+
+    --accent-blue: #3b82f6;
+    --accent-green: #22c55e;
+    --accent-orange: #f59e0b;
+    --accent-red: #ef4444;
+
+    --selected-bg: #1e3a5f;
+    --hover-bg: #262626;
   }
 
   * {
@@ -58,6 +112,9 @@
 
   body {
     @apply bg-background text-foreground antialiased;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Ubuntu', 'Roboto', 'Helvetica Neue', Arial, sans-serif;
+    font-size: 13px;
+    line-height: 1.4;
   }
 }
 

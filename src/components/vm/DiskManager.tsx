@@ -229,7 +229,7 @@ export function DiskManager({ vmId, vmName, disks = [] }: DiskManagerProps) {
               <Select value={busType} onValueChange={(v) => {
                 setBusType(v)
                 // Update device target prefix when bus type changes
-                const prefix = v === 'virtio' ? 'vd' : v === 'scsi' ? 'sd' : 'hd'
+                const prefix = v === 'virtio' ? 'vd' : v === 'scsi' ? 'sd' : v === 'nvme' ? 'nvme0n' : 'hd'
                 const suffix = deviceTarget.slice(-1)
                 setDeviceTarget(`${prefix}${suffix}`)
               }}>
@@ -238,6 +238,7 @@ export function DiskManager({ vmId, vmName, disks = [] }: DiskManagerProps) {
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="virtio">VirtIO (Recommended)</SelectItem>
+                  <SelectItem value="nvme">NVMe (High Performance)</SelectItem>
                   <SelectItem value="scsi">SCSI</SelectItem>
                   <SelectItem value="sata">SATA</SelectItem>
                   <SelectItem value="ide">IDE</SelectItem>

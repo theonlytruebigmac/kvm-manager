@@ -75,7 +75,7 @@ pub async fn get_connection_status(state: State<'_, AppState>) -> Result<Connect
     })
 }
 
-/// Get VNC display info for a VM
+/// Get graphics display info for a VM (VNC or SPICE, starts websockify proxy if needed)
 #[tauri::command]
 pub async fn get_vnc_info(state: State<'_, AppState>, vm_id: String) -> Result<VncInfo, String> {
     use virt::domain::Domain;
@@ -98,31 +98,56 @@ pub async fn get_vnc_info(state: State<'_, AppState>, vm_id: String) -> Result<V
     let xml = domain.get_xml_desc(0)
         .map_err(|e| format!("Failed to get VM XML: {}", e))?;
 
-    // Parse XML to extract VNC port
-    // Look for: <graphics type='vnc' port='5900' ... />
-    let port = if let Some(start) = xml.find("<graphics type='vnc'") {
+    // Try to find VNC first, then SPICE
+    let (graphics_port, graphics_type) = if let Some(start) = xml.find("<graphics type='vnc'") {
+        // Parse VNC port
         let graphics_section = &xml[start..];
         if let Some(port_start) = graphics_section.find("port='") {
             let port_section = &graphics_section[port_start + 6..];
             if let Some(port_end) = port_section.find("'") {
                 let port_str = &port_section[..port_end];
-                port_str.parse::<u16>()
-                    .map_err(|_| "Failed to parse VNC port".to_string())?
+                let port = port_str.parse::<u16>()
+                    .map_err(|_| "Failed to parse VNC port".to_string())?;
+                (port, "vnc")
             } else {
-                return Err("VNC not configured for this VM".to_string());
+                return Err("VNC port not found in configuration".to_string());
             }
         } else {
-            return Err("VNC not configured for this VM".to_string());
+            return Err("VNC port not configured".to_string());
+        }
+    } else if let Some(start) = xml.find("<graphics type='spice'") {
+        // Parse SPICE port
+        let graphics_section = &xml[start..];
+        if let Some(port_start) = graphics_section.find("port='") {
+            let port_section = &graphics_section[port_start + 6..];
+            if let Some(port_end) = port_section.find("'") {
+                let port_str = &port_section[..port_end];
+                let port = port_str.parse::<u16>()
+                    .map_err(|_| "Failed to parse SPICE port".to_string())?;
+                (port, "spice")
+            } else {
+                return Err("SPICE port not found in configuration".to_string());
+            }
+        } else {
+            return Err("SPICE port not configured".to_string());
         }
     } else {
-        return Err("VNC not configured for this VM".to_string());
+        return Err("No graphics device (VNC or SPICE) configured for this VM".to_string());
     };
+
+    // Start WebSocket proxy for this VM (native Rust implementation)
+    let ws_port = state.ws_proxy.start_proxy(&vm_id, graphics_port).await
+        .map_err(|e| e.to_string())?;
+
+    tracing::info!("{} info for VM {}: port {}, WebSocket port {}",
+        graphics_type.to_uppercase(), vm_id, graphics_port, ws_port);
 
     Ok(VncInfo {
         host: "127.0.0.1".to_string(),
-        port,
+        port: ws_port,  // Return WebSocket port, not raw graphics port
         password: None,
-        websocket_port: None,
+        websocket_port: Some(ws_port),
+        graphics_type: Some(graphics_type.to_string()),
     })
 }
 
@@ -170,4 +195,13 @@ pub async fn open_vnc_console(state: State<'_, AppState>, vm_id: String) -> Resu
         "No VNC viewer found. Please install virt-viewer or remote-viewer. Last error: {}",
         last_error
     ))
+}
+
+/// Stop the WebSocket proxy for a VM (called when console window closes)
+#[tauri::command]
+pub async fn stop_vnc_proxy(state: State<'_, AppState>, vm_id: String) -> Result<(), String> {
+    tracing::debug!("stop_vnc_proxy command called for VM: {}", vm_id);
+
+    state.ws_proxy.stop_proxy(&vm_id).await
+        .map_err(|e| e.to_string())
 }

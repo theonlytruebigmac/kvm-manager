@@ -1,0 +1,25 @@
+[Unit]
+Description=KVM Manager Guest Agent
+Documentation=https://github.com/theonlytruebigmac/kvm-manager
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/kvmmanager-agent
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+# Security settings
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/log/kvmmanager-agent
+
+# Configuration
+Environment="KVMMANAGER_AGENT_CONFIG=/etc/kvmmanager-agent/config.json"
+
+[Install]
+WantedBy=multi-user.target

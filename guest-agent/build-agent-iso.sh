@@ -16,20 +16,77 @@ rm -rf "$ISO_DIR"
 mkdir -p "$ISO_DIR"
 
 # Build the agent
-echo "Building guest agent..."
+echo "Building guest agent for Linux..."
 cd "$SCRIPT_DIR"
 cargo build --release --bin kvmmanager-agent
 
-# Copy agent binary
-echo "Copying agent binary..."
-mkdir -p "$ISO_DIR/bin"
-cp target/release/kvmmanager-agent "$ISO_DIR/bin/"
+# Check if we can build Windows version
+WINDOWS_BINARY=""
+if rustup target list --installed | grep -q "x86_64-pc-windows-gnu"; then
+    echo "Building guest agent for Windows..."
+    cargo build --release --bin kvmmanager-agent --target x86_64-pc-windows-gnu
+    WINDOWS_BINARY="target/x86_64-pc-windows-gnu/release/kvmmanager-agent.exe"
+else
+    echo "Note: Windows cross-compilation not available."
+    echo "  To enable: rustup target add x86_64-pc-windows-gnu"
+    echo "  And install: sudo apt-get install mingw-w64"
+    echo ""
+fi
 
-# Create install scripts for different distros
-echo "Creating installation scripts..."
+# Copy agent binary and packaging files
+echo "Copying agent binary and installation files..."
+mkdir -p "$ISO_DIR"
+cp target/release/kvmmanager-agent "$ISO_DIR/"
+cp packaging/config.json "$ISO_DIR/"
+cp packaging/kvmmanager-agent.service "$ISO_DIR/"
+cp packaging/install-*.sh "$ISO_DIR/"
+chmod +x "$ISO_DIR"/install-*.sh
 
-# Alpine Linux installer
-cat > "$ISO_DIR/install-alpine.sh" << 'EOF'
+# Copy Windows binary if available
+if [ -n "$WINDOWS_BINARY" ] && [ -f "$WINDOWS_BINARY" ]; then
+    echo "Including Windows binary in ISO..."
+    cp "$WINDOWS_BINARY" "$ISO_DIR/kvmmanager-agent.exe"
+fi
+
+# Create README for the ISO
+cat > "$ISO_DIR/README.txt" << 'EOF'
+KVM Manager Guest Agent Installation
+
+This ISO contains the KVM Manager guest agent and installation scripts
+for various Linux distributions.
+
+INSTALLATION:
+1. Mount this ISO in your VM
+2. Run the appropriate installation script for your distribution:
+
+   Debian/Ubuntu:    sudo bash /media/cdrom/install-debian.sh
+   RHEL/Fedora:      sudo bash /media/cdrom/install-rhel.sh
+   Alpine Linux:     sudo sh /media/cdrom/install-alpine.sh
+
+VERIFICATION:
+After installation, verify the agent is running:
+   systemctl status kvmmanager-agent     (systemd-based systems)
+   rc-service kvmmanager-agent status    (Alpine Linux)
+
+CONFIGURATION:
+Edit /etc/kvmmanager-agent/config.json to customize:
+- Allowed file read/write paths
+- Command whitelist
+- Timeout settings
+
+LOGS:
+View logs with:
+   journalctl -u kvmmanager-agent -f    (systemd-based systems)
+   tail -f /var/log/kvmmanager-agent/agent.log  (Alpine Linux)
+
+For more information, visit:
+https://github.com/theonlytruebigmac/kvm-manager
+
+EOF
+
+# Note: Actual installation scripts are already copied from packaging/
+echo "Creating Alpine installer..."
+cat > "$ISO_DIR/install-alpine-generated.sh" << 'EOF'
 #!/bin/sh
 # KVM Manager Guest Agent installer for Alpine Linux
 set -e
@@ -185,10 +242,13 @@ KVM Manager Guest Agent Installation ISO
 =========================================
 
 This ISO contains the KVM Manager Guest Agent and installation scripts
-for various Linux distributions.
+for various operating systems.
 
 Installation Instructions:
 --------------------------
+
+LINUX:
+------
 
 1. This ISO should be automatically mounted by your VM as /dev/cdrom
 2. Mount it if not already mounted:
@@ -212,30 +272,122 @@ Installation Instructions:
    cd /media/cdrom
    sudo bash install-rhel.sh
 
-4. After installation, the agent will start automatically
+WINDOWS:
+--------
 
-5. You can now eject the ISO from KVM Manager
+1. The ISO should auto-mount as drive D: (or similar)
+2. Open PowerShell as Administrator
+3. Run: powershell -ExecutionPolicy Bypass -File D:\install-windows.ps1
+
+   Or for manual installation:
+   - Copy kvmmanager-agent.exe to C:\Program Files\KVMManager Agent\
+   - Copy config.json to the same directory
+   - Run: sc create kvmmanager-agent binPath="C:\Program Files\KVMManager Agent\kvmmanager-agent.exe"
+   - Run: sc start kvmmanager-agent
 
 Verification:
 -------------
 After installation, verify the agent is running:
 
-Alpine:       rc-service kvmmanager-agent status
-Others:       systemctl status kvmmanager-agent
+Linux (Alpine):      rc-service kvmmanager-agent status
+Linux (Others):      systemctl status kvmmanager-agent
+Windows:             sc query kvmmanager-agent
 
-The agent communicates through the virtio-serial device (/dev/vport0p1).
-If you see errors about this device, ensure your VM has a virtio-serial
-channel configured in KVM Manager.
+The agent communicates through the virtio-serial device.
+- Linux: /dev/vport0p1
+- Windows: \\.\COM3 (or similar virtio-serial port)
 
 For more information, visit: https://github.com/yourusername/kvm-manager
 EOF
 
-# Create autorun for Windows (future)
+# Create Windows installer script
+cat > "$ISO_DIR/install-windows.ps1" << 'EOFPS'
+# KVM Manager Guest Agent Installer for Windows
+# Run as Administrator: powershell -ExecutionPolicy Bypass -File D:\install-windows.ps1
+
+#Requires -RunAsAdministrator
+
+$ErrorActionPreference = "Stop"
+
+Write-Host "Installing KVM Manager Guest Agent for Windows..." -ForegroundColor Cyan
+Write-Host ""
+
+# Configuration
+$InstallDir = "$env:ProgramFiles\KVMManager Agent"
+$ServiceName = "kvmmanager-agent"
+$IsoDrive = (Get-Volume | Where-Object { $_.FileSystemLabel -eq "KVMMANAGER_AGENT" }).DriveLetter
+if (-not $IsoDrive) {
+    $IsoDrive = "D"
+}
+$SourcePath = "${IsoDrive}:\"
+
+try {
+    # Create installation directory
+    Write-Host "Creating installation directory..." -ForegroundColor Yellow
+    if (-not (Test-Path $InstallDir)) {
+        New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
+    }
+
+    # Copy agent binary
+    Write-Host "Copying agent binary..." -ForegroundColor Yellow
+    Copy-Item "${SourcePath}kvmmanager-agent.exe" -Destination "$InstallDir\kvmmanager-agent.exe" -Force
+
+    # Copy config file
+    Write-Host "Copying configuration..." -ForegroundColor Yellow
+    Copy-Item "${SourcePath}config.json" -Destination "$InstallDir\config.json" -Force
+
+    # Stop existing service if running
+    $existingService = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+    if ($existingService) {
+        Write-Host "Stopping existing service..." -ForegroundColor Yellow
+        Stop-Service -Name $ServiceName -Force -ErrorAction SilentlyContinue
+        sc.exe delete $ServiceName | Out-Null
+        Start-Sleep -Seconds 2
+    }
+
+    # Create Windows service
+    Write-Host "Creating Windows service..." -ForegroundColor Yellow
+    $binPath = "`"$InstallDir\kvmmanager-agent.exe`""
+    sc.exe create $ServiceName binPath= $binPath start= auto displayname= "KVM Manager Guest Agent" | Out-Null
+    sc.exe description $ServiceName "Guest agent for KVM Manager - provides VM information and management capabilities" | Out-Null
+
+    # Start the service
+    Write-Host "Starting service..." -ForegroundColor Yellow
+    Start-Service -Name $ServiceName
+
+    # Verify service is running
+    $service = Get-Service -Name $ServiceName
+    if ($service.Status -eq "Running") {
+        Write-Host ""
+        Write-Host "SUCCESS: KVM Manager Guest Agent installed and running!" -ForegroundColor Green
+        Write-Host ""
+        Write-Host "Installation path: $InstallDir" -ForegroundColor Gray
+        Write-Host "Service name: $ServiceName" -ForegroundColor Gray
+        Write-Host ""
+        Write-Host "Commands:" -ForegroundColor Cyan
+        Write-Host "  Check status:  sc query $ServiceName" -ForegroundColor Gray
+        Write-Host "  Stop service:  Stop-Service $ServiceName" -ForegroundColor Gray
+        Write-Host "  Start service: Start-Service $ServiceName" -ForegroundColor Gray
+    } else {
+        throw "Service failed to start. Status: $($service.Status)"
+    }
+}
+catch {
+    Write-Host ""
+    Write-Host "ERROR: Installation failed!" -ForegroundColor Red
+    Write-Host $_.Exception.Message -ForegroundColor Red
+    Write-Host ""
+    exit 1
+}
+EOFPS
+
+# Create autorun for Windows
 cat > "$ISO_DIR/autorun.inf" << 'EOF'
 [autorun]
-open=setup.exe
-icon=setup.exe,0
+open=install-windows.ps1
+icon=kvmmanager-agent.exe,0
 label=KVM Manager Guest Agent
+action=Install KVM Manager Guest Agent
 EOF
 
 # Make scripts executable

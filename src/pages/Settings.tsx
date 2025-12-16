@@ -8,7 +8,8 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Badge } from '@/components/ui/badge'
 import { toast } from 'sonner'
-import { Database, Play, Settings as SettingsIcon } from 'lucide-react'
+import { Database, Play, Settings as SettingsIcon, RotateCcw } from 'lucide-react'
+import { clearAllWindowStates } from '@/hooks/useWindowState'
 
 export default function Settings() {
   const queryClient = useQueryClient()
@@ -58,6 +59,15 @@ export default function Settings() {
   const handleExecuteCleanup = () => {
     if (confirm('Are you sure you want to execute cleanup now? This will delete old metrics according to the retention policy.')) {
       cleanupMutation.mutate()
+    }
+  }
+
+  const handleResetWindows = async () => {
+    try {
+      await clearAllWindowStates()
+      toast.success('All window positions have been reset')
+    } catch (error) {
+      toast.error('Failed to reset window positions')
     }
   }
 
@@ -229,6 +239,37 @@ export default function Settings() {
               <li>
                 The policy is stored at: ~/.config/kvm-manager/retention_policy.json
               </li>
+            </ul>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Additional Settings Placeholder */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Window Management</CardTitle>
+          <CardDescription>Configure window behavior and positions</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <h3 className="font-medium">Reset Window Positions</h3>
+              <p className="text-sm text-muted-foreground">
+                Clear all saved window positions and sizes. Windows will open at default locations.
+              </p>
+            </div>
+            <Button variant="outline" onClick={handleResetWindows}>
+              <RotateCcw className="mr-2 h-4 w-4" />
+              Reset Windows
+            </Button>
+          </div>
+
+          <div className="bg-muted/50 border border-border rounded-lg p-4 text-sm">
+            <div className="font-medium mb-2 text-foreground">About Window State:</div>
+            <ul className="list-disc list-inside space-y-1.5 text-muted-foreground">
+              <li>Window positions and sizes are automatically saved</li>
+              <li>Each window remembers its last position when reopened</li>
+              <li>Use this reset if windows appear off-screen or in wrong positions</li>
             </ul>
           </div>
         </CardContent>

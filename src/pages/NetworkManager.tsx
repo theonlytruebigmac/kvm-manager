@@ -19,23 +19,41 @@ import {
   AlertDialogTrigger,
 } from '@/components/ui/alert-dialog'
 import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
+import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/components/ui/table'
 import { Badge } from '@/components/ui/badge'
 import { Checkbox } from '@/components/ui/checkbox'
+import { Switch } from '@/components/ui/switch'
 import { PortForwardingManager } from '@/components/network/PortForwardingManager'
-import { Network, Plus, Play, Square, Trash2, Wifi } from 'lucide-react'
+import { Network, Plus, Play, Square, Trash2, Wifi, Info, Users, RefreshCw } from 'lucide-react'
 import type { Network as NetworkType, NetworkConfig } from '@/lib/types'
 
 export function NetworkManager() {
   const queryClient = useQueryClient()
   const [showCreateDialog, setShowCreateDialog] = useState(false)
   const [showDeleteDialog, setShowDeleteDialog] = useState(false)
+  const [showDetailsDialog, setShowDetailsDialog] = useState(false)
   const [selectedNetwork, setSelectedNetwork] = useState<NetworkType | null>(null)
+  const [detailsNetwork, setDetailsNetwork] = useState<string | null>(null)
 
   const [networkName, setNetworkName] = useState('')
   const [bridgeName, setBridgeName] = useState('virbr')
@@ -51,6 +69,14 @@ export function NetworkManager() {
     queryKey: ['networks'],
     queryFn: api.getNetworks,
     refetchInterval: 10000,
+  })
+
+  // Query network details when details dialog is open
+  const { data: networkDetails, isLoading: detailsLoading, refetch: refetchDetails } = useQuery({
+    queryKey: ['networkDetails', detailsNetwork],
+    queryFn: () => detailsNetwork ? api.getNetworkDetails(detailsNetwork) : null,
+    enabled: !!detailsNetwork && showDetailsDialog,
+    refetchInterval: 5000,
   })
 
   // Create network mutation
@@ -102,6 +128,20 @@ export function NetworkManager() {
     },
     onError: (error) => {
       toast.error(`Failed to stop network: ${error}`)
+    },
+  })
+
+  // Set autostart mutation
+  const autostartMutation = useMutation({
+    mutationFn: ({ networkName, autostart }: { networkName: string; autostart: boolean }) =>
+      api.setNetworkAutostart(networkName, autostart),
+    onSuccess: (_, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['networks'] })
+      queryClient.invalidateQueries({ queryKey: ['networkDetails', variables.networkName] })
+      toast.success(`Autostart ${variables.autostart ? 'enabled' : 'disabled'}`)
+    },
+    onError: (error) => {
+      toast.error(`Failed to update autostart: ${error}`)
     },
   })
 
@@ -158,6 +198,7 @@ export function NetworkManager() {
                     value={networkName}
                     onChange={(e) => setNetworkName(e.target.value)}
                     placeholder="e.g., isolated-net"
+                    autoFocus
                   />
                 </div>
                 <div className="space-y-2">
@@ -293,7 +334,18 @@ export function NetworkManager() {
           </Card>
         ) : (
           networks.map((network) => (
-            <Card key={network.uuid} className="border-border/40 shadow-sm">
+            <Card
+              key={network.uuid}
+              className="border-border/40 shadow-sm cursor-pointer hover:shadow-md transition-shadow"
+              onDoubleClick={() => {
+                // Double-click to toggle network state
+                if (network.active) {
+                  stopMutation.mutate(network.name)
+                } else {
+                  startMutation.mutate(network.name)
+                }
+              }}
+            >
               <CardHeader>
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-3">
@@ -354,6 +406,17 @@ export function NetworkManager() {
                       size="sm"
                       variant="outline"
                       onClick={() => {
+                        setDetailsNetwork(network.name)
+                        setShowDetailsDialog(true)
+                      }}
+                    >
+                      <Info className="mr-2 h-4 w-4" />
+                      Details
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => {
                         setSelectedNetwork(network)
                         setShowDeleteDialog(true)
                       }}
@@ -395,6 +458,154 @@ export function NetworkManager() {
 
       {/* Port Forwarding Manager */}
       <PortForwardingManager />
+
+      {/* Network Details Dialog */}
+      <Dialog open={showDetailsDialog} onOpenChange={(open) => {
+        setShowDetailsDialog(open)
+        if (!open) setDetailsNetwork(null)
+      }}>
+        <DialogContent className="max-w-3xl max-h-[85vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Network className="h-5 w-5" />
+              Network Details: {detailsNetwork}
+            </DialogTitle>
+            <DialogDescription>
+              View network configuration and DHCP leases
+            </DialogDescription>
+          </DialogHeader>
+
+          {detailsLoading ? (
+            <div className="flex items-center justify-center py-8">
+              <RefreshCw className="h-6 w-6 animate-spin text-muted-foreground" />
+            </div>
+          ) : networkDetails ? (
+            <div className="space-y-6">
+              {/* Network Configuration */}
+              <div className="space-y-3">
+                <h3 className="text-sm font-medium">Configuration</h3>
+                <div className="grid grid-cols-2 md:grid-cols-3 gap-4 text-sm">
+                  <div>
+                    <p className="text-muted-foreground">Status</p>
+                    <Badge variant={networkDetails.active ? 'default' : 'secondary'}>
+                      {networkDetails.active ? 'Active' : 'Inactive'}
+                    </Badge>
+                  </div>
+                  <div>
+                    <p className="text-muted-foreground">Bridge</p>
+                    <p className="font-mono">{networkDetails.bridge}</p>
+                  </div>
+                  <div>
+                    <p className="text-muted-foreground">Forward Mode</p>
+                    <p className="font-medium">{networkDetails.forwardMode || 'N/A'}</p>
+                  </div>
+                  <div>
+                    <p className="text-muted-foreground">IP Address</p>
+                    <p className="font-mono">{networkDetails.ipAddress || 'N/A'}</p>
+                  </div>
+                  <div>
+                    <p className="text-muted-foreground">Netmask</p>
+                    <p className="font-mono">{networkDetails.netmask || 'N/A'}</p>
+                  </div>
+                  <div>
+                    <p className="text-muted-foreground">UUID</p>
+                    <p className="font-mono text-xs">{networkDetails.uuid}</p>
+                  </div>
+                </div>
+              </div>
+
+              {/* DHCP Configuration */}
+              {(networkDetails.dhcpStart || networkDetails.dhcpEnd) && (
+                <div className="space-y-3">
+                  <h3 className="text-sm font-medium">DHCP Range</h3>
+                  <div className="grid grid-cols-2 gap-4 text-sm">
+                    <div>
+                      <p className="text-muted-foreground">Start</p>
+                      <p className="font-mono">{networkDetails.dhcpStart || 'N/A'}</p>
+                    </div>
+                    <div>
+                      <p className="text-muted-foreground">End</p>
+                      <p className="font-mono">{networkDetails.dhcpEnd || 'N/A'}</p>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Autostart Toggle */}
+              <div className="flex items-center justify-between py-2 border-y">
+                <div>
+                  <p className="font-medium">Autostart</p>
+                  <p className="text-sm text-muted-foreground">
+                    Start this network automatically when the host boots
+                  </p>
+                </div>
+                <Switch
+                  checked={networkDetails.autostart}
+                  onCheckedChange={(checked) => {
+                    if (detailsNetwork) {
+                      autostartMutation.mutate({ networkName: detailsNetwork, autostart: checked })
+                    }
+                  }}
+                  disabled={autostartMutation.isPending}
+                />
+              </div>
+
+              {/* DHCP Leases */}
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-sm font-medium flex items-center gap-2">
+                    <Users className="h-4 w-4" />
+                    DHCP Leases ({networkDetails.dhcpLeases.length})
+                  </h3>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => refetchDetails()}
+                  >
+                    <RefreshCw className="h-4 w-4" />
+                  </Button>
+                </div>
+
+                {networkDetails.dhcpLeases.length === 0 ? (
+                  <div className="text-center py-6 text-muted-foreground text-sm">
+                    No active DHCP leases
+                  </div>
+                ) : (
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>IP Address</TableHead>
+                        <TableHead>MAC Address</TableHead>
+                        <TableHead>Hostname</TableHead>
+                        <TableHead>Expiry</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {networkDetails.dhcpLeases.map((lease, idx) => (
+                        <TableRow key={`${lease.mac}-${idx}`}>
+                          <TableCell className="font-mono">{lease.ipAddress}</TableCell>
+                          <TableCell className="font-mono text-xs">{lease.mac}</TableCell>
+                          <TableCell>{lease.hostname || '-'}</TableCell>
+                          <TableCell>
+                            {lease.expiryTime > 0
+                              ? new Date(lease.expiryTime * 1000).toLocaleString()
+                              : 'Permanent'
+                            }
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                )}
+              </div>
+            </div>
+          ) : (
+            <div className="text-center py-8 text-muted-foreground">
+              Failed to load network details
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
         </div>
       </PageContent>
     </PageContainer>

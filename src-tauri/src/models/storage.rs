@@ -64,6 +64,21 @@ pub struct VolumeConfig {
     pub capacity_gb: u64,
     #[serde(default = "default_volume_format")]
     pub format: String,
+    /// Enable LUKS encryption for this volume
+    #[serde(default)]
+    pub encrypted: bool,
+    /// Encryption passphrase (required if encrypted = true)
+    #[serde(default)]
+    pub passphrase: Option<String>,
+}
+
+/// Encryption info for a volume
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct VolumeEncryptionInfo {
+    pub encrypted: bool,
+    pub format: Option<String>,  // "luks", "qcow"
+    pub secret_uuid: Option<String>,
 }
 
 fn default_volume_format() -> String {
@@ -75,16 +90,33 @@ fn default_volume_format() -> String {
 #[serde(rename_all = "camelCase")]
 pub struct StoragePoolConfig {
     pub name: String,
-    pub pool_type: String, // "dir", "logical", "netfs", etc.
+    pub pool_type: String, // "dir", "logical", "netfs", "iscsi", "gluster", "rbd", etc.
     pub target_path: String,
     #[serde(default)]
     pub autostart: bool,
     // For logical pools
     #[serde(default)]
     pub source_devices: Vec<String>,
-    // For netfs pools
+    // For netfs/iSCSI/gluster pools
     #[serde(default)]
     pub source_host: Option<String>,
     #[serde(default)]
     pub source_path: Option<String>,
+    // For iSCSI pools
+    #[serde(default)]
+    pub iscsi_target: Option<String>,
+    #[serde(default)]
+    pub initiator_iqn: Option<String>,
+    // For Gluster pools
+    #[serde(default)]
+    pub gluster_volume: Option<String>,
+    // For RBD (Ceph) pools
+    #[serde(default)]
+    pub rbd_pool: Option<String>,
+    #[serde(default)]
+    pub ceph_monitors: Vec<String>,
+    #[serde(default)]
+    pub ceph_auth_user: Option<String>,
+    #[serde(default)]
+    pub ceph_auth_secret: Option<String>,
 }

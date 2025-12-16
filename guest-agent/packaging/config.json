@@ -1,0 +1,27 @@
+{
+  "allowed_read_paths": [
+    "/etc",
+    "/proc",
+    "/sys",
+    "/var/log",
+    "/tmp"
+  ],
+  "allowed_write_paths": [
+    "/tmp",
+    "/var/tmp"
+  ],
+  "command_whitelist_enabled": false,
+  "command_whitelist": [
+    "ls",
+    "cat",
+    "grep",
+    "find",
+    "ps",
+    "df",
+    "free",
+    "uptime"
+  ],
+  "max_file_size_bytes": 10485760,
+  "command_timeout_seconds": 30,
+  "log_level": "info"
+}

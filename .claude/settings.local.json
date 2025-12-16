@@ -13,7 +13,16 @@
       "Bash(cat:*)",
       "Bash(cargo check:*)",
       "Bash(npx tsc:*)",
-      "Bash(pkill:*)"
+      "Bash(pkill:*)",
+      "Bash(ls:*)",
+      "Bash(systemctl status:*)",
+      "Bash(sudo cp:*)",
+      "Bash(virsh list:*)",
+      "Bash(chmod:*)",
+      "WebSearch",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:virt-manager.org)",
+      "Bash(sudo ls:*)"
     ],
     "deny": [],
     "ask": []

@@ -18,6 +18,9 @@ pub enum AppError {
     #[error("Network state error: {0}")]
     InvalidNetworkState(String),
 
+    #[error("Not found: {0}")]
+    NotFound(String),
+
     #[error("libvirtd is not running")]
     LibvirtdNotRunning,
 

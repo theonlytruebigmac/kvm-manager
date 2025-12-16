@@ -1,102 +1,122 @@
-import { ReactNode, useState } from 'react'
-import { NavLink } from 'react-router-dom'
-import { Server, LayoutDashboard, Box, Database, Network, Lightbulb, FileText, Clock, Bell, HardDrive, Settings, ChevronLeft, ChevronRight } from 'lucide-react'
-import { cn } from '@/lib/utils'
-import { Button } from '@/components/ui/button'
+import { ReactNode, useState, useEffect } from 'react'
+import { ToolbarContent } from '@/components/desktop/ToolbarContent'
+import { StatusBar, StatusItem, StatusSpacer } from '@/components/desktop/StatusBar'
+import { CommandPalette } from '@/components/desktop/CommandPalette'
+import { KeyboardShortcutsDialog } from '@/components/ui/keyboard-shortcuts-dialog'
+import { Breadcrumbs } from '@/components/layout/Breadcrumbs'
+import { useQuery } from '@tanstack/react-query'
+import { api } from '@/lib/tauri'
+import { Wifi, WifiOff, Cpu, MemoryStick } from 'lucide-react'
 
 interface LayoutProps {
   children: ReactNode
 }
 
 export function Layout({ children }: LayoutProps) {
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
+  const [commandPaletteOpen, setCommandPaletteOpen] = useState(false)
+  const [showShortcuts, setShowShortcuts] = useState(false)
 
-  const navItems = [
-    { to: '/dashboard', icon: LayoutDashboard, label: 'Dashboard' },
-    { to: '/vms', icon: Box, label: 'Virtual Machines' },
-    { to: '/storage', icon: Database, label: 'Storage' },
-    { to: '/networks', icon: Network, label: 'Networks' },
-    { to: '/insights', icon: Lightbulb, label: 'Insights' },
-    { to: '/templates', icon: FileText, label: 'Templates' },
-    { to: '/schedules', icon: Clock, label: 'Schedules' },
-    { to: '/alerts', icon: Bell, label: 'Alerts' },
-    { to: '/backups', icon: HardDrive, label: 'Backups' },
-    { to: '/settings', icon: Settings, label: 'Settings' },
-  ]
+  // Listen for keyboard shortcuts dialog event
+  useEffect(() => {
+    const handler = () => setShowShortcuts(true)
+    window.addEventListener('show-keyboard-shortcuts', handler)
+    return () => window.removeEventListener('show-keyboard-shortcuts', handler)
+  }, [])
+
+  // Get VM stats for status bar
+  const { data: vms } = useQuery({
+    queryKey: ['vms'],
+    queryFn: api.getVms,
+    refetchInterval: 5000,
+  })
+
+  // Get connection status
+  const { data: connectionStatus } = useQuery({
+    queryKey: ['connectionStatus'],
+    queryFn: api.getConnectionStatus,
+    refetchInterval: 10000,
+  })
+
+  // Get host info for resource usage
+  const { data: hostInfo } = useQuery({
+    queryKey: ['hostInfo'],
+    queryFn: api.getHostInfo,
+    refetchInterval: 5000,
+  })
+
+  const vmCount = vms?.length || 0
+  const runningCount = vms?.filter(vm => vm.state === 'running').length || 0
+  const stoppedCount = vms?.filter(vm => vm.state === 'stopped').length || 0
+  const pausedCount = vms?.filter(vm => vm.state === 'paused').length || 0
+
+  // Calculate host memory usage
+  const memoryUsedMb = hostInfo ? hostInfo.memoryTotalMb - hostInfo.memoryFreeMb : 0
+  const memoryUsedPercent = hostInfo ? Math.round((memoryUsedMb / hostInfo.memoryTotalMb) * 100) : 0
 
   return (
-    <div className="h-screen w-screen flex bg-background overflow-hidden">
-      {/* Sidebar */}
-      <aside
-        className={cn(
-          "flex-shrink-0 border-r bg-card transition-all duration-300 ease-in-out flex flex-col",
-          sidebarCollapsed ? "w-16" : "w-56"
-        )}
-      >
-        {/* Sidebar Header */}
-        <div className="h-14 border-b flex items-center justify-between px-4">
-          {!sidebarCollapsed && (
-            <div className="flex items-center gap-2">
-              <Server className="w-5 h-5 text-primary" />
-              <h1 className="text-sm font-bold">KVM Manager</h1>
-            </div>
-          )}
-          {sidebarCollapsed && (
-            <Server className="w-5 h-5 text-primary mx-auto" />
-          )}
-        </div>
+    <div className="h-screen flex flex-col bg-[var(--window-bg)]">
+      {/* Command Palette (Ctrl+K) */}
+      <CommandPalette open={commandPaletteOpen} onOpenChange={setCommandPaletteOpen} />
 
-        {/* Navigation */}
-        <nav className="flex-1 overflow-y-auto py-4 scrollbar-thin">
-          <div className="space-y-1 px-2">
-            {navItems.map((item) => (
-              <NavLink
-                key={item.to}
-                to={item.to}
-                className={({ isActive }) =>
-                  cn(
-                    'flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-200',
-                    'hover:bg-accent',
-                    isActive
-                      ? 'bg-primary text-primary-foreground shadow-sm'
-                      : 'text-muted-foreground hover:text-foreground',
-                    sidebarCollapsed && 'justify-center'
-                  )
-                }
-                title={sidebarCollapsed ? item.label : undefined}
-              >
-                <item.icon className="w-5 h-5 flex-shrink-0" />
-                {!sidebarCollapsed && <span>{item.label}</span>}
-              </NavLink>
-            ))}
-          </div>
-        </nav>
+      {/* Keyboard Shortcuts Dialog */}
+      <KeyboardShortcutsDialog open={showShortcuts} onOpenChange={setShowShortcuts} />
 
-        {/* Sidebar Footer - Collapse Toggle */}
-        <div className="border-t p-2">
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
-            className={cn("w-full", sidebarCollapsed && "px-0")}
-            title={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
-          >
-            {sidebarCollapsed ? (
-              <ChevronRight className="w-4 h-4" />
-            ) : (
-              <>
-                <ChevronLeft className="w-4 h-4 mr-2" />
-                <span className="text-xs">Collapse</span>
-              </>
-            )}
-          </Button>
-        </div>
-      </aside>
+      {/* Unified Toolbar with Connection Info */}
+      <ToolbarContent onOpenCommandPalette={() => setCommandPaletteOpen(true)} />
 
-      {/* Main Content */}
-      <main className="flex-1 min-h-0 overflow-hidden">
+      {/* Breadcrumb Navigation */}
+      <Breadcrumbs />
+
+      {/* Main Content Area */}
+      <main className="flex-1 overflow-auto bg-[var(--window-bg)]">
         {children}
       </main>
+
+      {/* Status Bar */}
+      <StatusBar>
+        {/* Connection Status */}
+        <StatusItem variant={connectionStatus?.connected ? 'success' : 'error'}>
+          {connectionStatus?.connected ? (
+            <span className="flex items-center gap-1">
+              <Wifi className="w-3 h-3" />
+              Connected
+            </span>
+          ) : (
+            <span className="flex items-center gap-1">
+              <WifiOff className="w-3 h-3" />
+              Disconnected
+            </span>
+          )}
+        </StatusItem>
+
+        {/* VM Counts */}
+        <StatusItem>{vmCount} VMs</StatusItem>
+        {runningCount > 0 && <StatusItem variant="success">{runningCount} Running</StatusItem>}
+        {stoppedCount > 0 && <StatusItem variant="muted">{stoppedCount} Stopped</StatusItem>}
+        {pausedCount > 0 && <StatusItem variant="warning">{pausedCount} Paused</StatusItem>}
+
+        <StatusSpacer />
+
+        {/* Host Resources */}
+        {hostInfo && (
+          <>
+            <StatusItem variant={memoryUsedPercent > 90 ? 'error' : memoryUsedPercent > 75 ? 'warning' : 'muted'}>
+              <span className="flex items-center gap-1">
+                <MemoryStick className="w-3 h-3" />
+                {(memoryUsedMb / 1024).toFixed(1)}/{(hostInfo.memoryTotalMb / 1024).toFixed(0)} GB
+              </span>
+            </StatusItem>
+            <StatusItem variant="muted">
+              <span className="flex items-center gap-1">
+                <Cpu className="w-3 h-3" />
+                {hostInfo.cpuCount} cores
+              </span>
+            </StatusItem>
+          </>
+        )}
+
+        <StatusItem className="text-muted-foreground text-[10px]">⌘K for commands</StatusItem>
+      </StatusBar>
     </div>
   )
 }

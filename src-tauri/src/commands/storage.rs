@@ -1,5 +1,5 @@
 use tauri::State;
-use crate::models::storage::{StoragePool, Volume, VolumeConfig, StoragePoolConfig};
+use crate::models::storage::{StoragePool, Volume, VolumeConfig, StoragePoolConfig, VolumeEncryptionInfo};
 use crate::services::storage_service::StorageService;
 use crate::state::app_state::AppState;
 
@@ -72,4 +72,98 @@ pub async fn resize_volume(
 
     StorageService::resize_volume(&state.libvirt, &pool_id, &volume_name, new_capacity_gb)
         .map_err(|e| e.to_string())
+}
+
+/// Upload a file to create/replace a volume
+#[tauri::command]
+pub async fn upload_volume(
+    state: State<'_, AppState>,
+    pool_id: String,
+    volume_name: String,
+    source_path: String,
+    format: Option<String>,
+) -> Result<Volume, String> {
+    tracing::info!("upload_volume command called: {} -> volume {} in pool {}",
+                   source_path, volume_name, pool_id);
+
+    StorageService::upload_volume(
+        &state.libvirt,
+        &pool_id,
+        &volume_name,
+        &source_path,
+        format.as_deref(),
+    )
+    .map_err(|e| e.to_string())
+}
+
+/// Download a volume to a local file
+#[tauri::command]
+pub async fn download_volume(
+    state: State<'_, AppState>,
+    pool_id: String,
+    volume_name: String,
+    dest_path: String,
+) -> Result<u64, String> {
+    tracing::info!("download_volume command called: volume {} from pool {} -> {}",
+                   volume_name, pool_id, dest_path);
+
+    StorageService::download_volume(
+        &state.libvirt,
+        &pool_id,
+        &volume_name,
+        &dest_path,
+    )
+    .map_err(|e| e.to_string())
+}
+
+/// Get the file path of a volume
+#[tauri::command]
+pub async fn get_volume_path(
+    state: State<'_, AppState>,
+    pool_id: String,
+    volume_name: String,
+) -> Result<String, String> {
+    tracing::debug!("get_volume_path command called for volume: {} in pool: {}",
+                    volume_name, pool_id);
+
+    StorageService::get_volume_path(&state.libvirt, &pool_id, &volume_name)
+        .map_err(|e| e.to_string())
+}
+
+/// Get encryption info for a volume
+#[tauri::command]
+pub async fn get_volume_encryption_info(
+    state: State<'_, AppState>,
+    pool_id: String,
+    volume_name: String,
+) -> Result<VolumeEncryptionInfo, String> {
+    tracing::debug!("get_volume_encryption_info command called for volume: {} in pool: {}",
+                    volume_name, pool_id);
+
+    StorageService::get_volume_encryption_info(&state.libvirt, &pool_id, &volume_name)
+        .map_err(|e| e.to_string())
+}
+
+/// Get metadata from OVA/OVF file
+#[tauri::command]
+pub async fn get_ova_metadata(
+    source_path: String,
+) -> Result<crate::services::ova_service::OvfMetadata, String> {
+    tracing::info!("get_ova_metadata command called for: {}", source_path);
+
+    crate::services::ova_service::OvaService::get_ova_metadata(&source_path)
+        .map_err(|e| e.to_string())
+}
+
+/// Import OVA/OVF file and convert disks
+#[tauri::command]
+pub async fn import_ova(
+    config: crate::services::ova_service::OvaImportConfig,
+) -> Result<String, String> {
+    tracing::info!("import_ova command called for: {}", config.source_path);
+
+    let result_path = crate::services::ova_service::OvaService::import_ova(config)
+        .map_err(|e| e.to_string())?;
+
+    Ok(result_path.to_string_lossy().to_string())
 }

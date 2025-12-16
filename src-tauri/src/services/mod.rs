@@ -1,4 +1,5 @@
 pub mod libvirt;
+pub mod connection_service;
 pub mod vm_service;
 pub mod storage_service;
 pub mod network_service;
@@ -11,3 +12,10 @@ pub mod backup_service;
 pub mod optimization_service;
 pub mod retention_service;
 pub mod guest_agent_service;
+pub mod pci_service;
+pub mod usb_service;
+pub mod mdev_service;
+pub mod nwfilter_service;
+pub mod ws_proxy;
+pub mod serial_console_service;
+pub mod ova_service;

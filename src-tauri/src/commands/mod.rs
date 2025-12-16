@@ -1,5 +1,6 @@
 pub mod vm;
 pub mod system;
+pub mod connection;
 pub mod network;
 pub mod storage;
 pub mod snapshot;
@@ -11,3 +12,9 @@ pub mod backup;
 pub mod optimization;
 pub mod retention;
 pub mod guest_agent;
+pub mod pci;
+pub mod window;
+pub mod usb;
+pub mod mdev;
+pub mod nwfilter;
+pub mod serial_console;

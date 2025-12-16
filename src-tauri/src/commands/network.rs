@@ -96,3 +96,40 @@ pub async fn remove_port_forward(
     NetworkService::remove_port_forward(host_port, &guest_ip, guest_port, &protocol)
         .map_err(|e| e.to_string())
 }
+
+/// Set network autostart
+#[tauri::command]
+pub async fn set_network_autostart(
+    state: State<'_, AppState>,
+    network_name: String,
+    autostart: bool,
+) -> Result<(), String> {
+    tracing::info!("set_network_autostart command called: {} -> {}", network_name, autostart);
+
+    NetworkService::set_network_autostart(&state.libvirt, &network_name, autostart)
+        .map_err(|e| e.to_string())
+}
+
+/// Get DHCP leases for a network
+#[tauri::command]
+pub async fn get_dhcp_leases(
+    state: State<'_, AppState>,
+    network_name: String,
+) -> Result<Vec<crate::services::network_service::DhcpLease>, String> {
+    tracing::info!("get_dhcp_leases command called: {}", network_name);
+
+    NetworkService::get_dhcp_leases(&state.libvirt, &network_name)
+        .map_err(|e| e.to_string())
+}
+
+/// Get detailed network information
+#[tauri::command]
+pub async fn get_network_details(
+    state: State<'_, AppState>,
+    network_name: String,
+) -> Result<crate::services::network_service::NetworkDetails, String> {
+    tracing::info!("get_network_details command called: {}", network_name);
+
+    NetworkService::get_network_details(&state.libvirt, &network_name)
+        .map_err(|e| e.to_string())
+}

@@ -28,9 +28,12 @@ pub struct ConnectionStatus {
 
 /// VNC Connection Information
 #[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
 pub struct VncInfo {
     pub host: String,
     pub port: u16,
     pub password: Option<String>,
     pub websocket_port: Option<u16>,
+    #[serde(rename = "type")]
+    pub graphics_type: Option<String>,
 }

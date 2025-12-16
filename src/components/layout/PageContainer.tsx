@@ -31,20 +31,20 @@ interface PageHeaderProps {
  */
 export function PageHeader({ title, description, actions, stats }: PageHeaderProps) {
   return (
-    <div className="flex-shrink-0 px-8 py-6 border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
-      <div className="flex items-center justify-between gap-8">
+    <div className="flex-shrink-0 px-6 py-4 border-b border-[var(--panel-border)] bg-[var(--window-bg)]">
+      <div className="flex items-center justify-between gap-6">
         <div className="flex-1 min-w-0">
           {typeof title === 'string' ? (
-            <h1 className="text-3xl font-bold tracking-tight">{title}</h1>
+            <h1 className="text-2xl font-semibold tracking-tight">{title}</h1>
           ) : (
-            <div className="text-3xl font-bold tracking-tight">{title}</div>
+            <div className="text-2xl font-semibold tracking-tight">{title}</div>
           )}
           {description && (
-            <p className="text-sm text-muted-foreground mt-2">{description}</p>
+            <p className="text-desktop-sm text-muted-foreground mt-1">{description}</p>
           )}
         </div>
         {(actions || stats) && (
-          <div className="flex items-center gap-4 flex-shrink-0">
+          <div className="flex items-center gap-3 flex-shrink-0">
             {stats}
             {actions}
           </div>
@@ -64,7 +64,7 @@ interface PageToolbarProps {
  */
 export function PageToolbar({ children }: PageToolbarProps) {
   return (
-    <div className="flex-shrink-0 px-8 py-4 border-b bg-muted/20">
+    <div className="flex-shrink-0 px-6 py-3 border-b border-[var(--panel-border)] bg-[var(--toolbar-bg)]">
       {children}
     </div>
   )
@@ -81,7 +81,7 @@ interface PageContentProps {
  */
 export function PageContent({ children, noPadding = false }: PageContentProps) {
   return (
-    <div className={`flex-1 overflow-y-auto scrollbar-thin ${noPadding ? '' : 'px-8 py-8'}`}>
+    <div className={`flex-1 overflow-y-auto scrollbar-thin ${noPadding ? '' : 'px-6 py-6'}`}>
       {children}
     </div>
   )

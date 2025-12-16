@@ -15,7 +15,14 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from '@/components/ui/alert-dialog'
-import { Play, Square, Pause, Trash2, Monitor, RotateCcw, Info } from 'lucide-react'
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuSeparator,
+  ContextMenuTrigger,
+} from '@/components/ui/context-menu'
+import { Play, Square, Pause, Trash2, Monitor, RotateCcw, Info, Copy, XCircle, Edit, Loader2 } from 'lucide-react'
 import type { VM } from '@/lib/types'
 import { api } from '@/lib/tauri'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
@@ -77,7 +84,7 @@ export function VmCard({ vm }: VmCardProps) {
   })
 
   const deleteMutation = useMutation({
-    mutationFn: () => api.deleteVm(vm.id, deleteDisks),
+    mutationFn: () => api.deleteVm(vm.id, deleteDisks, false),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['vms'] })
       const diskMsg = deleteDisks ? ' (including disks)' : ''
@@ -127,18 +134,23 @@ export function VmCard({ vm }: VmCardProps) {
   }
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="flex items-center justify-between text-lg">
+    <ContextMenu>
+      <ContextMenuTrigger asChild>
+    <Card
+      className="bg-[var(--panel-bg)] cursor-pointer transition-shadow hover:shadow-md"
+      onDoubleClick={() => navigate(`/vms/${vm.id}`)}
+    >
+      <CardHeader className="py-3 px-4">
+        <CardTitle className="flex items-center justify-between text-desktop-lg font-semibold">
           {vm.name}
           <Badge className={stateColors[vm.state]}>
             {stateLabels[vm.state]}
           </Badge>
         </CardTitle>
       </CardHeader>
-      <CardContent>
-        <div className="space-y-3">
-          <div className="space-y-2 text-sm">
+      <CardContent className="px-4 pb-3">
+        <div className="space-y-2">
+          <div className="space-y-1.5 text-desktop-sm">
             <div className="flex justify-between">
               <span className="text-muted-foreground">CPU:</span>
               <span className="font-medium">{vm.cpuCount} cores</span>
@@ -153,15 +165,20 @@ export function VmCard({ vm }: VmCardProps) {
             </div>
           </div>
 
-          <div className="flex gap-2 pt-2 border-t">
+          <div className="flex gap-1.5 pt-2 border-t border-[var(--panel-border)]">
             {vm.state === 'stopped' && (
               <Button
                 size="sm"
                 onClick={() => startMutation.mutate()}
                 disabled={startMutation.isPending}
+                className="h-7 text-desktop-xs"
               >
-                <Play className="w-4 h-4 mr-1" />
-                Start
+                {startMutation.isPending ? (
+                  <Loader2 className="w-3.5 h-3.5 mr-1 animate-spin" />
+                ) : (
+                  <Play className="w-3.5 h-3.5 mr-1" />
+                )}
+                {startMutation.isPending ? 'Starting...' : 'Start'}
               </Button>
             )}
             {vm.state === 'running' && (
@@ -171,8 +188,9 @@ export function VmCard({ vm }: VmCardProps) {
                   variant="outline"
                   onClick={() => rebootMutation.mutate()}
                   disabled={rebootMutation.isPending}
+                  className="h-7 text-desktop-xs"
                 >
-                  <RotateCcw className="w-4 h-4 mr-1" />
+                  <RotateCcw className="w-3.5 h-3.5 mr-1" />
                   Reboot
                 </Button>
                 <Button
@@ -180,8 +198,9 @@ export function VmCard({ vm }: VmCardProps) {
                   variant="outline"
                   onClick={() => pauseMutation.mutate()}
                   disabled={pauseMutation.isPending}
+                  className="h-7 text-desktop-xs"
                 >
-                  <Pause className="w-4 h-4 mr-1" />
+                  <Pause className="w-3.5 h-3.5 mr-1" />
                   Pause
                 </Button>
                 <Button
@@ -189,9 +208,14 @@ export function VmCard({ vm }: VmCardProps) {
                   variant="destructive"
                   onClick={() => stopMutation.mutate()}
                   disabled={stopMutation.isPending}
+                  className="h-7 text-desktop-xs"
                 >
-                  <Square className="w-4 h-4 mr-1" />
-                  Stop
+                  {stopMutation.isPending ? (
+                    <Loader2 className="w-3.5 h-3.5 mr-1 animate-spin" />
+                  ) : (
+                    <Square className="w-3.5 h-3.5 mr-1" />
+                  )}
+                  {stopMutation.isPending ? 'Stopping...' : 'Stop'}
                 </Button>
               </>
             )}
@@ -200,44 +224,45 @@ export function VmCard({ vm }: VmCardProps) {
                 size="sm"
                 onClick={() => resumeMutation.mutate()}
                 disabled={resumeMutation.isPending}
+                className="h-7 text-desktop-xs"
               >
-                <Play className="w-4 h-4 mr-1" />
+                <Play className="w-3.5 h-3.5 mr-1" />
                 Resume
               </Button>
             )}
           </div>
 
           {/* View Details button */}
-          <div className="pt-2 border-t">
+          <div className="pt-1.5 border-t border-[var(--panel-border)]">
             <Button
               size="sm"
               variant="outline"
-              className="w-full"
+              className="w-full h-7 text-desktop-xs"
               onClick={() => navigate(`/vms/${vm.id}`)}
             >
-              <Info className="w-4 h-4 mr-1" />
+              <Info className="w-3.5 h-3.5 mr-1" />
               View Details & Snapshots
             </Button>
           </div>
 
           {/* Clone button - only show when VM is stopped */}
           {vm.state === 'stopped' && (
-            <div className="pt-2 border-t">
+            <div className="pt-1.5 border-t border-[var(--panel-border)]">
               <CloneVmDialog vmId={vm.id} vmName={vm.name} />
             </div>
           )}
 
           {/* Console button - show when VM is running */}
           {vm.state === 'running' && (
-            <div className="pt-2 border-t">
+            <div className="pt-1.5 border-t border-[var(--panel-border)]">
               <Button
                 size="sm"
                 variant="outline"
-                className="w-full"
+                className="w-full h-7 text-desktop-xs"
                 onClick={() => openConsoleMutation.mutate()}
                 disabled={openConsoleMutation.isPending}
               >
-                <Monitor className="w-4 h-4 mr-1" />
+                <Monitor className="w-3.5 h-3.5 mr-1" />
                 Open Console
               </Button>
             </div>
@@ -245,16 +270,16 @@ export function VmCard({ vm }: VmCardProps) {
 
           {/* Delete button - only show when VM is stopped */}
           {vm.state === 'stopped' && (
-            <div className="pt-2 border-t">
+            <div className="pt-1.5 border-t border-[var(--panel-border)]">
               <AlertDialog>
                 <AlertDialogTrigger asChild>
                   <Button
                     size="sm"
                     variant="outline"
-                    className="w-full text-destructive hover:text-destructive"
+                    className="w-full h-7 text-desktop-xs text-destructive hover:text-destructive"
                     disabled={deleteMutation.isPending}
                   >
-                    <Trash2 className="w-4 h-4 mr-1" />
+                    <Trash2 className="w-3.5 h-3.5 mr-1" />
                     Delete VM
                   </Button>
                 </AlertDialogTrigger>
@@ -294,5 +319,79 @@ export function VmCard({ vm }: VmCardProps) {
         </div>
       </CardContent>
     </Card>
+      </ContextMenuTrigger>
+
+      <ContextMenuContent>
+        {/* State controls */}
+        {vm.state === 'stopped' && (
+          <ContextMenuItem icon={<Play className="w-3.5 h-3.5" />} onClick={() => startMutation.mutate()}>
+            Start
+          </ContextMenuItem>
+        )}
+        {vm.state === 'running' && (
+          <>
+            <ContextMenuItem icon={<Pause className="w-3.5 h-3.5" />} onClick={() => pauseMutation.mutate()}>
+              Pause
+            </ContextMenuItem>
+            <ContextMenuItem icon={<Square className="w-3.5 h-3.5" />} onClick={() => stopMutation.mutate()}>
+              Stop
+            </ContextMenuItem>
+            <ContextMenuItem icon={<XCircle className="w-3.5 h-3.5" />} onClick={() => api.forceStopVm(vm.id)}>
+              Force Stop
+            </ContextMenuItem>
+            <ContextMenuItem icon={<RotateCcw className="w-3.5 h-3.5" />} onClick={() => rebootMutation.mutate()}>
+              Reboot
+            </ContextMenuItem>
+          </>
+        )}
+        {vm.state === 'paused' && (
+          <ContextMenuItem icon={<Play className="w-3.5 h-3.5" />} onClick={() => resumeMutation.mutate()}>
+            Resume
+          </ContextMenuItem>
+        )}
+
+        <ContextMenuSeparator />
+
+        {/* Console and Details */}
+        <ContextMenuItem
+          icon={<Monitor className="w-3.5 h-3.5" />}
+          onClick={() => openConsoleMutation.mutate()}
+          disabled={vm.state !== 'running'}
+          shortcut="Ctrl+Shift+C"
+        >
+          Open Console
+        </ContextMenuItem>
+        <ContextMenuItem
+          icon={<Edit className="w-3.5 h-3.5" />}
+          onClick={() => navigate(`/vms/${vm.id}`)}
+          shortcut="Enter"
+        >
+          Open Details
+        </ContextMenuItem>
+
+        <ContextMenuSeparator />
+
+        {/* Management actions */}
+        <ContextMenuItem
+          icon={<Copy className="w-3.5 h-3.5" />}
+          disabled={vm.state !== 'stopped'}
+        >
+          Clone VM
+        </ContextMenuItem>
+        <ContextMenuItem
+          icon={<Trash2 className="w-3.5 h-3.5" />}
+          disabled={vm.state !== 'stopped'}
+          shortcut="Del"
+        >
+          Delete VM
+        </ContextMenuItem>
+
+        <ContextMenuSeparator />
+
+        <ContextMenuItem icon={<Info className="w-3.5 h-3.5" />}>
+          Properties
+        </ContextMenuItem>
+      </ContextMenuContent>
+    </ContextMenu>
   )
 }

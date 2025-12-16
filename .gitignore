@@ -98,3 +98,6 @@ docs/.doctrees/
 # Agent status and local state
 .agents/status/*.md
 !.agents/status/.gitkeep
+
+# virt-manager
+virt-manager/
