@@ -217,55 +217,48 @@ export function GuestInfo({ vmName, vmState, compact }: GuestInfoProps) {
       ?.find(ip => !ip.startsWith('127.'))
 
     return (
-      <div className="space-y-2">
-        <div className="flex items-center justify-between">
-          <span className="text-xs text-green-600 flex items-center gap-1">
-            <Activity className="w-3 h-3" />
-            Agent Connected
-          </span>
-          <Badge variant="outline" className="text-[10px] h-4">v{agentStatus.agentInfo?.version || '?'}</Badge>
+      <div className="space-y-3">
+        {/* Status indicator */}
+        <div className="flex items-center gap-2">
+          <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
+          <span className="text-xs text-green-500 font-medium">Agent Connected</span>
         </div>
 
-        {systemInfo && (
-          <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
-            <div className="flex justify-between">
+        {/* System info grid */}
+        {systemInfo ? (
+          <div className="space-y-2 text-xs">
+            <div className="flex items-baseline justify-between">
               <span className="text-muted-foreground">Hostname</span>
-              <span className="font-mono truncate ml-2">{systemInfo.hostname}</span>
+              <span className="font-medium">{systemInfo.hostname}</span>
             </div>
-            <div className="flex justify-between">
-              <span className="text-muted-foreground">OS</span>
-              <span className="truncate ml-2">{systemInfo.osName}</span>
-            </div>
-            <div className="flex justify-between">
+            {systemInfo.osName && (
+              <div className="flex items-baseline justify-between">
+                <span className="text-muted-foreground">OS</span>
+                <span className="text-muted-foreground truncate max-w-[120px]">{systemInfo.osName}</span>
+              </div>
+            )}
+            <div className="flex items-baseline justify-between">
               <span className="text-muted-foreground">Uptime</span>
               <span>{formatUptime(systemInfo.uptimeSeconds)}</span>
             </div>
             {primaryIp && (
-              <div className="flex justify-between">
+              <div className="flex items-baseline justify-between">
                 <span className="text-muted-foreground">IP</span>
-                <span className="font-mono">{primaryIp}</span>
+                <span className="font-mono text-[11px]">{primaryIp}</span>
               </div>
             )}
             {cpuStats && typeof cpuStats.usagePercent === 'number' && (
-              <div className="flex justify-between col-span-2">
+              <div className="flex items-baseline justify-between">
                 <span className="text-muted-foreground">CPU Usage</span>
                 <span className={cpuStats.usagePercent > 80 ? 'text-red-500' : cpuStats.usagePercent > 50 ? 'text-yellow-500' : 'text-green-500'}>
                   {cpuStats.usagePercent.toFixed(1)}%
                 </span>
               </div>
             )}
-            {users && users.length > 0 && (
-              <div className="flex justify-between col-span-2">
-                <span className="text-muted-foreground">Users</span>
-                <span>{users.map(u => u.username).join(', ')}</span>
-              </div>
-            )}
           </div>
-        )}
-
-        {systemLoading && (
+        ) : systemLoading ? (
           <p className="text-xs text-muted-foreground">Loading...</p>
-        )}
+        ) : null}
       </div>
     )
   }

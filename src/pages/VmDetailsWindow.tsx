@@ -73,6 +73,7 @@ export function VmDetailsWindow() {
   const queryClient = useQueryClient()
   const [activeTab, setActiveTab] = useState('overview')
   const [showAddHardware, setShowAddHardware] = useState(false)
+  const [hardwareFilter, setHardwareFilter] = useState<'all' | 'storage' | 'cdrom' | 'network' | 'graphics' | 'additional'>('all')
 
   // Debug logging
   console.log('VmDetailsWindow rendering, vmId:', vmId)
@@ -399,7 +400,7 @@ export function VmDetailsWindow() {
                   <Network className="w-4 h-4" />
                   Network Interfaces
                 </h3>
-                <Button variant="outline" size="sm" onClick={() => setShowAddHardware(true)} className="h-7 text-xs gap-1.5">
+                <Button variant="outline" size="sm" onClick={() => { setHardwareFilter('network'); setShowAddHardware(true) }} className="h-7 text-xs gap-1.5">
                   <Plus className="w-3 h-3" />Add NIC
                 </Button>
               </div>
@@ -428,7 +429,7 @@ export function VmDetailsWindow() {
                   <HardDrive className="w-4 h-4" />
                   Storage Devices
                 </h3>
-                <Button variant="outline" size="sm" onClick={() => setShowAddHardware(true)} className="h-7 text-xs gap-1.5">
+                <Button variant="outline" size="sm" onClick={() => { setHardwareFilter('storage'); setShowAddHardware(true) }} className="h-7 text-xs gap-1.5">
                   <Plus className="w-3 h-3" />Add Disk
                 </Button>
               </div>
@@ -480,7 +481,7 @@ export function VmDetailsWindow() {
                   <Disc className="w-4 h-4" />
                   CD/DVD Drives
                 </h3>
-                <Button variant="outline" size="sm" onClick={() => setShowAddHardware(true)} className="h-7 text-xs gap-1.5">
+                <Button variant="outline" size="sm" onClick={() => { setHardwareFilter('cdrom'); setShowAddHardware(true) }} className="h-7 text-xs gap-1.5">
                   <Plus className="w-3 h-3" />Add CD/DVD
                 </Button>
               </div>
@@ -506,7 +507,7 @@ export function VmDetailsWindow() {
                   <Keyboard className="w-4 h-4" />
                   Additional Hardware
                 </h3>
-                <Button variant="outline" size="sm" onClick={() => setShowAddHardware(true)} className="h-7 text-xs gap-1.5">
+                <Button variant="outline" size="sm" onClick={() => { setHardwareFilter('additional'); setShowAddHardware(true) }} className="h-7 text-xs gap-1.5">
                   <Plus className="w-3 h-3" />Add Device
                 </Button>
               </div>
@@ -560,7 +561,8 @@ export function VmDetailsWindow() {
       <AddHardwareDialog
         vm={vm}
         open={showAddHardware}
-        onOpenChange={setShowAddHardware}
+        onOpenChange={(open) => { setShowAddHardware(open); if (!open) setHardwareFilter('all') }}
+        filter={hardwareFilter}
       />
     </div>
   )

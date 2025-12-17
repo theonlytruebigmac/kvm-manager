@@ -1,5 +1,7 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { open as openFileDialog } from '@tauri-apps/plugin-dialog'
+import { homeDir } from '@tauri-apps/api/path'
 import {
   Dialog,
   DialogContent,
@@ -41,10 +43,14 @@ import {
 import { toast } from 'sonner'
 import type { VM } from '@/lib/types'
 
+// Filter types for context-specific hardware dialogs
+export type HardwareFilter = 'all' | 'storage' | 'cdrom' | 'network' | 'graphics' | 'additional'
+
 interface AddHardwareDialogProps {
   vm: VM
   open: boolean
   onOpenChange: (open: boolean) => void
+  filter?: HardwareFilter
 }
 
 interface HardwareCategory {
@@ -288,8 +294,46 @@ const hardwareCategories: HardwareCategory[] = [
   },
 ]
 
-export function AddHardwareDialog({ vm, open, onOpenChange }: AddHardwareDialogProps) {
+export function AddHardwareDialog({ vm, open, onOpenChange, filter = 'all' }: AddHardwareDialogProps) {
   const [selectedDevice, setSelectedDevice] = useState<string | null>(null)
+
+  // Filter categories based on the filter prop
+  const filteredCategories = hardwareCategories.filter(category => {
+    if (filter === 'all') return true
+    if (filter === 'storage') return category.name === 'Storage' && category.devices.some(d => d.id === 'disk' || d.id === 'filesystem')
+    if (filter === 'cdrom') return category.name === 'Storage' && category.devices.some(d => d.id === 'cdrom')
+    if (filter === 'network') return category.name === 'Networking'
+    if (filter === 'graphics') return category.name === 'Display'
+    if (filter === 'additional') return !['Storage', 'Networking'].includes(category.name)
+    return true
+  }).map(category => {
+    // Further filter devices within categories
+    if (filter === 'storage') {
+      return { ...category, devices: category.devices.filter(d => d.id === 'disk' || d.id === 'filesystem') }
+    }
+    if (filter === 'cdrom') {
+      return { ...category, devices: category.devices.filter(d => d.id === 'cdrom') }
+    }
+    return category
+  })
+
+  // Get dialog title based on filter
+  const getDialogTitle = () => {
+    switch (filter) {
+      case 'storage': return 'Add Storage'
+      case 'cdrom': return 'Add CD/DVD Drive'
+      case 'network': return 'Add Network Interface'
+      case 'graphics': return 'Add Display Device'
+      case 'additional': return 'Add Hardware'
+      default: return 'Add Hardware'
+    }
+  }
+
+  // Auto-select if only one device type
+  const allDevices = filteredCategories.flatMap(c => c.devices)
+  const autoSelect = allDevices.length === 1 ? allDevices[0].id : null
+  const effectiveSelectedDevice = selectedDevice || autoSelect
+
   const [networkConfig, setNetworkConfig] = useState({
     network: 'default',
     model: 'virtio',
@@ -924,75 +968,75 @@ export function AddHardwareDialog({ vm, open, onOpenChange }: AddHardwareDialogP
   const handleAdd = () => {
     if (!selectedDevice) return
 
-    if (selectedDevice === 'network') {
+    if (effectiveSelectedDevice === 'network') {
       attachInterfaceMutation.mutate()
-    } else if (selectedDevice === 'disk') {
+    } else if (effectiveSelectedDevice === 'disk') {
       if (!diskConfig.diskPath.trim()) {
         toast.error('Please enter the disk path')
         return
       }
       attachDiskMutation.mutate()
-    } else if (selectedDevice === 'cdrom') {
+    } else if (effectiveSelectedDevice === 'cdrom') {
       if (!cdromConfig.isoPath.trim()) {
         toast.error('Please enter the ISO path')
         return
       }
       mountIsoMutation.mutate()
-    } else if (selectedDevice === 'sound') {
+    } else if (effectiveSelectedDevice === 'sound') {
       attachSoundMutation.mutate()
-    } else if (selectedDevice === 'input') {
+    } else if (effectiveSelectedDevice === 'input') {
       attachInputMutation.mutate()
-    } else if (selectedDevice === 'pci') {
+    } else if (effectiveSelectedDevice === 'pci') {
       if (!pciConfig.selectedDevice) {
         toast.error('Please select a PCI device')
         return
       }
       attachPciMutation.mutate()
-    } else if (selectedDevice === 'rng') {
+    } else if (effectiveSelectedDevice === 'rng') {
       attachRngMutation.mutate()
-    } else if (selectedDevice === 'watchdog') {
+    } else if (effectiveSelectedDevice === 'watchdog') {
       attachWatchdogMutation.mutate()
-    } else if (selectedDevice === 'usb-host') {
+    } else if (effectiveSelectedDevice === 'usb-host') {
       if (!usbConfig.vendorId || !usbConfig.productId) {
         toast.error('Please select a USB device')
         return
       }
       attachUsbMutation.mutate()
-    } else if (selectedDevice === 'channel') {
+    } else if (effectiveSelectedDevice === 'channel') {
       attachChannelMutation.mutate()
-    } else if (selectedDevice === 'filesystem') {
+    } else if (effectiveSelectedDevice === 'filesystem') {
       if (!filesystemConfig.sourcePath.trim() || !filesystemConfig.targetMount.trim()) {
         toast.error('Please enter both source path and mount target')
         return
       }
       attachFilesystemMutation.mutate()
-    } else if (selectedDevice === 'graphics') {
+    } else if (effectiveSelectedDevice === 'graphics') {
       attachGraphicsMutation.mutate()
-    } else if (selectedDevice === 'video') {
+    } else if (effectiveSelectedDevice === 'video') {
       attachVideoMutation.mutate()
-    } else if (selectedDevice === 'mdev') {
+    } else if (effectiveSelectedDevice === 'mdev') {
       if (!mdevConfig.mdevUuid) {
         toast.error('Please select an MDEV device')
         return
       }
       attachMdevMutation.mutate()
-    } else if (selectedDevice === 'serial') {
+    } else if (effectiveSelectedDevice === 'serial') {
       attachSerialMutation.mutate()
-    } else if (selectedDevice === 'console') {
+    } else if (effectiveSelectedDevice === 'console') {
       attachConsoleMutation.mutate()
-    } else if (selectedDevice === 'tpm') {
+    } else if (effectiveSelectedDevice === 'tpm') {
       attachTpmMutation.mutate()
-    } else if (selectedDevice === 'usb-controller') {
+    } else if (effectiveSelectedDevice === 'usb-controller') {
       attachUsbControllerMutation.mutate()
-    } else if (selectedDevice === 'scsi-controller') {
+    } else if (effectiveSelectedDevice === 'scsi-controller') {
       attachScsiControllerMutation.mutate()
-    } else if (selectedDevice === 'panic') {
+    } else if (effectiveSelectedDevice === 'panic') {
       attachPanicMutation.mutate()
-    } else if (selectedDevice === 'vsock') {
+    } else if (effectiveSelectedDevice === 'vsock') {
       attachVsockMutation.mutate()
-    } else if (selectedDevice === 'parallel') {
+    } else if (effectiveSelectedDevice === 'parallel') {
       attachParallelMutation.mutate()
-    } else if (selectedDevice === 'smartcard') {
+    } else if (effectiveSelectedDevice === 'smartcard') {
       attachSmartcardMutation.mutate()
     } else {
       toast.info(`Adding ${selectedDevice} device - Coming soon!`)
@@ -1018,7 +1062,7 @@ export function AddHardwareDialog({ vm, open, onOpenChange }: AddHardwareDialogP
 
   const getSelectedDeviceInfo = () => {
     for (const category of hardwareCategories) {
-      const device = category.devices.find(d => d.id === selectedDevice)
+      const device = category.devices.find(d => d.id === effectiveSelectedDevice)
       if (device) return device
     }
     return null
@@ -1026,21 +1070,27 @@ export function AddHardwareDialog({ vm, open, onOpenChange }: AddHardwareDialogP
 
   const selectedDeviceInfo = getSelectedDeviceInfo()
 
+  // For single-device filters, skip the device list UI
+  const showDeviceList = filteredCategories.length > 1 || allDevices.length > 1
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-3xl max-h-[80vh]">
+      <DialogContent className={showDeviceList ? "max-w-3xl max-h-[80vh]" : "max-w-md"}>
         <DialogHeader>
-          <DialogTitle>Add Hardware to {vm.name}</DialogTitle>
-          <DialogDescription>
-            Select a hardware device type to add to this virtual machine
-          </DialogDescription>
+          <DialogTitle>{getDialogTitle()} to {vm.name}</DialogTitle>
+          {showDeviceList && (
+            <DialogDescription>
+              Select a hardware device type to add to this virtual machine
+            </DialogDescription>
+          )}
         </DialogHeader>
 
-        <div className="flex gap-4 h-[400px]">
-          {/* Left side: Device categories and list */}
+        <div className={showDeviceList ? "flex gap-4 h-[400px]" : ""}>
+          {/* Left side: Device categories and list - only show if multiple options */}
+          {showDeviceList && (
           <ScrollArea className="flex-1 border rounded-lg">
             <div className="p-2 space-y-4">
-              {hardwareCategories.map((category) => (
+              {filteredCategories.map((category) => (
                 <div key={category.name}>
                   <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide px-2 mb-1">
                     {category.name}
@@ -1055,7 +1105,7 @@ export function AddHardwareDialog({ vm, open, onOpenChange }: AddHardwareDialogP
                           className={cn(
                             'w-full flex items-center gap-3 px-2 py-2 rounded-md text-left transition-colors',
                             'hover:bg-muted',
-                            selectedDevice === device.id && 'bg-primary/10 border border-primary/20'
+                            effectiveSelectedDevice === device.id && 'bg-primary/10 border border-primary/20'
                           )}
                         >
                           <Icon className="w-4 h-4 text-muted-foreground flex-shrink-0" />
@@ -1071,11 +1121,13 @@ export function AddHardwareDialog({ vm, open, onOpenChange }: AddHardwareDialogP
               ))}
             </div>
           </ScrollArea>
+          )}
 
           {/* Right side: Device details */}
-          <div className="w-64 border rounded-lg p-4">
+          <div className={showDeviceList ? "w-64 border rounded-lg p-4" : "space-y-4"}>
             {selectedDeviceInfo ? (
               <div className="space-y-4">
+                {showDeviceList && (
                 <div className="flex items-center gap-3">
                   <div className="p-2 rounded-lg bg-muted">
                     <selectedDeviceInfo.icon className="w-6 h-6" />
@@ -1087,8 +1139,9 @@ export function AddHardwareDialog({ vm, open, onOpenChange }: AddHardwareDialogP
                     )}
                   </div>
                 </div>
+                )}
 
-                {selectedDevice === 'network' && !selectedDeviceInfo.comingSoon ? (
+                {effectiveSelectedDevice === 'network' && !selectedDeviceInfo.comingSoon ? (
                   <div className="space-y-3">
                     <div className="space-y-1.5">
                       <Label className="text-xs">Network Source</Label>
@@ -1140,7 +1193,7 @@ export function AddHardwareDialog({ vm, open, onOpenChange }: AddHardwareDialogP
                       </p>
                     </div>
                   </div>
-                ) : selectedDevice === 'disk' && !selectedDeviceInfo.comingSoon ? (
+                ) : effectiveSelectedDevice === 'disk' && !selectedDeviceInfo.comingSoon ? (
                   <div className="space-y-3">
                     <div className="space-y-1.5">
                       <Label className="text-xs">Disk Path</Label>
@@ -1194,16 +1247,41 @@ export function AddHardwareDialog({ vm, open, onOpenChange }: AddHardwareDialogP
                       </Select>
                     </div>
                   </div>
-                ) : selectedDevice === 'cdrom' && !selectedDeviceInfo.comingSoon ? (
+                ) : effectiveSelectedDevice === 'cdrom' && !selectedDeviceInfo.comingSoon ? (
                   <div className="space-y-3">
                     <div className="space-y-1.5">
                       <Label className="text-xs">ISO Path</Label>
-                      <Input
-                        className="h-8 text-sm font-mono"
-                        placeholder="/var/lib/libvirt/images/ubuntu.iso"
-                        value={cdromConfig.isoPath}
-                        onChange={(e) => setCdromConfig({ ...cdromConfig, isoPath: e.target.value })}
-                      />
+                      <div className="flex gap-2">
+                        <Input
+                          className="h-8 text-sm font-mono flex-1"
+                          placeholder="/var/lib/libvirt/images/ubuntu.iso"
+                          value={cdromConfig.isoPath}
+                          onChange={(e) => setCdromConfig({ ...cdromConfig, isoPath: e.target.value })}
+                        />
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          className="h-8 px-3"
+                          onClick={async () => {
+                            try {
+                              const home = await homeDir()
+                              const selected = await openFileDialog({
+                                title: 'Select ISO Image',
+                                defaultPath: `${home}/Downloads`,
+                                filters: [{ name: 'ISO Images', extensions: ['iso', 'img'] }],
+                              })
+                              if (selected && typeof selected === 'string') {
+                                setCdromConfig({ ...cdromConfig, isoPath: selected })
+                              }
+                            } catch (err) {
+                              console.error('Failed to open file dialog:', err)
+                            }
+                          }}
+                        >
+                          Browse
+                        </Button>
+                      </div>
                       <p className="text-xs text-muted-foreground">
                         Full path to ISO image file
                       </p>
@@ -1222,7 +1300,7 @@ export function AddHardwareDialog({ vm, open, onOpenChange }: AddHardwareDialogP
                       )}
                     </div>
                   </div>
-                ) : selectedDevice === 'sound' && !selectedDeviceInfo.comingSoon ? (
+                ) : effectiveSelectedDevice === 'sound' && !selectedDeviceInfo.comingSoon ? (
                   <div className="space-y-3">
                     <div className="space-y-1.5">
                       <Label className="text-xs">Sound Card Model</Label>
@@ -1257,7 +1335,7 @@ export function AddHardwareDialog({ vm, open, onOpenChange }: AddHardwareDialogP
                       )}
                     </div>
                   </div>
-                ) : selectedDevice === 'input' && !selectedDeviceInfo.comingSoon ? (
+                ) : effectiveSelectedDevice === 'input' && !selectedDeviceInfo.comingSoon ? (
                   <div className="space-y-3">
                     <div className="space-y-1.5">
                       <Label className="text-xs">Device Type</Label>
@@ -1306,7 +1384,7 @@ export function AddHardwareDialog({ vm, open, onOpenChange }: AddHardwareDialogP
                       )}
                     </div>
                   </div>
-                ) : selectedDevice === 'pci' && !selectedDeviceInfo.comingSoon ? (
+                ) : effectiveSelectedDevice === 'pci' && !selectedDeviceInfo.comingSoon ? (
                   <div className="space-y-3">
                     {/* IOMMU Status Warning */}
                     {iommuStatus && !iommuStatus.enabled && (
@@ -1461,7 +1539,7 @@ export function AddHardwareDialog({ vm, open, onOpenChange }: AddHardwareDialogP
                       </div>
                     )}
                   </div>
-                ) : selectedDevice === 'rng' && !selectedDeviceInfo.comingSoon ? (
+                ) : effectiveSelectedDevice === 'rng' && !selectedDeviceInfo.comingSoon ? (
                   <div className="space-y-3">
                     <p className="text-sm text-muted-foreground">
                       {selectedDeviceInfo.description}
@@ -1494,7 +1572,7 @@ export function AddHardwareDialog({ vm, open, onOpenChange }: AddHardwareDialogP
                       </p>
                     </div>
                   </div>
-                ) : selectedDevice === 'watchdog' && !selectedDeviceInfo.comingSoon ? (
+                ) : effectiveSelectedDevice === 'watchdog' && !selectedDeviceInfo.comingSoon ? (
                   <div className="space-y-3">
                     <p className="text-sm text-muted-foreground">
                       {selectedDeviceInfo.description}
@@ -1548,7 +1626,7 @@ export function AddHardwareDialog({ vm, open, onOpenChange }: AddHardwareDialogP
                       </p>
                     </div>
                   </div>
-                ) : selectedDevice === 'usb-host' && !selectedDeviceInfo.comingSoon ? (
+                ) : effectiveSelectedDevice === 'usb-host' && !selectedDeviceInfo.comingSoon ? (
                   <div className="space-y-3">
                     <p className="text-sm text-muted-foreground">
                       {selectedDeviceInfo.description}
@@ -1621,7 +1699,7 @@ export function AddHardwareDialog({ vm, open, onOpenChange }: AddHardwareDialogP
                       </p>
                     </div>
                   </div>
-                ) : selectedDevice === 'channel' && !selectedDeviceInfo.comingSoon ? (
+                ) : effectiveSelectedDevice === 'channel' && !selectedDeviceInfo.comingSoon ? (
                   <div className="space-y-3">
                     <p className="text-sm text-muted-foreground">
                       {selectedDeviceInfo.description}
@@ -1668,7 +1746,7 @@ export function AddHardwareDialog({ vm, open, onOpenChange }: AddHardwareDialogP
                       </p>
                     </div>
                   </div>
-                ) : selectedDevice === 'filesystem' && !selectedDeviceInfo.comingSoon ? (
+                ) : effectiveSelectedDevice === 'filesystem' && !selectedDeviceInfo.comingSoon ? (
                   <div className="space-y-3">
                     <p className="text-sm text-muted-foreground">
                       {selectedDeviceInfo.description}
@@ -1731,7 +1809,7 @@ export function AddHardwareDialog({ vm, open, onOpenChange }: AddHardwareDialogP
                       </p>
                     </div>
                   </div>
-                ) : selectedDevice === 'graphics' && !selectedDeviceInfo.comingSoon ? (
+                ) : effectiveSelectedDevice === 'graphics' && !selectedDeviceInfo.comingSoon ? (
                   <div className="space-y-3">
                     <h4 className="text-sm font-medium">Add Graphics Device</h4>
                     <p className="text-xs text-muted-foreground">
@@ -1779,7 +1857,7 @@ export function AddHardwareDialog({ vm, open, onOpenChange }: AddHardwareDialogP
                       </p>
                     </div>
                   </div>
-                ) : selectedDevice === 'video' && !selectedDeviceInfo.comingSoon ? (
+                ) : effectiveSelectedDevice === 'video' && !selectedDeviceInfo.comingSoon ? (
                   <div className="space-y-3">
                     <h4 className="text-sm font-medium">Add Video Device</h4>
                     <p className="text-xs text-muted-foreground">
@@ -1849,7 +1927,7 @@ export function AddHardwareDialog({ vm, open, onOpenChange }: AddHardwareDialogP
                       </p>
                     </div>
                   </div>
-                ) : selectedDevice === 'mdev' && !selectedDeviceInfo.comingSoon ? (
+                ) : effectiveSelectedDevice === 'mdev' && !selectedDeviceInfo.comingSoon ? (
                   <div className="space-y-3">
                     <h4 className="text-sm font-medium">Add MDEV Host Device</h4>
                     <p className="text-xs text-muted-foreground">
@@ -1920,7 +1998,7 @@ export function AddHardwareDialog({ vm, open, onOpenChange }: AddHardwareDialogP
                       </p>
                     </div>
                   </div>
-                ) : selectedDevice === 'serial' && !selectedDeviceInfo.comingSoon ? (
+                ) : effectiveSelectedDevice === 'serial' && !selectedDeviceInfo.comingSoon ? (
                   <div className="space-y-3">
                     <div className="space-y-1.5">
                       <Label className="text-xs">Port Type</Label>
@@ -1965,7 +2043,7 @@ export function AddHardwareDialog({ vm, open, onOpenChange }: AddHardwareDialogP
                       )}
                     </div>
                   </div>
-                ) : selectedDevice === 'console' && !selectedDeviceInfo.comingSoon ? (
+                ) : effectiveSelectedDevice === 'console' && !selectedDeviceInfo.comingSoon ? (
                   <div className="space-y-3">
                     <div className="space-y-1.5">
                       <Label className="text-xs">Console Type</Label>
@@ -2007,7 +2085,7 @@ export function AddHardwareDialog({ vm, open, onOpenChange }: AddHardwareDialogP
                       )}
                     </div>
                   </div>
-                ) : selectedDevice === 'tpm' && !selectedDeviceInfo.comingSoon ? (
+                ) : effectiveSelectedDevice === 'tpm' && !selectedDeviceInfo.comingSoon ? (
                   <div className="space-y-3">
                     <div className="space-y-1.5">
                       <Label className="text-xs">TPM Model</Label>
@@ -2058,7 +2136,7 @@ export function AddHardwareDialog({ vm, open, onOpenChange }: AddHardwareDialogP
                       )}
                     </div>
                   </div>
-                ) : selectedDevice === 'usb-controller' && !selectedDeviceInfo.comingSoon ? (
+                ) : effectiveSelectedDevice === 'usb-controller' && !selectedDeviceInfo.comingSoon ? (
                   <div className="space-y-3">
                     <div className="space-y-1.5">
                       <Label className="text-xs">USB Controller Model</Label>
@@ -2091,7 +2169,7 @@ export function AddHardwareDialog({ vm, open, onOpenChange }: AddHardwareDialogP
                       )}
                     </div>
                   </div>
-                ) : selectedDevice === 'scsi-controller' && !selectedDeviceInfo.comingSoon ? (
+                ) : effectiveSelectedDevice === 'scsi-controller' && !selectedDeviceInfo.comingSoon ? (
                   <div className="space-y-3">
                     <div className="space-y-1.5">
                       <Label className="text-xs">SCSI Controller Model</Label>
@@ -2123,7 +2201,7 @@ export function AddHardwareDialog({ vm, open, onOpenChange }: AddHardwareDialogP
                       )}
                     </div>
                   </div>
-                ) : selectedDevice === 'panic' && !selectedDeviceInfo.comingSoon ? (
+                ) : effectiveSelectedDevice === 'panic' && !selectedDeviceInfo.comingSoon ? (
                   <div className="space-y-3">
                     <div className="space-y-1.5">
                       <Label className="text-xs">Panic Notifier Model</Label>
@@ -2157,7 +2235,7 @@ export function AddHardwareDialog({ vm, open, onOpenChange }: AddHardwareDialogP
                       )}
                     </div>
                   </div>
-                ) : selectedDevice === 'vsock' && !selectedDeviceInfo.comingSoon ? (
+                ) : effectiveSelectedDevice === 'vsock' && !selectedDeviceInfo.comingSoon ? (
                   <div className="space-y-3">
                     <div className="space-y-1.5">
                       <Label className="text-xs">Context ID (CID)</Label>
@@ -2189,7 +2267,7 @@ export function AddHardwareDialog({ vm, open, onOpenChange }: AddHardwareDialogP
                       )}
                     </div>
                   </div>
-                ) : selectedDevice === 'parallel' && !selectedDeviceInfo.comingSoon ? (
+                ) : effectiveSelectedDevice === 'parallel' && !selectedDeviceInfo.comingSoon ? (
                   <div className="space-y-3">
                     <div className="space-y-1.5">
                       <Label className="text-xs">Target Port Number</Label>
@@ -2221,7 +2299,7 @@ export function AddHardwareDialog({ vm, open, onOpenChange }: AddHardwareDialogP
                       )}
                     </div>
                   </div>
-                ) : selectedDevice === 'smartcard' && !selectedDeviceInfo.comingSoon ? (
+                ) : effectiveSelectedDevice === 'smartcard' && !selectedDeviceInfo.comingSoon ? (
                   <div className="space-y-3">
                     <div className="space-y-1.5">
                       <Label className="text-xs">Smartcard Mode</Label>
