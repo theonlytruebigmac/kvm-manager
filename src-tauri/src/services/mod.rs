@@ -19,3 +19,4 @@ pub mod nwfilter_service;
 pub mod ws_proxy;
 pub mod serial_console_service;
 pub mod ova_service;
+pub mod sriov_service;

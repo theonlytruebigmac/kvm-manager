@@ -1,6 +1,6 @@
 use virt::domain::Domain;
 use virt::sys;
-use crate::models::vm::{VM, VmState};
+use crate::models::vm::{VM, VmState, HostNetworkInterface};
 use crate::services::libvirt::LibvirtService;
 use crate::utils::error::{AppError, map_libvirt_error};
 
@@ -1734,24 +1734,104 @@ impl VmService {
         (total_rx, total_tx)
     }
 
-    /// Clone a VM
-    pub fn clone_vm(
+    /// Clone a VM with disk and snapshot options
+    pub fn clone_vm_with_options(
         libvirt: &LibvirtService,
         source_vm_id: &str,
-        new_name: &str,
+        config: &crate::models::vm::CloneConfig,
     ) -> Result<String, AppError> {
-        tracing::info!("Cloning VM {} to {}", source_vm_id, new_name);
+        use std::process::Command;
+        use std::path::Path;
+
+        tracing::info!("Cloning VM {} to {} (clone_disks: {}, clone_snapshots: {})",
+            source_vm_id, config.new_name, config.clone_disks, config.clone_snapshots);
 
         let conn = libvirt.get_connection();
         let source_domain = Domain::lookup_by_uuid_string(conn, source_vm_id)
             .map_err(|_| AppError::VmNotFound(source_vm_id.to_string()))?;
 
+        // Ensure source VM is not running
+        let state = source_domain.get_state()
+            .map_err(map_libvirt_error)?;
+        if state.0 == virt::sys::VIR_DOMAIN_RUNNING {
+            return Err(AppError::LibvirtError("Cannot clone a running VM. Please shut it down first.".to_string()));
+        }
+
         // Get source VM XML
         let source_xml = source_domain.get_xml_desc(0)
             .map_err(map_libvirt_error)?;
 
-        // Parse and modify XML to create clone
-        let clone_xml = Self::modify_xml_for_clone(&source_xml, new_name)?;
+        // Extract disk paths from source XML
+        let disk_paths = Self::extract_disk_paths(&source_xml);
+        let mut disk_mappings: Vec<(String, String)> = Vec::new();
+
+        if config.clone_disks && !disk_paths.is_empty() {
+            tracing::info!("Cloning {} disk(s)", disk_paths.len());
+
+            for (index, source_path) in disk_paths.iter().enumerate() {
+                let source_path_obj = Path::new(source_path);
+
+                // Skip CDROM devices or non-existent paths
+                if !source_path_obj.exists() {
+                    continue;
+                }
+
+                // Generate new disk filename
+                let parent = source_path_obj.parent().unwrap_or(Path::new("/var/lib/libvirt/images"));
+                let extension = source_path_obj.extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("qcow2");
+
+                let new_filename = if disk_paths.len() > 1 {
+                    format!("{}-disk{}.{}", config.new_name, index, extension)
+                } else {
+                    format!("{}.{}", config.new_name, extension)
+                };
+
+                let target_path = if let Some(ref pool) = config.target_pool {
+                    // Get pool path from libvirt
+                    if let Ok(pool_obj) = virt::storage_pool::StoragePool::lookup_by_name(conn, pool) {
+                        if let Ok(pool_xml) = pool_obj.get_xml_desc(0) {
+                            let pool_path = Self::extract_pool_path(&pool_xml)
+                                .unwrap_or_else(|| "/var/lib/libvirt/images".to_string());
+                            format!("{}/{}", pool_path, new_filename)
+                        } else {
+                            parent.join(&new_filename).to_string_lossy().to_string()
+                        }
+                    } else {
+                        parent.join(&new_filename).to_string_lossy().to_string()
+                    }
+                } else {
+                    parent.join(&new_filename).to_string_lossy().to_string()
+                };
+
+                // Clone the disk using qemu-img
+                tracing::info!("Cloning disk: {} -> {}", source_path, target_path);
+                let output = Command::new("qemu-img")
+                    .args(["create", "-f", "qcow2", "-F", "qcow2", "-b", source_path, &target_path])
+                    .output()
+                    .map_err(|e| AppError::Other(format!("Failed to run qemu-img: {}", e)))?;
+
+                if !output.status.success() {
+                    // If backing file method fails, try full copy
+                    tracing::info!("Backing file clone failed, attempting full copy");
+                    let output = Command::new("qemu-img")
+                        .args(["convert", "-O", "qcow2", source_path, &target_path])
+                        .output()
+                        .map_err(|e| AppError::Other(format!("Failed to run qemu-img: {}", e)))?;
+
+                    if !output.status.success() {
+                        let stderr = String::from_utf8_lossy(&output.stderr);
+                        return Err(AppError::Other(format!("Disk clone failed: {}", stderr)));
+                    }
+                }
+
+                disk_mappings.push((source_path.clone(), target_path));
+            }
+        }
+
+        // Modify XML for clone (new name, MAC addresses, disk paths if cloned)
+        let clone_xml = Self::modify_xml_for_clone_extended(&source_xml, &config.new_name, &disk_mappings, &config.description)?;
 
         // Define the cloned domain
         let clone_domain = Domain::define_xml(conn, &clone_xml)
@@ -1760,12 +1840,94 @@ impl VmService {
         let clone_uuid = clone_domain.get_uuid_string()
             .map_err(map_libvirt_error)?;
 
-        tracing::info!("VM cloned successfully: {} (UUID: {})", new_name, clone_uuid);
+        // Clone snapshots if requested
+        if config.clone_snapshots {
+            if let Err(e) = Self::clone_snapshots(libvirt, source_vm_id, &clone_uuid) {
+                tracing::warn!("Failed to clone snapshots: {}", e);
+                // Don't fail the whole clone operation if snapshot cloning fails
+            }
+        }
+
+        tracing::info!("VM cloned successfully: {} (UUID: {})", config.new_name, clone_uuid);
         Ok(clone_uuid)
     }
 
-    /// Modify VM XML for cloning
-    fn modify_xml_for_clone(xml: &str, new_name: &str) -> Result<String, AppError> {
+    /// Extract disk paths from VM XML
+    fn extract_disk_paths(xml: &str) -> Vec<String> {
+        let mut paths = Vec::new();
+        let mut search_pos = 0;
+
+        while let Some(disk_start) = xml[search_pos..].find("<disk ") {
+            let abs_disk_start = search_pos + disk_start;
+
+            // Find the end of this disk element
+            if let Some(disk_end) = xml[abs_disk_start..].find("</disk>") {
+                let disk_section = &xml[abs_disk_start..abs_disk_start + disk_end + 7];
+
+                // Check if it's a disk device (not cdrom)
+                if disk_section.contains("device='disk'") || disk_section.contains("device=\"disk\"") {
+                    // Extract source file path
+                    if let Some(source_match) = Self::extract_source_file(disk_section) {
+                        paths.push(source_match);
+                    }
+                }
+
+                search_pos = abs_disk_start + disk_end + 7;
+            } else {
+                break;
+            }
+        }
+
+        paths
+    }
+
+    /// Extract source file from disk XML section
+    fn extract_source_file(disk_section: &str) -> Option<String> {
+        // Look for <source file='...'> or <source file="...">
+        if let Some(source_start) = disk_section.find("<source ") {
+            let source_section = &disk_section[source_start..];
+
+            // Try single quotes first
+            if let Some(file_start) = source_section.find("file='") {
+                let path_start = source_section[file_start + 6..].find("'")
+                    .map(|end| &source_section[file_start + 6..file_start + 6 + end]);
+                if let Some(path) = path_start {
+                    return Some(path.to_string());
+                }
+            }
+
+            // Try double quotes
+            if let Some(file_start) = source_section.find("file=\"") {
+                let path_start = source_section[file_start + 6..].find("\"")
+                    .map(|end| &source_section[file_start + 6..file_start + 6 + end]);
+                if let Some(path) = path_start {
+                    return Some(path.to_string());
+                }
+            }
+        }
+        None
+    }
+
+    /// Extract pool path from pool XML
+    fn extract_pool_path(xml: &str) -> Option<String> {
+        if let Some(target_start) = xml.find("<target>") {
+            if let Some(path_start) = xml[target_start..].find("<path>") {
+                let abs_path_start = target_start + path_start + 6;
+                if let Some(path_end) = xml[abs_path_start..].find("</path>") {
+                    return Some(xml[abs_path_start..abs_path_start + path_end].to_string());
+                }
+            }
+        }
+        None
+    }
+
+    /// Modify VM XML for cloning with disk path updates
+    fn modify_xml_for_clone_extended(
+        xml: &str,
+        new_name: &str,
+        disk_mappings: &[(String, String)],
+        description: &Option<String>,
+    ) -> Result<String, AppError> {
         let mut modified = xml.to_string();
 
         // Remove UUID to let libvirt generate a new one
@@ -1785,10 +1947,112 @@ impl VmService {
             }
         }
 
+        // Add or update description
+        if let Some(desc) = description {
+            if let Some(desc_start) = modified.find("<description>") {
+                if let Some(desc_end) = modified[desc_start..].find("</description>") {
+                    let content_start = desc_start + 13;
+                    let content_end = desc_start + desc_end;
+                    modified.replace_range(content_start..content_end, desc);
+                }
+            } else {
+                // Insert description after name
+                if let Some(name_end) = modified.find("</name>") {
+                    let insert_pos = name_end + 7;
+                    let desc_xml = format!("\n  <description>{}</description>", desc);
+                    modified.insert_str(insert_pos, &desc_xml);
+                }
+            }
+        }
+
+        // Update disk paths
+        for (old_path, new_path) in disk_mappings {
+            modified = modified.replace(old_path, new_path);
+        }
+
         // Generate new MAC addresses for network interfaces
         modified = Self::regenerate_mac_addresses(&modified);
 
         Ok(modified)
+    }
+
+    /// Clone snapshots from source VM to target VM
+    fn clone_snapshots(
+        libvirt: &LibvirtService,
+        source_vm_id: &str,
+        target_vm_id: &str,
+    ) -> Result<(), AppError> {
+        use virt::domain_snapshot::DomainSnapshot;
+
+        tracing::info!("Cloning snapshots from {} to {}", source_vm_id, target_vm_id);
+
+        let conn = libvirt.get_connection();
+        let source_domain = Domain::lookup_by_uuid_string(conn, source_vm_id)
+            .map_err(|_| AppError::VmNotFound(source_vm_id.to_string()))?;
+        let target_domain = Domain::lookup_by_uuid_string(conn, target_vm_id)
+            .map_err(|_| AppError::VmNotFound(target_vm_id.to_string()))?;
+
+        let snapshot_count = DomainSnapshot::num(&source_domain, 0)
+            .map_err(map_libvirt_error)?;
+
+        if snapshot_count == 0 {
+            tracing::info!("No snapshots to clone");
+            return Ok(());
+        }
+
+        let source_snapshots = source_domain.list_all_snapshots(0)
+            .map_err(map_libvirt_error)?;
+
+        // Clone each snapshot (without memory state - disk-only snapshots)
+        for snap in source_snapshots {
+            let name = snap.get_name()
+                .map_err(map_libvirt_error)?;
+            let description = snap.get_xml_desc(0)
+                .ok()
+                .and_then(|xml| {
+                    if let Some(start) = xml.find("<description>") {
+                        let section = &xml[start + 13..];
+                        if let Some(end) = section.find("</description>") {
+                            return Some(section[..end].to_string());
+                        }
+                    }
+                    None
+                })
+                .unwrap_or_else(|| format!("Cloned from {}", source_vm_id));
+
+            // Create disk-only snapshot on target
+            let snap_xml = format!(
+                r#"<domainsnapshot>
+  <name>{}</name>
+  <description>{}</description>
+  <memory snapshot='no'/>
+</domainsnapshot>"#,
+                name, description
+            );
+
+            match DomainSnapshot::create_xml(&target_domain, &snap_xml, 0) {
+                Ok(_) => tracing::info!("Cloned snapshot: {}", name),
+                Err(e) => tracing::warn!("Failed to clone snapshot {}: {}", name, e),
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Clone a VM (legacy method - calls enhanced version with defaults)
+    pub fn clone_vm(
+        libvirt: &LibvirtService,
+        source_vm_id: &str,
+        new_name: &str,
+    ) -> Result<String, AppError> {
+        let config = crate::models::vm::CloneConfig {
+            new_name: new_name.to_string(),
+            clone_disks: false, // Legacy behavior: reference existing disks
+            clone_snapshots: false,
+            target_pool: None,
+            description: None,
+        };
+        Self::clone_vm_with_options(libvirt, source_vm_id, &config)
     }
 
     /// Regenerate MAC addresses in XML
@@ -3607,6 +3871,211 @@ impl VmService {
 
         tracing::info!("Successfully attached network interface to VM {} with MAC {}", vm_id, mac);
         Ok(mac)
+    }
+
+    /// Attach a network interface to a VM with advanced options
+    /// Supports: network (NAT/isolated), bridge, direct (macvtap), and OVS
+    pub fn attach_interface_advanced(
+        libvirt: &LibvirtService,
+        vm_id: &str,
+        interface_type: &str,   // "network", "bridge", "direct", "ovs"
+        source: &str,           // network name, bridge name, or host interface
+        model: &str,
+        mac_address: Option<&str>,
+        source_mode: Option<&str>,  // For direct: bridge, vepa, private, passthrough
+        vlan_id: Option<u16>,
+        portgroup: Option<&str>,
+        mtu: Option<u32>,
+    ) -> Result<String, AppError> {
+        tracing::info!("Attaching {} interface to VM {} source={}", interface_type, vm_id, source);
+
+        let conn = libvirt.get_connection();
+        let domain = Domain::lookup_by_uuid_string(conn, vm_id)
+            .map_err(|_| AppError::VmNotFound(vm_id.to_string()))?;
+
+        // Validate model
+        let valid_models = ["virtio", "e1000", "e1000e", "rtl8139", "vmxnet3"];
+        if !valid_models.contains(&model) {
+            return Err(AppError::InvalidConfig(format!(
+                "Invalid model '{}'. Must be one of: {:?}",
+                model, valid_models
+            )));
+        }
+
+        // Generate MAC address if not provided
+        let mac = mac_address.map(String::from).unwrap_or_else(|| {
+            use std::time::{SystemTime, UNIX_EPOCH};
+            let t = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+            format!(
+                "52:54:00:{:02x}:{:02x}:{:02x}",
+                ((t >> 16) & 0xff) as u8,
+                ((t >> 8) & 0xff) as u8,
+                (t & 0xff) as u8
+            )
+        });
+
+        // Build interface XML based on type
+        let interface_xml = match interface_type {
+            "network" => {
+                let pg_attr = portgroup.map(|p| format!(" portgroup='{}'", p)).unwrap_or_default();
+                format!(
+                    r#"<interface type='network'>
+  <mac address='{}'/>
+  <source network='{}'{}/>
+  <model type='{}'/>
+</interface>"#,
+                    mac, source, pg_attr, model
+                )
+            }
+            "bridge" => {
+                format!(
+                    r#"<interface type='bridge'>
+  <mac address='{}'/>
+  <source bridge='{}'/>
+  <model type='{}'/>
+</interface>"#,
+                    mac, source, model
+                )
+            }
+            "direct" => {
+                // macvtap direct attachment to host interface
+                let mode = source_mode.unwrap_or("bridge");
+                let valid_modes = ["vepa", "bridge", "private", "passthrough"];
+                if !valid_modes.contains(&mode) {
+                    return Err(AppError::InvalidConfig(format!(
+                        "Invalid direct mode '{}'. Must be one of: {:?}",
+                        mode, valid_modes
+                    )));
+                }
+                format!(
+                    r#"<interface type='direct'>
+  <mac address='{}'/>
+  <source dev='{}' mode='{}'/>
+  <model type='{}'/>
+</interface>"#,
+                    mac, source, mode, model
+                )
+            }
+            "ovs" => {
+                // Open vSwitch bridge
+                let vlan_xml = vlan_id.map(|v| format!("\n  <vlan>\n    <tag id='{}'/>\n  </vlan>", v)).unwrap_or_default();
+                format!(
+                    r#"<interface type='bridge'>
+  <mac address='{}'/>
+  <source bridge='{}'/>
+  <virtualport type='openvswitch'/>
+  <model type='{}'/>{}
+</interface>"#,
+                    mac, source, model, vlan_xml
+                )
+            }
+            _ => {
+                return Err(AppError::InvalidConfig(format!(
+                    "Invalid interface type '{}'. Must be one of: network, bridge, direct, ovs",
+                    interface_type
+                )));
+            }
+        };
+
+        // Add MTU if specified
+        let interface_xml = if let Some(mtu_val) = mtu {
+            // Insert MTU before </interface>
+            interface_xml.replace("</interface>", &format!("  <mtu size='{}'/>\n</interface>", mtu_val))
+        } else {
+            interface_xml
+        };
+
+        // Attach interface (persistent and live if VM is running)
+        let flags = if domain.is_active().map_err(map_libvirt_error)? {
+            sys::VIR_DOMAIN_AFFECT_LIVE | sys::VIR_DOMAIN_AFFECT_CONFIG
+        } else {
+            sys::VIR_DOMAIN_AFFECT_CONFIG
+        };
+
+        domain.attach_device_flags(&interface_xml, flags)
+            .map_err(map_libvirt_error)?;
+
+        tracing::info!("Successfully attached {} interface to VM {} with MAC {}", interface_type, vm_id, mac);
+        Ok(mac)
+    }
+
+    /// List host network interfaces available for direct (macvtap) attachment
+    pub fn list_host_interfaces() -> Result<Vec<HostNetworkInterface>, AppError> {
+        use std::fs;
+
+        let mut interfaces = Vec::new();
+
+        // Read from /sys/class/net/
+        let net_path = std::path::Path::new("/sys/class/net");
+        if !net_path.exists() {
+            return Ok(interfaces);
+        }
+
+        for entry in fs::read_dir(net_path)? {
+            let entry = entry?;
+            let name = entry.file_name().to_string_lossy().to_string();
+
+            // Skip virtual interfaces (lo, virbr*, veth*, docker*, etc.)
+            if name == "lo" ||
+               name.starts_with("virbr") ||
+               name.starts_with("veth") ||
+               name.starts_with("docker") ||
+               name.starts_with("br-") ||
+               name.starts_with("vnet") {
+                continue;
+            }
+
+            let iface_path = entry.path();
+
+            // Read operstate
+            let state = fs::read_to_string(iface_path.join("operstate"))
+                .map(|s| s.trim().to_string())
+                .unwrap_or_else(|_| "unknown".to_string());
+
+            // Read MAC address
+            let mac = fs::read_to_string(iface_path.join("address"))
+                .map(|s| s.trim().to_string())
+                .unwrap_or_else(|_| "".to_string());
+
+            // Read speed if available
+            let speed = fs::read_to_string(iface_path.join("speed"))
+                .ok()
+                .and_then(|s| s.trim().parse::<u32>().ok());
+
+            // Read MTU
+            let mtu = fs::read_to_string(iface_path.join("mtu"))
+                .ok()
+                .and_then(|s| s.trim().parse::<u32>().ok());
+
+            // Check if it's a physical interface (has device symlink)
+            let is_physical = iface_path.join("device").exists();
+
+            // Get driver name
+            let driver = fs::read_link(iface_path.join("device/driver"))
+                .ok()
+                .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()));
+
+            interfaces.push(HostNetworkInterface {
+                name: name.clone(),
+                mac_address: mac,
+                state,
+                speed,
+                mtu,
+                is_physical,
+                driver,
+            });
+        }
+
+        // Sort physical interfaces first
+        interfaces.sort_by(|a, b| {
+            match (a.is_physical, b.is_physical) {
+                (true, false) => std::cmp::Ordering::Less,
+                (false, true) => std::cmp::Ordering::Greater,
+                _ => a.name.cmp(&b.name),
+            }
+        });
+
+        Ok(interfaces)
     }
 
     /// Detach a network interface from a VM by MAC address
@@ -6049,4 +6518,83 @@ pub struct UsbRedirectionInfo {
     pub enabled: bool,
     pub channel_count: u32,
     pub has_spice_graphics: bool,
+}
+
+impl VmService {
+    /// Check if a VM can be migrated (has compatible storage, etc.)
+    pub fn check_migration_compatibility(libvirt: &LibvirtService, vm_id: &str) -> Result<(bool, Vec<String>), AppError> {
+        let conn = libvirt.get_connection();
+        let mut warnings: Vec<String> = Vec::new();
+        let mut can_migrate = true;
+
+        // Look up the domain by UUID
+        let domain = Domain::lookup_by_uuid_string(conn, vm_id)
+            .map_err(|_| AppError::VmNotFound(vm_id.to_string()))?;
+
+        // Get domain XML to check for migration blockers
+        let xml = domain.get_xml_desc(0)
+            .map_err(|e| AppError::LibvirtError(format!("Failed to get VM XML: {}", e)))?;
+
+        // Simple XML parsing to check for migration blockers
+        // Check for local file-based disks
+        for line in xml.lines() {
+            let trimmed = line.trim();
+
+            // Check for local disk files
+            if trimmed.starts_with("<source file='") {
+                if let Some(start) = trimmed.find("file='") {
+                    let path_start = start + 6;
+                    if let Some(end) = trimmed[path_start..].find("'") {
+                        let path = &trimmed[path_start..path_start + end];
+                        // Local files may need shared storage for migration
+                        if path.starts_with("/var/lib/libvirt/images/") ||
+                           path.starts_with("/home/") ||
+                           (!path.contains("://") && !path.starts_with("/dev/")) {
+                            warnings.push(format!("Local disk '{}' - may need shared storage", path));
+                        }
+                    }
+                }
+            }
+
+            // Check for PCI host device passthrough
+            if trimmed.contains("<hostdev mode='subsystem' type='pci'") {
+                can_migrate = false;
+                warnings.push("PCI passthrough device detected - prevents live migration".to_string());
+            }
+
+            // Check for USB host device passthrough
+            if trimmed.contains("<hostdev mode='subsystem' type='usb'") {
+                warnings.push("USB passthrough device detected - may affect migration".to_string());
+            }
+
+            // Check for TPM
+            if trimmed.starts_with("<tpm ") {
+                warnings.push("TPM device detected - state may not transfer correctly".to_string());
+            }
+
+            // Check for MDEV passthrough
+            if trimmed.contains("<hostdev mode='subsystem' type='mdev'") {
+                can_migrate = false;
+                warnings.push("MDEV passthrough device detected - prevents live migration".to_string());
+            }
+        }
+
+        Ok((can_migrate, warnings))
+    }
+
+    /// Get list of available migration destinations from saved connections
+    pub fn get_migration_targets(
+        connections: &crate::services::connection_service::ConnectionService,
+    ) -> Result<Vec<(String, String)>, AppError> {
+        let saved = connections.get_saved_connections()?;
+
+        // Filter to remote connections only (not local)
+        let targets: Vec<(String, String)> = saved
+            .into_iter()
+            .filter(|c| c.connection_type != crate::services::connection_service::ConnectionType::Local)
+            .map(|c| (c.id.clone(), c.build_uri()))
+            .collect();
+
+        Ok(targets)
+    }
 }

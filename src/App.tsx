@@ -12,6 +12,7 @@ import { Alerts } from './pages/Alerts'
 import Backups from './pages/Backups'
 import Settings from './pages/Settings'
 import Insights from './pages/Insights'
+import { PerformanceMonitor } from './pages/PerformanceMonitor'
 import { Toaster } from './components/ui/sonner'
 import React from 'react'
 
@@ -58,6 +59,7 @@ function App() {
           {/* Main window routes (with Layout) */}
           <Route path="/" element={<Layout><VmList /></Layout>} />
           <Route path="/dashboard" element={<Layout><Dashboard /></Layout>} />
+          <Route path="/performance" element={<Layout><PerformanceMonitor /></Layout>} />
           <Route path="/storage" element={<Layout><StorageManager /></Layout>} />
           <Route path="/networks" element={<Layout><NetworkManager /></Layout>} />
           <Route path="/insights" element={<Layout><Insights /></Layout>} />

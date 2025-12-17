@@ -220,42 +220,64 @@ export function BootEditor({ vm, compact }: BootEditorProps) {
     setBootOrderError(null)
   }
 
-  // Compact mode - inline boot order pills and autostart toggle
+  // Compact mode - clean boot order display
   if (compact) {
+    const [editing, setEditing] = useState(false)
+
     return (
-      <div className="space-y-2">
-        <div className="flex items-center flex-wrap gap-1.5">
-          {bootOrder.map((device, index) => {
-            const info = BOOT_DEVICE_INFO[device]
-            const Icon = info.icon
-            return (
-              <div key={device} className="flex items-center gap-1 px-2 py-0.5 border rounded bg-muted/50 text-xs">
-                <span className="text-muted-foreground">{index + 1}.</span>
-                <Icon className="h-3 w-3" />
-                <span>{info.label}</span>
-                <Button size="icon" variant="ghost" className="h-4 w-4 ml-0.5" onClick={() => moveDevice(index, 'up')} disabled={index === 0}>
-                  <ChevronUp className="h-2.5 w-2.5" />
+      <div className="space-y-1.5">
+        {editing ? (
+          <div className="flex items-center flex-wrap gap-1">
+            {bootOrder.map((device, index) => {
+              const info = BOOT_DEVICE_INFO[device]
+              const Icon = info.icon
+              return (
+                <div key={device} className="flex items-center gap-0.5 px-1.5 py-0.5 border rounded text-[10px] bg-muted/50">
+                  <span className="text-muted-foreground">{index + 1}.</span>
+                  <Icon className="h-2.5 w-2.5" />
+                  <span>{info.label}</span>
+                  <button onClick={() => moveDevice(index, 'up')} disabled={index === 0} className="ml-0.5 hover:text-foreground disabled:opacity-30">
+                    <ChevronUp className="h-2.5 w-2.5" />
+                  </button>
+                  <button onClick={() => moveDevice(index, 'down')} disabled={index === bootOrder.length - 1} className="hover:text-foreground disabled:opacity-30">
+                    <ChevronDown className="h-2.5 w-2.5" />
+                  </button>
+                </div>
+              )
+            })}
+            {hasBootOrderChanges ? (
+              <>
+                <Button size="sm" variant="default" onClick={() => { handleApplyBootOrder(); setEditing(false) }} disabled={bootOrderLoading} className="h-5 px-2 text-[10px]">
+                  {bootOrderLoading ? <Loader2 className="h-3 w-3 animate-spin" /> : 'Save'}
                 </Button>
-                <Button size="icon" variant="ghost" className="h-4 w-4" onClick={() => moveDevice(index, 'down')} disabled={index === bootOrder.length - 1}>
-                  <ChevronDown className="h-2.5 w-2.5" />
-                </Button>
-              </div>
-            )
-          })}
-          {hasBootOrderChanges && (
-            <>
-              <Button size="sm" variant="default" onClick={handleApplyBootOrder} disabled={bootOrderLoading} className="h-5 px-2 text-xs">
-                {bootOrderLoading ? <Loader2 className="h-3 w-3 animate-spin" /> : 'Apply'}
-              </Button>
-              <Button size="sm" variant="ghost" onClick={handleRevertBootOrder} className="h-5 px-2 text-xs">Revert</Button>
-            </>
-          )}
+                <Button size="sm" variant="ghost" onClick={() => { handleRevertBootOrder(); setEditing(false) }} className="h-5 px-1 text-[10px]">✕</Button>
+              </>
+            ) : (
+              <Button size="sm" variant="ghost" onClick={() => setEditing(false)} className="h-5 px-1 text-[10px]">Done</Button>
+            )}
+          </div>
+        ) : (
+          <button
+            onClick={() => setEditing(true)}
+            className="flex items-center gap-1 hover:bg-muted/50 rounded px-1 -mx-1 transition-colors text-sm"
+          >
+            {bootOrder.map((device, index) => {
+              const info = BOOT_DEVICE_INFO[device]
+              const Icon = info.icon
+              return (
+                <span key={device} className="flex items-center gap-0.5">
+                  {index > 0 && <span className="text-muted-foreground mx-0.5">›</span>}
+                  <Icon className="h-3 w-3 text-muted-foreground" />
+                  <span className="text-xs">{info.label}</span>
+                </span>
+              )
+            })}
+          </button>
+        )}
+        <div className="flex items-center gap-1.5">
+          <Switch checked={autostart} onCheckedChange={handleAutostartChange} disabled={autostartLoading} className="scale-[0.6] origin-left" />
+          <span className="text-[10px] text-muted-foreground">Autostart with host</span>
         </div>
-        <div className="flex items-center gap-2">
-          <Switch checked={autostart} onCheckedChange={handleAutostartChange} disabled={autostartLoading} className="scale-75" />
-          <span className="text-xs text-muted-foreground">Autostart with host</span>
-        </div>
-        {bootOrderError && <p className="text-xs text-red-500">{bootOrderError}</p>}
       </div>
     )
   }

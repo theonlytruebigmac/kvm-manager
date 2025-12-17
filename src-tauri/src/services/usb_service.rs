@@ -375,3 +375,89 @@ pub fn detach_usb_device(
 fn is_valid_hex_id(id: &str) -> bool {
     id.len() == 4 && id.chars().all(|c| c.is_ascii_hexdigit())
 }
+
+/// Get list of USB devices attached to a specific VM
+pub fn get_vm_usb_devices(
+    libvirt: &LibvirtService,
+    vm_id: &str,
+) -> Result<Vec<UsbDevice>, String> {
+    let conn = libvirt.get_connection();
+
+    let domain = Domain::lookup_by_uuid_string(conn, vm_id)
+        .map_err(|e| format!("VM '{}' not found: {}", vm_id, e))?;
+
+    let xml = domain
+        .get_xml_desc(0)
+        .map_err(|e| format!("Failed to get VM XML: {}", e))?;
+
+    let mut attached_devices = Vec::new();
+
+    // Parse USB devices from domain XML
+    let mut pos = 0;
+    while let Some(start) = xml[pos..].find("<hostdev") {
+        let absolute_start = pos + start;
+
+        if let Some(end) = xml[absolute_start..].find("</hostdev>") {
+            let block = &xml[absolute_start..absolute_start + end + 10];
+
+            if block.contains("type='usb'") || block.contains("type=\"usb\"") {
+                // Extract vendor ID
+                let vendor_id = extract_id_from_xml(block, "vendor");
+                let product_id = extract_id_from_xml(block, "product");
+
+                if let (Some(vid), Some(pid)) = (vendor_id, product_id) {
+                    // Try to get device name from lsusb
+                    let (vendor_name, product_name, description) =
+                        get_device_names_from_lsusb(&vid, &pid);
+
+                    attached_devices.push(UsbDevice {
+                        bus: String::new(),
+                        device: String::new(),
+                        vendor_id: vid,
+                        product_id: pid,
+                        vendor_name,
+                        product_name,
+                        description,
+                        speed: None,
+                        device_class: None,
+                        in_use: true,
+                        used_by_vm: None,
+                    });
+                }
+            }
+
+            pos = absolute_start + end + 10;
+        } else {
+            break;
+        }
+    }
+
+    Ok(attached_devices)
+}
+
+/// Get device names from lsusb by vendor:product ID
+fn get_device_names_from_lsusb(vendor_id: &str, product_id: &str) -> (String, String, String) {
+    let search_pattern = format!("{}:{}", vendor_id, product_id);
+
+    // Use lsusb to find device info
+    if let Ok(output) = Command::new("lsusb").output() {
+        if output.status.success() {
+            let lsusb_output = String::from_utf8_lossy(&output.stdout);
+            for line in lsusb_output.lines() {
+                if line.to_lowercase().contains(&search_pattern.to_lowercase()) {
+                    // Parse the description
+                    if let Some(id_start) = line.find("ID ") {
+                        let id_part = &line[id_start + 3..];
+                        if id_part.len() > 10 {
+                            let description = id_part[10..].trim().to_string();
+                            let (vendor_name, product_name) = parse_description(&description);
+                            return (vendor_name, product_name, description);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    ("Unknown".to_string(), "Unknown".to_string(), format!("{}:{}", vendor_id, product_id))
+}

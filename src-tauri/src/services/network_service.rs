@@ -140,7 +140,8 @@ impl NetworkService {
         let ip_config = if forward_mode == "bridge" {
             String::new()
         } else {
-            format!(
+            // IPv4 configuration
+            let ipv4_config = format!(
                 r#"  <ip address='{}' netmask='{}'>
     <dhcp>
       <range start='{}' end='{}'/>
@@ -151,7 +152,36 @@ impl NetworkService {
                 config.netmask,
                 config.dhcp_start,
                 config.dhcp_end
-            )
+            );
+
+            // IPv6 configuration (optional)
+            let ipv6_config = if config.ipv6_enabled {
+                if let (Some(ref ipv6_addr), Some(prefix)) = (&config.ipv6_address, config.ipv6_prefix) {
+                    let dhcp_section = if let (Some(ref start), Some(ref end)) = (&config.ipv6_dhcp_start, &config.ipv6_dhcp_end) {
+                        format!(
+                            r#"
+    <dhcp>
+      <range start='{}' end='{}'/>
+    </dhcp>"#,
+                            start, end
+                        )
+                    } else {
+                        String::new()
+                    };
+
+                    format!(
+                        r#"  <ip family='ipv6' address='{}' prefix='{}'>{}</ip>
+"#,
+                        ipv6_addr, prefix, dhcp_section
+                    )
+                } else {
+                    String::new()
+                }
+            } else {
+                String::new()
+            };
+
+            format!("{}{}", ipv4_config, ipv6_config)
         };
 
         let xml = format!(

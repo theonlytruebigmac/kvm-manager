@@ -18,3 +18,4 @@ pub mod usb;
 pub mod mdev;
 pub mod nwfilter;
 pub mod serial_console;
+pub mod sriov;

@@ -1,6 +1,6 @@
 # KVM Manager - Current Status & Roadmap
-**Last Updated**: December 16, 2025 (Phase 4 Backend Integration Progress - Session 13)
-**Version**: 0.2.12
+**Last Updated**: December 17, 2025 (Phase 4 Backend Integration Progress - Session 14)
+**Version**: 0.2.18
 **Status**: Phase 4 Complete ✅ | **Desktop UI Redesign: Phase 4 Major Progress**
 
 ---
@@ -18,6 +18,124 @@
 ---
 
 ## 🔄 Recent Session Work
+
+**Session 14 Continued (Dec 17) - Performance Monitor & VFIO:**
+- ✅ **Performance Monitor Dashboard** (NEW PAGE)
+  - Created comprehensive /performance page with real-time monitoring
+  - System-wide aggregated stats for all running VMs (CPU, Memory, Network, Disk)
+  - Per-VM performance cards with CPU/Memory progress bars
+  - Alert thresholds: configurable warning (70%) and critical (90%) levels
+  - Visual alert system with badges for VMs exceeding thresholds
+  - Alert summary banners: green (all normal), yellow (warnings), red (critical)
+  - Real-time aggregated graphs: CPU, Memory, Network I/O, Disk I/O
+  - Auto-refresh toggle for live monitoring (1 second intervals)
+  - Threshold settings panel with collapsible configuration
+  - Navigation: Command palette, Tools menu, /performance route
+  - Uses AreaChart for CPU/Memory, LineChart for I/O metrics
+- ✅ **VFIO Driver Management** (Complete)
+  - Backend: bind_vfio_driver, unbind_vfio_driver, is_device_bound_to_vfio
+  - Tauri commands: bind_pci_to_vfio, unbind_pci_from_vfio
+  - Frontend: VFIO binding controls in AddHardwareDialog PCI section
+  - Driver status badges (green=vfio-pci, yellow=other driver)
+  - Bind/Unbind buttons per PCI device with loading state
+
+**Session 14 Continued (Dec 17) - Guest Agent VM List Integration:**
+- ✅ **Guest Agent Status in VM Table**
+  - Added Bot/BotOff icons to show agent status in Network column
+  - Agent status query checks every 10 seconds for running VMs
+  - Guest network info fetched from agent for accurate IP addresses
+  - IP address priority: Guest agent data → libvirt DHCP leases
+  - Tooltip shows guest OS name, version, hostname when agent available
+  - IPv4 addresses preferred over IPv6 (excluding link-local)
+  - Skips loopback interfaces when looking for IP
+- ✅ **Feature Parity Audit**
+  - Verified SPICE Console fully integrated (SpiceViewer.tsx in ConsoleWindow)
+  - Verified Serial Console fully integrated (SerialConsole.tsx with tabs)
+  - Verified Guest Agent UI fully integrated (GuestInfo.tsx in VmDetails)
+  - Updated status documentation to reflect accurate feature state
+  - VM Console now at 100% complete (VNC + SPICE + Serial)
+
+**Session 14 (Dec 17) - Live Migration Enhancement:**
+- ✅ **Enhanced Live Migration Support**
+  - Backend: check_migration_compatibility - checks for PCI/MDEV passthrough, local disks, TPM, USB devices
+  - Backend: get_migration_targets - lists remote connections from ConnectionService
+  - Added MigrationTarget and MigrationCompatibility types to types.ts
+  - Added checkMigrationCompatibility and getMigrationTargets to API
+  - MigrationDialog already fully implemented with:
+    - Saved connection selection or custom URI
+    - Live migration toggle (for running VMs)
+    - Unsafe migration option (skip storage checks)
+    - Migration info display (memory, disk size, estimated downtime)
+    - Full integration with VM context menu
+  - Registered new commands: check_migration_compatibility, get_migration_targets
+
+**Session 14 (Dec 17) - Clone with Snapshots, IPv6 Networks, USB Hot-plug, SR-IOV & Advanced Networking:**
+- ✅ **Enhanced VM Clone with Disk & Snapshot Cloning**
+  - Added CloneConfig model with cloneDisks, cloneSnapshots, targetPool, description options
+  - Backend: clone_vm_with_options - full-featured clone with disk copying
+  - Disk cloning uses qemu-img (tries backing file first, then full copy)
+  - Validates source VM is not running before cloning
+  - Updates disk paths in cloned VM XML to point to new files
+  - Snapshot cloning copies snapshot metadata to cloned VM (disk-only snapshots)
+  - Target storage pool selection for cloned disk location
+  - Keeps legacy clone_vm for backward compatibility
+  - Frontend: CloneVmDialog completely redesigned
+  - Clone disks checkbox (creates independent copies)
+  - Clone snapshots checkbox (copies snapshot metadata)
+  - Advanced options collapsible: target pool selector, description field
+  - Warning message when not cloning disks (linked clone warning)
+  - Storage pool query for target selection
+- ✅ **IPv6 Network Support** - Dual-stack virtual networks
+  - Extended NetworkConfig model with IPv6 fields (ipv6Enabled, ipv6Address, ipv6Prefix, ipv6DhcpStart, ipv6DhcpEnd)
+  - Backend: Updated create_network to generate IPv6 XML with DHCPv6 range
+  - IPv6 section in network XML with family='ipv6' attribute
+  - Frontend: IPv6 configuration in Create Network dialog
+  - Enable IPv6 switch with collapsible configuration section
+  - IPv6 address and prefix length inputs
+  - DHCPv6 range configuration (start/end addresses)
+  - ULA (fd00::/8) address recommendations for private networks
+  - Hidden in bridge mode (no IP config for bridge networks)
+- ✅ **USB Hot-plug Support** - Attach/detach USB devices on running VMs
+  - Backend: get_vm_usb_devices function in usb_service.rs
+  - Parses VM XML to find attached USB hostdev devices
+  - Uses lsusb to lookup device vendor/product names
+  - Frontend: UsbDeviceManager component with tabs for attached/available devices
+  - Attach/detach USB devices with immediate effect on running VMs
+  - Auto-refresh every 5 seconds to track device state
+  - Shows device details (name, vendor ID, product ID, speed)
+  - Integrated into VM context menu as "USB Devices" option
+- ✅ **SR-IOV Network Support** - High-performance VF passthrough
+  - Backend: sriov_service.rs with full SR-IOV VF management
+  - list_sriov_pfs: Scan /sys/bus/pci/devices for SR-IOV capable NICs
+  - list_vfs: List Virtual Functions for a Physical Function
+  - enable_vfs: Enable/disable VFs on a PF (writes sriov_numvfs)
+  - configure_vf: Set MAC, VLAN, spoof check, trust via ip link
+  - attach_vf_to_vm: Attach VF to running VM as hostdev
+  - detach_vf_from_vm: Detach VF from VM
+  - Commands: list_sriov_pfs, list_sriov_vfs, enable_sriov_vfs, configure_sriov_vf, attach_sriov_vf, detach_sriov_vf
+  - Frontend: SriovManager component with collapsible PF tree
+  - Tabs: Physical Functions view / Attached to VM view
+  - +/- buttons to enable/disable VFs on each PF
+  - Configure VF dialog: MAC address, VLAN ID, spoof check, trust mode
+  - Attach/detach VFs to running VM
+  - Shows VF status (available, in use, attached to VM)
+  - Integrated into VM context menu as "SR-IOV Network" option
+- ✅ **Advanced Network Interface Types** - Macvtap, Bridge, OVS support
+  - Backend: attach_interface_advanced with support for multiple interface types
+  - Interface types: network (NAT/isolated), bridge, direct (macvtap), ovs (Open vSwitch)
+  - Macvtap modes: bridge, vepa, private, passthrough
+  - Open vSwitch VLAN tagging support
+  - Custom MTU configuration per interface
+  - list_host_interfaces: Discover host NICs for macvtap/direct attachment
+  - Shows physical interfaces with speed, state, driver info
+  - Frontend: AddNetworkInterfaceDialog component
+  - Interface type selector with descriptions
+  - Dynamic source selection based on type (network list, host interfaces, bridge name)
+  - Macvtap mode selector with mode descriptions
+  - NIC model selector (virtio recommended, e1000e, rtl8139)
+  - Advanced options: MAC address, VLAN ID (OVS), MTU
+  - Passthrough mode warning about exclusive NIC access
+  - HostNetworkInterface type for host NIC discovery
 
 **Session 13 (Dec 16) - Network Storage & OVA Import:**
 - ✅ **Network Storage Pools - GlusterFS & Ceph RBD** - Enterprise storage support
@@ -445,12 +563,14 @@
 
 ## ⚠️ In Progress / Partial Implementation
 
-### VM Console (70%)
-- ✅ VNC console via noVNC
+### VM Console (100% COMPLETE) ✅
+- ✅ VNC console via noVNC 1.6.0
+- ✅ SPICE console via spice-html5
+- ✅ Serial console (text-mode for headless VMs)
 - ✅ Console window management
-- ❌ SPICE console support
-- ❌ Serial console
-- ❌ Graphical console settings
+- ✅ Graphical/Serial tab switching
+- ✅ Auto graphics type detection
+- ⚠️ In-app audio forwarding (Spice audio works via native clients)
 
 ### Guest Agent (80%)
 - ✅ Agent communication protocol (JSON-RPC over virtio-serial)
@@ -470,7 +590,7 @@
 - ✅ IOMMU group detection
 - ✅ Device attach/detach (full implementation)
 - ✅ PCI Passthrough UI in Add Hardware dialog
-- ❌ VFIO driver management (automatic unbind/rebind)
+- ✅ VFIO driver management (automatic unbind/rebind) - DONE Session 14
 
 ---
 
@@ -664,17 +784,46 @@ npm run tauri build
    - Port forwarding setup
    - Network isolation
 
-### Low Priority
-7. **Remote Connections**
-   - SSH tunnel support
-   - TCP connections
-   - Connection manager UI
+---
 
-8. **Advanced Features**
-   - VM migration
-   - CPU pinning
-   - NUMA configuration
-   - Performance tuning
+## 📋 Next Steps (Priority Order)
+
+### High Priority (Feature Completion)
+1. ~~**VFIO Driver Management**~~ ✅ COMPLETE (Session 14)
+   - ✅ Automatic unbind from host drivers
+   - ✅ Rebind to vfio-pci for GPU passthrough
+   - ✅ Driver state tracking in UI
+
+2. ~~**Performance Monitoring Dashboard**~~ ✅ COMPLETE (Session 14)
+   - ✅ Real-time CPU/memory graphs
+   - ✅ Historical performance data (aggregated)
+   - ✅ Alert thresholds (configurable warning/critical)
+
+3. **Windows Guest Agent**
+   - Complete Windows implementation
+   - MSI installer package
+   - Service installation and auto-start
+
+### Medium Priority (Polish)
+3. **In-App Audio Forwarding**
+   - SPICE audio integration
+   - PulseAudio/PipeWire backend
+
+4. **Performance Monitoring Dashboard**
+   - Real-time CPU/memory graphs
+   - Historical performance data
+   - Alert thresholds
+
+### Low Priority (Nice-to-Have)
+5. **UI Polish**
+   - Desktop menu bar implementation
+   - Keyboard shortcut improvements
+   - Status bar for connection info
+
+6. **Additional Storage Types**
+   - ZFS pool support
+   - LVM thin provisioning
+   - Multipath storage
 
 ---
 
@@ -705,11 +854,9 @@ npm run tauri build
 
 ## 🐛 Known Issues
 
-1. **VNC Console**: May not work with all VM configurations
-2. **Guest Agent**: Windows agent incomplete
-3. **PCI Passthrough**: Backend only, no UI yet
-4. **Remote Connections**: Not implemented
-5. **Snapshots**: Not implemented
+1. **Guest Agent**: Windows agent incomplete, no auto-detection in VM list
+2. **PCI Passthrough**: No automatic VFIO driver rebind
+3. **Audio**: SPICE audio requires native client (no in-app forwarding)
 
 ---
 

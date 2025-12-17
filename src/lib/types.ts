@@ -3,6 +3,12 @@
 
 export type VmState = 'running' | 'stopped' | 'paused' | 'suspended' | 'crashed'
 
+// Interface connection types
+export type InterfaceType = 'network' | 'bridge' | 'direct' | 'ovs'
+
+// Macvtap direct modes
+export type DirectMode = 'bridge' | 'vepa' | 'private' | 'passthrough'
+
 export interface NetworkInterface {
   name: string
   macAddress: string
@@ -17,6 +23,17 @@ export interface NetworkInterface {
   outboundAverage?: number
   outboundPeak?: number
   outboundBurst?: number
+}
+
+// Host network interface for macvtap/direct attachment
+export interface HostNetworkInterface {
+  name: string
+  macAddress: string
+  state: string
+  speed?: number
+  mtu?: number
+  isPhysical: boolean
+  driver?: string
 }
 
 export interface DiskDevice {
@@ -224,6 +241,15 @@ export interface CloneVmConfig {
   newName: string
 }
 
+// Advanced clone configuration matching Rust CloneConfig
+export interface CloneConfig {
+  newName: string
+  cloneDisks: boolean
+  cloneSnapshots: boolean
+  targetPool?: string
+  description?: string
+}
+
 export interface VncInfo {
   host: string
   port: number
@@ -250,6 +276,15 @@ export interface MigrationInfo {
   memoryMb: number
   diskSizeGb: number
   estimatedDowntimeSeconds: number
+}
+
+// Migration target from saved connections
+export type MigrationTarget = [string, string] // [connectionId, uri]
+
+// Migration compatibility check result
+export interface MigrationCompatibility {
+  canMigrate: boolean
+  warnings: string[]
 }
 
 // NUMA configuration types
@@ -308,10 +343,17 @@ export interface NetworkConfig {
   name: string
   bridgeName: string
   forwardMode: 'nat' | 'route' | 'bridge' | 'isolated'
+  // IPv4 configuration
   ipAddress: string
   netmask: string
   dhcpStart: string
   dhcpEnd: string
+  // IPv6 configuration (optional)
+  ipv6Enabled?: boolean
+  ipv6Address?: string
+  ipv6Prefix?: number
+  ipv6DhcpStart?: string
+  ipv6DhcpEnd?: string
   autostart: boolean
 }
 
@@ -670,6 +712,14 @@ export interface IommuStatus {
   warning?: string
 }
 
+export interface VfioStatus {
+  deviceAddress: string
+  boundToVfio: boolean
+  currentDriver?: string
+  iommuEnabled: boolean
+  canBind: boolean
+}
+
 // ===== USB Device Types =====
 
 export interface UsbDevice {
@@ -710,6 +760,40 @@ export interface MdevStatus {
   supported: boolean
   message: string
   supportedVendors: string[]
+}
+
+// ===== SR-IOV Types =====
+
+export interface SriovPf {
+  address: string
+  deviceName: string
+  vendor: string
+  interfaceName?: string
+  maxVfs: number
+  numVfs: number
+  availableVfs: number
+  driver?: string
+  linkSpeed?: string
+}
+
+export interface SriovVf {
+  address: string
+  vfIndex: number
+  parentPf: string
+  macAddress?: string
+  vlanId?: number
+  inUse: boolean
+  attachedToVm?: string
+  iommuGroup?: number
+}
+
+export interface SriovVfConfig {
+  pfInterface: string
+  vfIndex: number
+  macAddress?: string
+  vlanId?: number
+  spoofCheck?: boolean
+  trust?: boolean
 }
 
 // ===== Guest Agent Types =====

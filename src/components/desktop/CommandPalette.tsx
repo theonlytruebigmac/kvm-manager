@@ -33,6 +33,7 @@ import {
   RotateCw,
   Power,
   Keyboard,
+  Gauge,
 } from 'lucide-react'
 import type { VM } from '@/lib/types'
 
@@ -243,6 +244,10 @@ export function CommandPalette({ open: controlledOpen, onOpenChange }: CommandPa
           <CommandItem onSelect={() => runCommand(() => navigate('/'))}>
             <LayoutDashboard className="mr-2 h-4 w-4" />
             <span>Virtual Machines</span>
+          </CommandItem>
+          <CommandItem onSelect={() => runCommand(() => navigate('/performance'))}>
+            <Gauge className="mr-2 h-4 w-4" />
+            <span>Performance Monitor</span>
           </CommandItem>
           <CommandItem onSelect={() => runCommand(() => navigate('/storage'))}>
             <HardDrive className="mr-2 h-4 w-4" />

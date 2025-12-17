@@ -10,8 +10,14 @@ import {
   ContextMenuSeparator,
   ContextMenuTrigger,
 } from '@/components/ui/context-menu'
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
-import { Search, Play, Square, Pause, Monitor, Copy, Trash2, Edit3, ArrowRightLeft, Moon } from 'lucide-react'
+import { Search, Play, Square, Pause, Monitor, Copy, Trash2, Edit3, ArrowRightLeft, Moon, Bot, BotOff } from 'lucide-react'
 import { toast } from 'sonner'
 import type { VM } from '@/lib/types'
 
@@ -45,6 +51,33 @@ function VmRow({ vm, isSelected, onToggleSelect, onDoubleClick, onOpenRename, on
     queryFn: () => api.getVmStats(vm.id),
     enabled: vm.state === 'running',
     refetchInterval: 2000,
+  })
+
+  // Check guest agent status for running VMs
+  const { data: agentStatus } = useQuery({
+    queryKey: ['guestAgentStatus', vm.name],
+    queryFn: () => api.checkGuestAgentStatus(vm.name),
+    enabled: vm.state === 'running',
+    refetchInterval: 10000, // Check every 10 seconds
+    retry: false,
+  })
+
+  // Get guest network info if agent is available
+  const { data: guestNetworkInfo } = useQuery({
+    queryKey: ['guestNetworkInfo', vm.name],
+    queryFn: () => api.getGuestNetworkInfo(vm.name),
+    enabled: agentStatus?.available === true,
+    refetchInterval: 15000,
+    retry: false,
+  })
+
+  // Get guest system info for tooltip
+  const { data: guestSystemInfo } = useQuery({
+    queryKey: ['guestSystemInfo', vm.name],
+    queryFn: () => api.getGuestSystemInfo(vm.name),
+    enabled: agentStatus?.available === true,
+    refetchInterval: 30000,
+    retry: false,
   })
 
   // VM action mutations
@@ -132,7 +165,26 @@ function VmRow({ vm, isSelected, onToggleSelect, onDoubleClick, onOpenRename, on
     e.stopPropagation()
   }
 
+  // Get IP address - prefer guest agent data over libvirt DHCP lease
   const getNetworkAddress = () => {
+    // First try guest agent network info (most accurate)
+    if (guestNetworkInfo?.interfaces) {
+      for (const iface of guestNetworkInfo.interfaces) {
+        // Skip loopback
+        if (iface.name === 'lo') continue
+        // Prefer IPv4
+        if (iface.ipv4Addresses && iface.ipv4Addresses.length > 0) {
+          return iface.ipv4Addresses[0]
+        }
+        // Fall back to IPv6 (non-link-local)
+        if (iface.ipv6Addresses) {
+          const nonLinkLocal = iface.ipv6Addresses.find(addr => !addr.startsWith('fe80'))
+          if (nonLinkLocal) return nonLinkLocal
+        }
+      }
+    }
+
+    // Fall back to libvirt DHCP lease
     if (!vm.networkInterfaces || vm.networkInterfaces.length === 0) {
       return '-'
     }
@@ -143,6 +195,7 @@ function VmRow({ vm, isSelected, onToggleSelect, onDoubleClick, onOpenRename, on
   const isRunning = vm.state === 'running'
   const isPaused = vm.state === 'paused'
   const isStopped = vm.state === 'stopped'
+  const hasAgent = agentStatus?.available === true
 
   const rowContent = (
     <tr
@@ -224,9 +277,47 @@ function VmRow({ vm, isSelected, onToggleSelect, onDoubleClick, onOpenRename, on
         {vm.diskSizeGb} GB
       </td>
 
-      {/* Network */}
-      <td className="px-4 py-1 w-32 text-sm text-muted-foreground font-mono text-xs">
-        {getNetworkAddress()}
+      {/* Network + Agent Status */}
+      <td className="px-4 py-1 w-40 text-sm text-muted-foreground">
+        <div className="flex items-center gap-1.5">
+          {/* Agent status indicator */}
+          {isRunning && (
+            <TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <span className="flex-shrink-0">
+                    {hasAgent ? (
+                      <Bot className="h-3.5 w-3.5 text-green-500" />
+                    ) : (
+                      <BotOff className="h-3.5 w-3.5 text-muted-foreground/30" />
+                    )}
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent side="top" className="max-w-xs">
+                  {hasAgent ? (
+                    <div className="text-xs space-y-1">
+                      <div className="font-semibold text-green-500">Guest Agent Active</div>
+                      {guestSystemInfo && (
+                        <>
+                          <div>{guestSystemInfo.osName} {guestSystemInfo.osVersion}</div>
+                          <div className="text-muted-foreground">
+                            {guestSystemInfo.hostname} • {guestSystemInfo.architecture}
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  ) : (
+                    <div className="text-xs text-muted-foreground">
+                      Guest agent not responding
+                    </div>
+                  )}
+                </TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
+          )}
+          {/* IP Address */}
+          <span className="font-mono text-xs truncate">{getNetworkAddress()}</span>
+        </div>
       </td>
     </tr>
   )
@@ -439,7 +530,7 @@ export function VmTable({ vms, selectedIds, onSelectionChange, onVmDoubleClick, 
             <th className="px-4 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider w-24">
               Disk
             </th>
-            <th className="px-4 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider w-32">
+            <th className="px-4 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider w-40">
               Network
             </th>
           </tr>

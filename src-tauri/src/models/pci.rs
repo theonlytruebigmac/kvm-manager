@@ -78,6 +78,76 @@ pub struct PciPassthroughConfig {
     pub managed: bool,
 }
 
+/// SR-IOV Physical Function (PF) information
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct SriovPf {
+    /// PCI address of the Physical Function
+    pub address: String,
+    /// Device name
+    pub device_name: String,
+    /// Vendor name
+    pub vendor: String,
+    /// Network interface name (e.g., enp1s0f0)
+    pub interface_name: Option<String>,
+    /// Maximum number of VFs supported
+    pub max_vfs: u32,
+    /// Number of VFs currently enabled
+    pub num_vfs: u32,
+    /// Total VFs available (num_vfs - in_use)
+    pub available_vfs: u32,
+    /// Driver in use
+    pub driver: Option<String>,
+    /// Link speed (e.g., "10 Gb/s")
+    pub link_speed: Option<String>,
+}
+
+/// SR-IOV Virtual Function (VF) information
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct SriovVf {
+    /// PCI address of the Virtual Function
+    pub address: String,
+    /// VF index (0, 1, 2, etc.)
+    pub vf_index: u32,
+    /// Parent PF address
+    pub parent_pf: String,
+    /// MAC address (if configured)
+    pub mac_address: Option<String>,
+    /// VLAN ID (if configured)
+    pub vlan_id: Option<u16>,
+    /// Whether this VF is attached to a VM
+    pub in_use: bool,
+    /// VM name this VF is attached to
+    pub attached_to_vm: Option<String>,
+    /// IOMMU group
+    pub iommu_group: Option<u32>,
+}
+
+/// SR-IOV configuration for a VF
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct SriovVfConfig {
+    /// PF interface name (e.g., enp1s0f0)
+    pub pf_interface: String,
+    /// VF index to configure
+    pub vf_index: u32,
+    /// Optional MAC address
+    pub mac_address: Option<String>,
+    /// Optional VLAN ID
+    pub vlan_id: Option<u16>,
+    /// Whether to enable spoof check
+    #[serde(default = "default_true")]
+    pub spoof_check: bool,
+    /// Whether to enable trust mode
+    #[serde(default)]
+    pub trust: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
 #[allow(dead_code)]
 fn default_managed() -> bool {
     true

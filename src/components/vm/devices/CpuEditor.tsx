@@ -447,10 +447,12 @@ export function CpuEditor({ vm, compact }: CpuEditorProps) {
     setTopologyError(null)
   }
 
-  // Compact mode - ultra-compact inline editing
+  // Compact mode - clean display with inline edit on click
   if (compact) {
-    return (
-      <div className="space-y-2">
+    const [editing, setEditing] = useState(false)
+
+    if (editing || hasVcpuChanges) {
+      return (
         <div className="flex items-center gap-2">
           <Input
             type="number"
@@ -458,25 +460,31 @@ export function CpuEditor({ vm, compact }: CpuEditorProps) {
             max={64}
             value={vcpus}
             onChange={(e) => setVcpus(parseInt(e.target.value) || 1)}
-            className="w-16 h-7 text-sm"
+            className="w-14 h-6 text-xs px-2"
+            autoFocus
+            onBlur={() => !hasVcpuChanges && setEditing(false)}
           />
-          <span className="text-xs text-muted-foreground">
-            vCPUs ({sockets} × {cores} × {threads})
-          </span>
+          <span className="text-[11px] text-muted-foreground">vCPUs</span>
           {hasVcpuChanges && (
             <>
-              <Button size="sm" variant="default" onClick={handleApplyVcpus} disabled={vcpusLoading} className="h-6 px-2 text-xs">
-                {vcpusLoading ? <Loader2 className="h-3 w-3 animate-spin" /> : 'Apply'}
+              <Button size="sm" variant="default" onClick={() => { handleApplyVcpus(); setEditing(false) }} disabled={vcpusLoading} className="h-5 px-2 text-[10px]">
+                {vcpusLoading ? <Loader2 className="h-3 w-3 animate-spin" /> : 'Save'}
               </Button>
-              <Button size="sm" variant="ghost" onClick={revertVcpus} className="h-6 px-2 text-xs">
-                Revert
-              </Button>
+              <Button size="sm" variant="ghost" onClick={() => { revertVcpus(); setEditing(false) }} className="h-5 px-1 text-[10px]">✕</Button>
             </>
           )}
         </div>
-        {vcpusError && <p className="text-xs text-red-500">{vcpusError}</p>}
-        {vcpusSuccess && <p className="text-xs text-green-500 flex items-center gap-1"><CheckCircle className="h-3 w-3" /> Saved</p>}
-      </div>
+      )
+    }
+
+    return (
+      <button
+        onClick={() => setEditing(true)}
+        className="flex items-center gap-1.5 hover:bg-muted/50 rounded px-1 -mx-1 transition-colors"
+      >
+        <span className="font-medium text-sm">{vcpus}</span>
+        <span className="text-[11px] text-muted-foreground">vCPUs ({sockets}×{cores}×{threads})</span>
+      </button>
     )
   }
 

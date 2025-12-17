@@ -334,42 +334,27 @@ export function VmDetailsWindow() {
               <div className="grid md:grid-cols-2 gap-4">
                 {/* System Configuration Card */}
                 <div className="border rounded-lg overflow-hidden">
-                  <div className="bg-muted/50 px-4 py-2 border-b flex items-center justify-between">
-                    <span className="text-sm font-medium">System Configuration</span>
-                    <span className="text-xs text-muted-foreground">
+                  <div className="bg-muted/50 px-3 py-1.5 border-b flex items-center justify-between">
+                    <span className="text-xs font-medium">System</span>
+                    <span className="text-[10px] text-muted-foreground">
                       {vm.machine?.includes('q35') ? 'Q35' : 'i440FX'} • {vm.firmware?.toUpperCase() || 'BIOS'}
                     </span>
                   </div>
-                  <div className="divide-y">
-                    {/* CPU Row */}
-                    <div className="flex items-center px-4 py-2.5 hover:bg-muted/30">
-                      <div className="flex items-center gap-2 w-20 shrink-0">
-                        <Cpu className="w-3.5 h-3.5 text-muted-foreground" />
-                        <span className="text-xs">CPU</span>
-                      </div>
-                      <div className="flex-1">
-                        <CpuEditor vm={vm} compact />
-                      </div>
+                  <div className="p-3 space-y-3">
+                    {/* CPU */}
+                    <div className="flex items-center gap-2">
+                      <Cpu className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
+                      <CpuEditor vm={vm} compact />
                     </div>
-                    {/* Memory Row */}
-                    <div className="flex items-center px-4 py-2.5 hover:bg-muted/30">
-                      <div className="flex items-center gap-2 w-20 shrink-0">
-                        <MemoryStick className="w-3.5 h-3.5 text-muted-foreground" />
-                        <span className="text-xs">Memory</span>
-                      </div>
-                      <div className="flex-1">
-                        <MemoryEditor vm={vm} compact />
-                      </div>
+                    {/* Memory */}
+                    <div className="flex items-center gap-2">
+                      <MemoryStick className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
+                      <MemoryEditor vm={vm} compact />
                     </div>
-                    {/* Boot Row */}
-                    <div className="flex items-start px-4 py-2.5 hover:bg-muted/30">
-                      <div className="flex items-center gap-2 w-20 shrink-0 pt-0.5">
-                        <HardDrive className="w-3.5 h-3.5 text-muted-foreground" />
-                        <span className="text-xs">Boot</span>
-                      </div>
-                      <div className="flex-1">
-                        <BootEditor vm={vm} compact />
-                      </div>
+                    {/* Boot */}
+                    <div className="flex items-start gap-2">
+                      <HardDrive className="w-3.5 h-3.5 text-muted-foreground shrink-0 mt-0.5" />
+                      <BootEditor vm={vm} compact />
                     </div>
                   </div>
                 </div>

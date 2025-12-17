@@ -256,6 +256,30 @@ pub struct HostNumaNode {
     pub memory_mb: u64,
 }
 
+/// Clone configuration options
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct CloneConfig {
+    /// Name for the cloned VM
+    pub new_name: String,
+    /// Whether to clone disk files (true) or share references (false)
+    #[serde(default = "default_clone_disks")]
+    pub clone_disks: bool,
+    /// Whether to clone snapshots along with the VM
+    #[serde(default)]
+    pub clone_snapshots: bool,
+    /// Optional target storage pool for cloned disks (if None, uses same location)
+    #[serde(default)]
+    pub target_pool: Option<String>,
+    /// Optional description for the cloned VM
+    #[serde(default)]
+    pub description: Option<String>,
+}
+
+fn default_clone_disks() -> bool {
+    true
+}
+
 /// VM NUMA configuration
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
@@ -277,4 +301,24 @@ pub struct VmNumaCell {
     pub memory_mb: u64,
     /// Host NUMA nodes this cell maps to
     pub host_nodes: Option<String>,
+}
+
+/// Host network interface for macvtap/direct attachment
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct HostNetworkInterface {
+    /// Interface name (e.g., eth0, enp3s0)
+    pub name: String,
+    /// MAC address
+    pub mac_address: String,
+    /// Operational state (up, down, unknown)
+    pub state: String,
+    /// Link speed in Mbps
+    pub speed: Option<u32>,
+    /// MTU size
+    pub mtu: Option<u32>,
+    /// Whether it's a physical interface
+    pub is_physical: bool,
+    /// Driver name
+    pub driver: Option<String>,
 }

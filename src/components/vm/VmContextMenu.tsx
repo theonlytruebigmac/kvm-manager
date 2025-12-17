@@ -26,8 +26,12 @@ import {
   Download,
   ArrowRightLeft,
   Moon,
+  Usb,
+  Network,
 } from 'lucide-react'
 import type { VM } from '@/lib/types'
+import { UsbDeviceManager } from '@/components/vm/UsbDeviceManager'
+import { SriovManager } from '@/components/hardware/SriovManager'
 
 interface VmContextMenuProps {
   vm: VM
@@ -195,6 +199,25 @@ export function VmContextMenu({ vm, children, onOpenDetails, onOpenRename, onOpe
           <Monitor className="mr-2 h-4 w-4" />
           Open Console
         </ContextMenuItem>
+
+        {/* USB Devices */}
+        <UsbDeviceManager
+          vm={vm}
+          trigger={
+            <ContextMenuItem onSelect={(e) => e.preventDefault()}>
+              <Usb className="mr-2 h-4 w-4" />
+              USB Devices
+            </ContextMenuItem>
+          }
+        />
+
+        {/* SR-IOV Network */}
+        <SriovManager vm={vm}>
+          <ContextMenuItem onSelect={(e) => e.preventDefault()}>
+            <Network className="mr-2 h-4 w-4" />
+            SR-IOV Network
+          </ContextMenuItem>
+        </SriovManager>
 
         <ContextMenuItem onClick={onOpenDetails}>
           <Settings className="mr-2 h-4 w-4" />

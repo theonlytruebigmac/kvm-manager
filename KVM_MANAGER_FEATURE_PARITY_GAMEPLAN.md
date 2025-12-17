@@ -527,11 +527,11 @@ The left sidebar shows ALL hardware devices that can be configured:
 
 ### 3.1 Advanced Network Features
 
-#### **IPv6 Support** 🟠 HIGH
-- [ ] IPv6 address configuration in virtual networks
-- [ ] DHCPv6 support
-- [ ] IPv6 NAT
-- [ ] Display IPv6 addresses in VM list
+#### **IPv6 Support** ✅ COMPLETE (Session 14)
+- [x] IPv6 address configuration in virtual networks
+- [x] DHCPv6 support
+- [x] IPv6 NAT (via libvirt forward mode)
+- [ ] Display IPv6 addresses in VM list (needs guest agent)
 
 #### **SR-IOV Virtual Functions** 🟡 MEDIUM
 - [ ] Detect SR-IOV capable NICs
@@ -539,10 +539,10 @@ The left sidebar shows ALL hardware devices that can be configured:
 - [ ] Assign VFs to VMs
 - [ ] VLAN tagging
 
-#### **Network QoS** 🟡 MEDIUM
-- [ ] Bandwidth limits (inbound/outbound)
-- [ ] Burst limits
-- [ ] Network priority
+#### **Network QoS** ✅ COMPLETE (Session 9)
+- [x] Bandwidth limits (inbound/outbound)
+- [x] Burst limits
+- [x] Network priority
 
 **XML**:
 ```xml

@@ -11,6 +11,7 @@ interface BreadcrumbItem {
 const routeConfig: Record<string, { label: string; parent?: string }> = {
   '/': { label: 'Virtual Machines' },
   '/dashboard': { label: 'Dashboard' },
+  '/performance': { label: 'Performance Monitor' },
   '/storage': { label: 'Storage' },
   '/networks': { label: 'Networks' },
   '/insights': { label: 'Insights' },

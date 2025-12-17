@@ -528,6 +528,32 @@ export function AddHardwareDialog({ vm, open, onOpenChange }: AddHardwareDialogP
     },
   })
 
+  // Mutation for binding PCI device to VFIO
+  const bindToVfioMutation = useMutation({
+    mutationFn: (pciAddress: string) => api.bindToVfio(pciAddress),
+    onSuccess: (_, pciAddress) => {
+      queryClient.invalidateQueries({ queryKey: ['pciDevices'] })
+      queryClient.invalidateQueries({ queryKey: ['vfioStatus', pciAddress] })
+      toast.success(`Device ${pciAddress} bound to vfio-pci driver`)
+    },
+    onError: (error) => {
+      toast.error(`Failed to bind to VFIO: ${error}`)
+    },
+  })
+
+  // Mutation for unbinding PCI device from VFIO
+  const unbindFromVfioMutation = useMutation({
+    mutationFn: (pciAddress: string) => api.unbindFromVfio(pciAddress),
+    onSuccess: (_, pciAddress) => {
+      queryClient.invalidateQueries({ queryKey: ['pciDevices'] })
+      queryClient.invalidateQueries({ queryKey: ['vfioStatus', pciAddress] })
+      toast.success(`Device ${pciAddress} unbound from vfio-pci driver`)
+    },
+    onError: (error) => {
+      toast.error(`Failed to unbind from VFIO: ${error}`)
+    },
+  })
+
   // Mutation for attaching RNG device
   const attachRngMutation = useMutation({
     mutationFn: () => api.attachRng(vm.id, rngConfig.backend),
@@ -1306,47 +1332,126 @@ export function AddHardwareDialog({ vm, open, onOpenChange }: AddHardwareDialogP
                       {pciLoading ? (
                         <p className="text-xs text-muted-foreground">Loading devices...</p>
                       ) : (
-                        <ScrollArea className="h-40 border rounded-md">
+                        <ScrollArea className="h-48 border rounded-md">
                           <div className="p-2 space-y-1">
-                            {pciDevices.filter(d => d.passthroughSafe && !d.inUse).length === 0 ? (
+                            {pciDevices.filter(d => d.passthroughSafe).length === 0 ? (
                               <p className="text-xs text-muted-foreground p-2">
                                 No available PCI devices for passthrough.
                                 Devices may be in use or not safe for passthrough.
                               </p>
                             ) : (
                               pciDevices
-                                .filter(d => d.passthroughSafe && !d.inUse)
-                                .map((device) => (
-                                  <button
-                                    key={device.address}
-                                    onClick={() => setPciConfig({ ...pciConfig, selectedDevice: device.address })}
-                                    className={cn(
-                                      'w-full text-left p-2 rounded-md text-xs',
-                                      'hover:bg-muted transition-colors',
-                                      pciConfig.selectedDevice === device.address && 'bg-primary/10 border border-primary/20'
-                                    )}
-                                  >
-                                    <div className="flex items-center justify-between">
-                                      <span className="font-mono">{device.address}</span>
-                                      <Badge variant="outline" className="text-[10px]">
-                                        {device.deviceType}
-                                      </Badge>
+                                .filter(d => d.passthroughSafe)
+                                .map((device) => {
+                                  const isVfio = device.driver === 'vfio-pci'
+                                  const isSelected = pciConfig.selectedDevice === device.address
+                                  const isAttached = !!device.attachedToVm
+
+                                  return (
+                                    <div
+                                      key={device.address}
+                                      className={cn(
+                                        'p-2 rounded-md text-xs border',
+                                        'hover:bg-muted/50 transition-colors',
+                                        isSelected && 'bg-primary/10 border-primary/20',
+                                        !isSelected && 'border-transparent'
+                                      )}
+                                    >
+                                      <button
+                                        onClick={() => !isAttached && setPciConfig({ ...pciConfig, selectedDevice: device.address })}
+                                        disabled={isAttached}
+                                        className="w-full text-left"
+                                      >
+                                        <div className="flex items-center justify-between">
+                                          <span className="font-mono">{device.address}</span>
+                                          <div className="flex items-center gap-1">
+                                            {isVfio ? (
+                                              <Badge variant="default" className="text-[10px] bg-green-600">
+                                                vfio-pci
+                                              </Badge>
+                                            ) : device.driver ? (
+                                              <Badge variant="secondary" className="text-[10px]">
+                                                {device.driver}
+                                              </Badge>
+                                            ) : (
+                                              <Badge variant="outline" className="text-[10px]">
+                                                unbound
+                                              </Badge>
+                                            )}
+                                            <Badge variant="outline" className="text-[10px]">
+                                              {device.deviceType}
+                                            </Badge>
+                                          </div>
+                                        </div>
+                                        <p className="text-muted-foreground truncate">
+                                          {device.vendor} {device.deviceName}
+                                        </p>
+                                        <div className="flex items-center justify-between mt-1">
+                                          {device.iommuGroup !== undefined && (
+                                            <span className="text-muted-foreground">
+                                              IOMMU Group: {device.iommuGroup}
+                                            </span>
+                                          )}
+                                          {isAttached && (
+                                            <span className="text-yellow-600">
+                                              In use by: {device.attachedToVm}
+                                            </span>
+                                          )}
+                                        </div>
+                                      </button>
+
+                                      {/* VFIO Binding Controls */}
+                                      {isSelected && !isAttached && (
+                                        <div className="mt-2 pt-2 border-t border-border/50 flex items-center justify-between">
+                                          <span className="text-muted-foreground">
+                                            Driver: {device.driver || 'none'}
+                                          </span>
+                                          {isVfio ? (
+                                            <Button
+                                              size="sm"
+                                              variant="outline"
+                                              className="h-6 text-xs"
+                                              onClick={(e) => {
+                                                e.stopPropagation()
+                                                unbindFromVfioMutation.mutate(device.address)
+                                              }}
+                                              disabled={unbindFromVfioMutation.isPending}
+                                            >
+                                              {unbindFromVfioMutation.isPending ? 'Unbinding...' : 'Unbind from VFIO'}
+                                            </Button>
+                                          ) : (
+                                            <Button
+                                              size="sm"
+                                              variant="default"
+                                              className="h-6 text-xs"
+                                              onClick={(e) => {
+                                                e.stopPropagation()
+                                                bindToVfioMutation.mutate(device.address)
+                                              }}
+                                              disabled={bindToVfioMutation.isPending}
+                                            >
+                                              {bindToVfioMutation.isPending ? 'Binding...' : 'Bind to VFIO'}
+                                            </Button>
+                                          )}
+                                        </div>
+                                      )}
                                     </div>
-                                    <p className="text-muted-foreground truncate">
-                                      {device.vendor} {device.deviceName}
-                                    </p>
-                                    {device.iommuGroup !== undefined && (
-                                      <p className="text-muted-foreground">
-                                        IOMMU Group: {device.iommuGroup}
-                                      </p>
-                                    )}
-                                  </button>
-                                ))
+                                  )
+                                })
                             )}
                           </div>
                         </ScrollArea>
                       )}
                     </div>
+
+                    {pciConfig.selectedDevice && (
+                      <div className="p-2 bg-blue-500/10 border border-blue-500/20 rounded-lg">
+                        <p className="text-xs text-blue-600 flex items-center gap-1">
+                          <Info className="w-3 h-3" />
+                          Tip: Use "Bind to VFIO" to prepare the device for passthrough. This unbinds it from the host driver.
+                        </p>
+                      </div>
+                    )}
 
                     {vm.state === 'running' && (
                       <div className="p-3 bg-yellow-500/10 border border-yellow-500/20 rounded-lg">

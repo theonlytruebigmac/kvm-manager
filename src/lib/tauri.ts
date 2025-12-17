@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core'
-import type { VM, HostInfo, ConnectionStatus, VmConfig, VncInfo, VmStats, MigrationInfo, Network, NetworkConfig, NetworkDetails, DhcpLease, NwFilter, NwFilterConfig, StoragePool, Volume, VolumeConfig, VolumeEncryptionInfo, StoragePoolConfig, OvfMetadata, OvaImportConfig, Snapshot, SnapshotConfig, VmMetrics, HistoricalMetrics, VmTemplate, CreateTemplateRequest, ScheduledOperation, CreateScheduleRequest, ResourceAlert, CreateAlertRequest, AlertEvent, BackupConfig, CreateBackupRequest, BatchOperationResult, OptimizationSuggestion, RetentionPolicy, GuestAgentStatus, GuestSystemInfo, GuestNetworkInfo, GuestDiskUsage, GuestCommandResult, GuestCpuStats, GuestDiskStats, GuestUser, GuestTimezone, GuestFullInfo, SavedConnection, ConnectionType, KernelBootSettings } from './types'
+import type { VM, HostInfo, ConnectionStatus, VmConfig, VncInfo, VmStats, MigrationInfo, Network, NetworkConfig, NetworkDetails, DhcpLease, NwFilter, NwFilterConfig, StoragePool, Volume, VolumeConfig, VolumeEncryptionInfo, StoragePoolConfig, OvfMetadata, OvaImportConfig, Snapshot, SnapshotConfig, VmMetrics, HistoricalMetrics, VmTemplate, CreateTemplateRequest, ScheduledOperation, CreateScheduleRequest, ResourceAlert, CreateAlertRequest, AlertEvent, BackupConfig, CreateBackupRequest, BatchOperationResult, OptimizationSuggestion, RetentionPolicy, GuestAgentStatus, GuestSystemInfo, GuestNetworkInfo, GuestDiskUsage, GuestCommandResult, GuestCpuStats, GuestDiskStats, GuestUser, GuestTimezone, GuestFullInfo, SavedConnection, ConnectionType, KernelBootSettings, CloneConfig } from './types'
 
 /**
  * Tauri API wrapper for KVM Manager
@@ -21,6 +21,7 @@ export const api = {
   rebootVm: (vmId: string) => invoke<void>('reboot_vm', { vmId }),
   deleteVm: (vmId: string, deleteDisks: boolean, deleteSnapshots: boolean) => invoke<void>('delete_vm', { vmId, deleteDisks, deleteSnapshots }),
   cloneVm: (sourceVmId: string, newName: string) => invoke<string>('clone_vm', { sourceVmId, newName }),
+  cloneVmWithOptions: (sourceVmId: string, config: CloneConfig) => invoke<string>('clone_vm_with_options', { sourceVmId, config }),
   createVm: (config: VmConfig) => invoke<string>('create_vm', { config }),
   addVmTags: (vmId: string, tags: string[]) => invoke<void>('add_vm_tags', { vmId, tags }),
   removeVmTags: (vmId: string, tags: string[]) => invoke<void>('remove_vm_tags', { vmId, tags }),
@@ -127,6 +128,9 @@ export const api = {
   migrateVm: (vmId: string, destUri: string, live: boolean, unsafeMigration: boolean) =>
     invoke<void>('migrate_vm', { vmId, destUri, live, unsafeMigration }),
   getMigrationInfo: (vmId: string) => invoke<MigrationInfo>('get_migration_info', { vmId }),
+  checkMigrationCompatibility: (vmId: string) =>
+    invoke<[boolean, string[]]>('check_migration_compatibility', { vmId }),
+  getMigrationTargets: () => invoke<[string, string][]>('get_migration_targets'),
 
   // Console Operations
   getVncInfo: (vmId: string) => invoke<VncInfo>('get_vnc_info', { vmId }),
@@ -346,6 +350,30 @@ export const api = {
   // VM Network Interfaces
   attachInterface: (vmId: string, network: string, model: string, macAddress?: string) =>
     invoke<string>('attach_interface', { vmId, network, model, macAddress }),
+  attachInterfaceAdvanced: (
+    vmId: string,
+    interfaceType: import('./types').InterfaceType,
+    source: string,
+    model: string,
+    options?: {
+      macAddress?: string,
+      sourceMode?: import('./types').DirectMode,
+      vlanId?: number,
+      portgroup?: string,
+      mtu?: number,
+    }
+  ) => invoke<string>('attach_interface_advanced', {
+    vmId,
+    interfaceType,
+    source,
+    model,
+    macAddress: options?.macAddress,
+    sourceMode: options?.sourceMode,
+    vlanId: options?.vlanId,
+    portgroup: options?.portgroup,
+    mtu: options?.mtu,
+  }),
+  listHostInterfaces: () => invoke<import('./types').HostNetworkInterface[]>('list_host_interfaces'),
   detachInterface: (vmId: string, macAddress: string) =>
     invoke<void>('detach_interface', { vmId, macAddress }),
 
@@ -383,6 +411,12 @@ export const api = {
     invoke<void>('attach_pci_device', { vmId, pciAddress, managed }),
   detachPciDevice: (vmId: string, pciAddress: string) =>
     invoke<void>('detach_pci_device', { vmId, pciAddress }),
+  getVfioStatus: (pciAddress: string) =>
+    invoke<import('./types').VfioStatus>('get_vfio_status', { pciAddress }),
+  bindToVfio: (pciAddress: string) =>
+    invoke<void>('bind_to_vfio', { pciAddress }),
+  unbindFromVfio: (pciAddress: string) =>
+    invoke<void>('unbind_from_vfio', { pciAddress }),
 
   // USB Passthrough
   listUsbDevices: () => invoke<import('./types').UsbDevice[]>('list_usb_devices'),
@@ -390,6 +424,7 @@ export const api = {
     invoke<void>('attach_usb_device', { vmId, vendorId, productId }),
   detachUsbDevice: (vmId: string, vendorId: string, productId: string) =>
     invoke<void>('detach_usb_device', { vmId, vendorId, productId }),
+  getVmUsbDevices: (vmId: string) => invoke<import('./types').UsbDevice[]>('get_vm_usb_devices', { vmId }),
 
   // Graphics Device
   attachGraphics: (vmId: string, graphicsType: string, listenAddress?: string, port?: number) =>
@@ -411,6 +446,19 @@ export const api = {
     invoke<string>('create_mdev', { parentDevice, mdevType }),
   removeMdev: (mdevUuid: string) =>
     invoke<void>('remove_mdev', { mdevUuid }),
+
+  // SR-IOV Network Passthrough
+  listSriovPfs: () => invoke<import('./types').SriovPf[]>('list_sriov_pfs'),
+  listSriovVfs: (pfAddress: string) =>
+    invoke<import('./types').SriovVf[]>('list_sriov_vfs', { pfAddress }),
+  enableSriovVfs: (pfAddress: string, numVfs: number) =>
+    invoke<void>('enable_sriov_vfs', { pfAddress, numVfs }),
+  configureSriovVf: (config: import('./types').SriovVfConfig) =>
+    invoke<void>('configure_sriov_vf', { config }),
+  attachSriovVf: (vmId: string, vfAddress: string) =>
+    invoke<void>('attach_sriov_vf', { vmId, vfAddress }),
+  detachSriovVf: (vmId: string, vfAddress: string) =>
+    invoke<void>('detach_sriov_vf', { vmId, vfAddress }),
 
   // Serial Port Device
   attachSerial: (vmId: string, portType: string, targetPort: number = 0) =>

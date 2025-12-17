@@ -321,6 +321,32 @@ pub async fn clone_vm(
     Ok(cloned_vm_id)
 }
 
+/// Clone an existing VM with advanced options (disk cloning, snapshots)
+#[tauri::command]
+pub async fn clone_vm_with_options(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    source_vm_id: String,
+    config: crate::models::vm::CloneConfig,
+) -> Result<String, String> {
+    tracing::info!("clone_vm_with_options command called: source_vm_id={}, config={:?}", source_vm_id, config);
+
+    let cloned_vm_id = VmService::clone_vm_with_options(&state.libvirt, &source_vm_id, &config)
+        .map_err(|e| e.to_string())?;
+
+    // Emit event
+    let _ = app.emit("vm-cloned", serde_json::json!({
+        "sourceVmId": source_vm_id,
+        "clonedVmId": cloned_vm_id,
+        "newName": config.new_name,
+        "cloneDisks": config.clone_disks,
+        "cloneSnapshots": config.clone_snapshots,
+        "timestamp": chrono::Utc::now().timestamp_millis(),
+    }));
+
+    Ok(cloned_vm_id)
+}
+
 /// Create a new VM
 #[tauri::command]
 pub async fn create_vm(
@@ -1033,6 +1059,44 @@ pub async fn attach_interface(
         .map_err(|e| e.to_string())
 }
 
+/// Attach a network interface with advanced options (macvtap, bridge, OVS)
+#[tauri::command]
+pub async fn attach_interface_advanced(
+    state: State<'_, AppState>,
+    vm_id: String,
+    interface_type: String,
+    source: String,
+    model: String,
+    mac_address: Option<String>,
+    source_mode: Option<String>,
+    vlan_id: Option<u16>,
+    portgroup: Option<String>,
+    mtu: Option<u32>,
+) -> Result<String, String> {
+    tracing::info!("attach_interface_advanced command called for VM: {} type: {} source: {}", vm_id, interface_type, source);
+
+    VmService::attach_interface_advanced(
+        &state.libvirt,
+        &vm_id,
+        &interface_type,
+        &source,
+        &model,
+        mac_address.as_deref(),
+        source_mode.as_deref(),
+        vlan_id,
+        portgroup.as_deref(),
+        mtu,
+    )
+    .map_err(|e| e.to_string())
+}
+
+/// List host network interfaces available for macvtap/direct attachment
+#[tauri::command]
+pub async fn list_host_interfaces() -> Result<Vec<crate::models::vm::HostNetworkInterface>, String> {
+    tracing::debug!("list_host_interfaces command called");
+    VmService::list_host_interfaces().map_err(|e| e.to_string())
+}
+
 /// Detach a network interface from a VM by MAC address
 #[tauri::command]
 pub async fn detach_interface(
@@ -1614,4 +1678,23 @@ pub async fn detach_evdev(
     }));
 
     Ok(())
+}
+
+/// Check if a VM can be migrated (check for blockers like PCI passthrough, local disks)
+#[tauri::command]
+pub async fn check_migration_compatibility(
+    state: State<'_, AppState>,
+    vm_id: String,
+) -> Result<(bool, Vec<String>), String> {
+    tracing::debug!("check_migration_compatibility command called for VM: {}", vm_id);
+    VmService::check_migration_compatibility(&state.libvirt, &vm_id).map_err(|e| e.to_string())
+}
+
+/// Get list of available migration targets (saved remote connections)
+#[tauri::command]
+pub async fn get_migration_targets(
+    state: State<'_, AppState>,
+) -> Result<Vec<(String, String)>, String> {
+    tracing::debug!("get_migration_targets command called");
+    VmService::get_migration_targets(&state.connections).map_err(|e| e.to_string())
 }

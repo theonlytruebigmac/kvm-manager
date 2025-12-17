@@ -55,3 +55,13 @@ pub async fn detach_usb_device(
 
     Ok(())
 }
+
+/// Get list of USB devices attached to a VM
+#[tauri::command]
+pub async fn get_vm_usb_devices(
+    state: State<'_, AppState>,
+    vm_id: String,
+) -> Result<Vec<UsbDevice>, String> {
+    tracing::debug!("get_vm_usb_devices command called for VM: {}", vm_id);
+    usb_service::get_vm_usb_devices(&state.libvirt, &vm_id)
+}

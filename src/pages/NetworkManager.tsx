@@ -62,6 +62,12 @@ export function NetworkManager() {
   const [netmask, setNetmask] = useState('255.255.255.0')
   const [dhcpStart, setDhcpStart] = useState('192.168.100.2')
   const [dhcpEnd, setDhcpEnd] = useState('192.168.100.254')
+  // IPv6 state
+  const [ipv6Enabled, setIpv6Enabled] = useState(false)
+  const [ipv6Address, setIpv6Address] = useState('fd00::1')
+  const [ipv6Prefix, setIpv6Prefix] = useState(64)
+  const [ipv6DhcpStart, setIpv6DhcpStart] = useState('fd00::100')
+  const [ipv6DhcpEnd, setIpv6DhcpEnd] = useState('fd00::1ff')
   const [autostart, setAutostart] = useState(true)
 
   // Query networks
@@ -153,6 +159,11 @@ export function NetworkManager() {
     setNetmask('255.255.255.0')
     setDhcpStart('192.168.100.2')
     setDhcpEnd('192.168.100.254')
+    setIpv6Enabled(false)
+    setIpv6Address('fd00::1')
+    setIpv6Prefix(64)
+    setIpv6DhcpStart('fd00::100')
+    setIpv6DhcpEnd('fd00::1ff')
     setAutostart(true)
   }
 
@@ -278,6 +289,77 @@ export function NetworkManager() {
                 </div>
               </div>
 
+              {/* IPv6 Configuration */}
+              {forwardMode !== 'bridge' && (
+                <div className="space-y-4 border-t pt-4">
+                  <div className="flex items-center space-x-2">
+                    <Switch
+                      id="ipv6-enabled"
+                      checked={ipv6Enabled}
+                      onCheckedChange={setIpv6Enabled}
+                    />
+                    <Label htmlFor="ipv6-enabled" className="text-base font-medium cursor-pointer">
+                      Enable IPv6
+                    </Label>
+                  </div>
+
+                  {ipv6Enabled && (
+                    <div className="space-y-4 pl-4 border-l-2 border-primary/20">
+                      <div className="grid grid-cols-2 gap-4">
+                        <div className="space-y-2">
+                          <Label htmlFor="ipv6-address">IPv6 Address</Label>
+                          <Input
+                            id="ipv6-address"
+                            value={ipv6Address}
+                            onChange={(e) => setIpv6Address(e.target.value)}
+                            placeholder="fd00::1"
+                          />
+                          <p className="text-xs text-muted-foreground">
+                            Use ULA addresses (fd00::/8) for private networks
+                          </p>
+                        </div>
+                        <div className="space-y-2">
+                          <Label htmlFor="ipv6-prefix">Prefix Length</Label>
+                          <Input
+                            id="ipv6-prefix"
+                            type="number"
+                            min={1}
+                            max={128}
+                            value={ipv6Prefix}
+                            onChange={(e) => setIpv6Prefix(parseInt(e.target.value) || 64)}
+                            placeholder="64"
+                          />
+                        </div>
+                      </div>
+
+                      <div className="space-y-2">
+                        <Label className="text-sm font-medium">IPv6 DHCPv6 Range</Label>
+                        <div className="grid grid-cols-2 gap-4">
+                          <div className="space-y-2">
+                            <Label htmlFor="ipv6-dhcp-start" className="text-xs">Start</Label>
+                            <Input
+                              id="ipv6-dhcp-start"
+                              value={ipv6DhcpStart}
+                              onChange={(e) => setIpv6DhcpStart(e.target.value)}
+                              placeholder="fd00::100"
+                            />
+                          </div>
+                          <div className="space-y-2">
+                            <Label htmlFor="ipv6-dhcp-end" className="text-xs">End</Label>
+                            <Input
+                              id="ipv6-dhcp-end"
+                              value={ipv6DhcpEnd}
+                              onChange={(e) => setIpv6DhcpEnd(e.target.value)}
+                              placeholder="fd00::1ff"
+                            />
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
               <div className="flex items-center space-x-2">
                 <Checkbox
                   id="autostart"
@@ -300,6 +382,11 @@ export function NetworkManager() {
                   netmask,
                   dhcpStart,
                   dhcpEnd,
+                  ipv6Enabled,
+                  ipv6Address: ipv6Enabled ? ipv6Address : undefined,
+                  ipv6Prefix: ipv6Enabled ? ipv6Prefix : undefined,
+                  ipv6DhcpStart: ipv6Enabled ? ipv6DhcpStart : undefined,
+                  ipv6DhcpEnd: ipv6Enabled ? ipv6DhcpEnd : undefined,
                   autostart,
                 })}
                 disabled={!networkName.trim() || createMutation.isPending}

@@ -1,6 +1,6 @@
 use tauri::{AppHandle, Emitter, State};
 use crate::models::pci::{PciDevice, IommuGroup, IommuStatus};
-use crate::services::pci_service::PciService;
+use crate::services::pci_service::{PciService, VfioStatus};
 use crate::state::app_state::AppState;
 
 /// List all PCI devices on the host
@@ -70,6 +70,55 @@ pub async fn detach_pci_device(
     // Emit event
     let _ = app.emit("vm-pci-device-detached", serde_json::json!({
         "vmId": vm_id,
+        "pciAddress": pci_address,
+        "timestamp": chrono::Utc::now().timestamp_millis(),
+    }));
+
+    Ok(())
+}
+
+/// Get VFIO binding status for a PCI device
+#[tauri::command]
+pub async fn get_vfio_status(pci_address: String) -> Result<VfioStatus, String> {
+    tracing::debug!("get_vfio_status command called for device: {}", pci_address);
+
+    PciService::get_vfio_status(&pci_address)
+        .map_err(|e| e.to_string())
+}
+
+/// Bind a PCI device to the vfio-pci driver for passthrough
+#[tauri::command]
+pub async fn bind_to_vfio(
+    app: AppHandle,
+    pci_address: String,
+) -> Result<(), String> {
+    tracing::info!("bind_to_vfio command called for device: {}", pci_address);
+
+    PciService::bind_to_vfio(&pci_address)
+        .map_err(|e| e.to_string())?;
+
+    // Emit event
+    let _ = app.emit("pci-device-vfio-bound", serde_json::json!({
+        "pciAddress": pci_address,
+        "timestamp": chrono::Utc::now().timestamp_millis(),
+    }));
+
+    Ok(())
+}
+
+/// Unbind a PCI device from vfio-pci and restore original driver
+#[tauri::command]
+pub async fn unbind_from_vfio(
+    app: AppHandle,
+    pci_address: String,
+) -> Result<(), String> {
+    tracing::info!("unbind_from_vfio command called for device: {}", pci_address);
+
+    PciService::unbind_from_vfio(&pci_address)
+        .map_err(|e| e.to_string())?;
+
+    // Emit event
+    let _ = app.emit("pci-device-vfio-unbound", serde_json::json!({
         "pciAddress": pci_address,
         "timestamp": chrono::Utc::now().timestamp_millis(),
     }));

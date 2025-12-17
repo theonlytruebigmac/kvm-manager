@@ -86,10 +86,12 @@ export function MemoryEditor({ vm, compact }: MemoryEditorProps) {
     setError(null)
   }
 
-  // Compact mode - ultra-compact inline editing
+  // Compact mode - clean display with inline edit on click
   if (compact) {
-    return (
-      <div className="space-y-2">
+    const [editing, setEditing] = useState(false)
+
+    if (editing || hasChanges) {
+      return (
         <div className="flex items-center gap-2">
           <Input
             type="number"
@@ -98,23 +100,31 @@ export function MemoryEditor({ vm, compact }: MemoryEditorProps) {
             step={512}
             value={memoryMb}
             onChange={(e) => setMemoryMb(parseInt(e.target.value) || 512)}
-            className="w-20 h-7 text-sm"
+            className="w-16 h-6 text-xs px-2"
+            autoFocus
+            onBlur={() => !hasChanges && setEditing(false)}
           />
-          <span className="text-xs text-muted-foreground">MB ({memoryGB} GB)</span>
+          <span className="text-[11px] text-muted-foreground">MB</span>
           {hasChanges && (
             <>
-              <Button size="sm" variant="default" onClick={handleApply} disabled={loading} className="h-6 px-2 text-xs">
-                {loading ? <Loader2 className="h-3 w-3 animate-spin" /> : 'Apply'}
+              <Button size="sm" variant="default" onClick={() => { handleApply(); setEditing(false) }} disabled={loading} className="h-5 px-2 text-[10px]">
+                {loading ? <Loader2 className="h-3 w-3 animate-spin" /> : 'Save'}
               </Button>
-              <Button size="sm" variant="ghost" onClick={handleRevert} className="h-6 px-2 text-xs">
-                Revert
-              </Button>
+              <Button size="sm" variant="ghost" onClick={() => { handleRevert(); setEditing(false) }} className="h-5 px-1 text-[10px]">✕</Button>
             </>
           )}
         </div>
-        {error && <p className="text-xs text-red-500">{error}</p>}
-        {success && <p className="text-xs text-green-500">Saved</p>}
-      </div>
+      )
+    }
+
+    return (
+      <button
+        onClick={() => setEditing(true)}
+        className="flex items-center gap-1.5 hover:bg-muted/50 rounded px-1 -mx-1 transition-colors"
+      >
+        <span className="font-medium text-sm">{memoryGB}</span>
+        <span className="text-[11px] text-muted-foreground">GB</span>
+      </button>
     )
   }
 

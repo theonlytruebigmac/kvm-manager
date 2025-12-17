@@ -247,6 +247,7 @@ export function VmList() {
     // Tools menu
     onStorageManager: () => navigate('/storage'),
     onNetworkManager: () => navigate('/networks'),
+    onPerformance: () => navigate('/performance'),
     onTemplates: () => navigate('/templates'),
     onSchedules: () => navigate('/schedules'),
     onAlerts: () => navigate('/alerts'),

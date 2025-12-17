@@ -498,4 +498,193 @@ impl PciService {
         tracing::info!("Successfully detached PCI device {} from VM {}", pci_address, vm_id);
         Ok(())
     }
+
+    /// Bind a PCI device to the vfio-pci driver for passthrough
+    /// This is required before a device can be passed through to a VM
+    pub fn bind_to_vfio(pci_address: &str) -> Result<(), AppError> {
+        tracing::info!("Binding PCI device {} to vfio-pci driver", pci_address);
+
+        let device_path = format!("/sys/bus/pci/devices/{}", pci_address);
+
+        // Check if device exists
+        if !Path::new(&device_path).exists() {
+            return Err(AppError::Other(format!("PCI device {} not found", pci_address)));
+        }
+
+        // Get vendor and device IDs for vfio binding
+        let vendor_id = fs::read_to_string(format!("{}/vendor", device_path))
+            .map_err(|e| AppError::Other(format!("Failed to read vendor ID: {}", e)))?
+            .trim()
+            .trim_start_matches("0x")
+            .to_string();
+
+        let device_id = fs::read_to_string(format!("{}/device", device_path))
+            .map_err(|e| AppError::Other(format!("Failed to read device ID: {}", e)))?
+            .trim()
+            .trim_start_matches("0x")
+            .to_string();
+
+        // Check current driver
+        let current_driver = fs::read_link(format!("{}/driver", device_path))
+            .ok()
+            .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()));
+
+        // If already bound to vfio-pci, nothing to do
+        if let Some(ref driver) = current_driver {
+            if driver == "vfio-pci" {
+                tracing::info!("Device {} already bound to vfio-pci", pci_address);
+                return Ok(());
+            }
+        }
+
+        // Step 1: Unbind from current driver (if any)
+        if current_driver.is_some() {
+            Self::unbind_device(pci_address)?;
+        }
+
+        // Step 2: Load vfio-pci module if not loaded
+        Self::ensure_vfio_module()?;
+
+        // Step 3: Add device ID to vfio-pci new_id
+        let new_id = format!("{} {}", vendor_id, device_id);
+        fs::write("/sys/bus/pci/drivers/vfio-pci/new_id", &new_id)
+            .map_err(|e| AppError::Other(format!(
+                "Failed to add device to vfio-pci. Are you running as root? Error: {}", e
+            )))?;
+
+        // Step 4: Bind to vfio-pci
+        fs::write("/sys/bus/pci/drivers/vfio-pci/bind", pci_address)
+            .map_err(|e| AppError::Other(format!(
+                "Failed to bind {} to vfio-pci: {}", pci_address, e
+            )))?;
+
+        tracing::info!("Successfully bound device {} to vfio-pci", pci_address);
+        Ok(())
+    }
+
+    /// Unbind a PCI device from vfio-pci and rebind to original driver
+    pub fn unbind_from_vfio(pci_address: &str) -> Result<(), AppError> {
+        tracing::info!("Unbinding PCI device {} from vfio-pci driver", pci_address);
+
+        let device_path = format!("/sys/bus/pci/devices/{}", pci_address);
+
+        // Check if device exists
+        if !Path::new(&device_path).exists() {
+            return Err(AppError::Other(format!("PCI device {} not found", pci_address)));
+        }
+
+        // Check current driver
+        let current_driver = fs::read_link(format!("{}/driver", device_path))
+            .ok()
+            .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()));
+
+        // If not bound to vfio-pci, nothing to do
+        if let Some(ref driver) = current_driver {
+            if driver != "vfio-pci" {
+                tracing::info!("Device {} not bound to vfio-pci (current: {})", pci_address, driver);
+                return Ok(());
+            }
+        } else {
+            tracing::info!("Device {} has no driver bound", pci_address);
+            return Ok(());
+        }
+
+        // Unbind from vfio-pci
+        Self::unbind_device(pci_address)?;
+
+        // Trigger driver probe to let kernel find the right driver
+        fs::write(format!("{}/driver_override", device_path), "")
+            .ok(); // Ignore errors - some devices don't support driver_override
+
+        fs::write("/sys/bus/pci/drivers_probe", pci_address)
+            .map_err(|e| AppError::Other(format!(
+                "Failed to trigger driver probe for {}: {}", pci_address, e
+            )))?;
+
+        tracing::info!("Successfully unbound device {} from vfio-pci and triggered driver probe", pci_address);
+        Ok(())
+    }
+
+    /// Unbind a device from its current driver
+    fn unbind_device(pci_address: &str) -> Result<(), AppError> {
+        let device_path = format!("/sys/bus/pci/devices/{}", pci_address);
+
+        // Get current driver path
+        let driver_path = match fs::read_link(format!("{}/driver", device_path)) {
+            Ok(path) => path,
+            Err(_) => return Ok(()), // No driver bound
+        };
+
+        let unbind_path = driver_path.join("unbind");
+
+        fs::write(&unbind_path, pci_address)
+            .map_err(|e| AppError::Other(format!(
+                "Failed to unbind {} from driver: {}. Are you running as root?", pci_address, e
+            )))?;
+
+        tracing::debug!("Unbound device {} from driver", pci_address);
+        Ok(())
+    }
+
+    /// Ensure vfio-pci kernel module is loaded
+    fn ensure_vfio_module() -> Result<(), AppError> {
+        // Check if vfio-pci is already loaded
+        let modules = fs::read_to_string("/proc/modules").unwrap_or_default();
+        if modules.contains("vfio_pci") {
+            return Ok(());
+        }
+
+        // Try to load vfio-pci module
+        let output = std::process::Command::new("modprobe")
+            .arg("vfio-pci")
+            .output()
+            .map_err(|e| AppError::Other(format!("Failed to run modprobe: {}", e)))?;
+
+        if !output.status.success() {
+            return Err(AppError::Other(
+                "Failed to load vfio-pci module. Is the vfio-pci driver installed?".to_string()
+            ));
+        }
+
+        tracing::debug!("Loaded vfio-pci kernel module");
+        Ok(())
+    }
+
+    /// Get VFIO binding status for a device
+    pub fn get_vfio_status(pci_address: &str) -> Result<VfioStatus, AppError> {
+        let device_path = format!("/sys/bus/pci/devices/{}", pci_address);
+
+        if !Path::new(&device_path).exists() {
+            return Err(AppError::Other(format!("PCI device {} not found", pci_address)));
+        }
+
+        // Get current driver
+        let current_driver = fs::read_link(format!("{}/driver", device_path))
+            .ok()
+            .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()));
+
+        let bound_to_vfio = current_driver.as_ref().map_or(false, |d| d == "vfio-pci");
+
+        // Check if IOMMU is enabled
+        let iommu_status = Self::check_iommu_status()?;
+
+        Ok(VfioStatus {
+            device_address: pci_address.to_string(),
+            bound_to_vfio,
+            current_driver,
+            iommu_enabled: iommu_status.enabled,
+            can_bind: iommu_status.enabled,
+        })
+    }
+}
+
+/// VFIO binding status for a PCI device
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VfioStatus {
+    pub device_address: String,
+    pub bound_to_vfio: bool,
+    pub current_driver: Option<String>,
+    pub iommu_enabled: bool,
+    pub can_bind: bool,
 }
