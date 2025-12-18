@@ -1,75 +1,30 @@
 # KVM Manager
 
-A modern, user-friendly desktop application for managing KVM/QEMU virtual machines through libvirt.
+A modern, fast GUI for KVM/QEMU/libvirt virtualization on Linux
 
-**Status**: 🚀 Active Development (v0.2.0)
-**Platform**: Linux (libvirt + KVM)
-**Tech Stack**: Tauri 2.x + React 19 + TypeScript + Rust
+[![Status](https://img.shields.io/badge/status-active%20development-brightgreen)](docs/PROJECT_PLAN.md)
+[![Built with Tauri](https://img.shields.io/badge/built%20with-Tauri%202.0-blue)](https://tauri.app/)
+[![License](https://img.shields.io/badge/license-MIT-orange)](LICENSE)
 
----
-
-## Features
-
-### ✅ Implemented (v0.2.0)
-
-#### VM Management
-- 📋 **VM List View**: See all VMs with status, CPU, memory, disk usage
-- ▶️ **VM Controls**: Start, pause, resume, shutdown, force stop, reboot
-- 🔄 **Real-time Status**: Live VM state updates
-- 💾 **VM Creation**: Multi-step wizard for new VMs
-- 🗑️ **VM Deletion**: Remove VMs and associated storage
-
-#### Console Integration
-- 🖥️ **VNC Console**: Real-time VM display with full input control
-- 🔄 **Auto-reconnection**: Exponential backoff for reliable connections
-- 📐 **Display Modes**: Scale to Window, 1:1 Pixels, Stretch to Fill
-- ⌨️ **Special Keys**: Send Ctrl+Alt+Del, Ctrl+Alt+F1-F12, and more
-- 📸 **Screenshots**: Capture VM display as PNG
-- 🎯 **Fullscreen**: Immersive full-screen viewing
-
-#### Snapshot Management
-- 📷 **Create Snapshots**: Save VM state with name and description
-- 🌳 **Tree View**: Visualize snapshot hierarchy
-- ⏮️ **Revert**: Restore VM to previous snapshot
-- 🗑️ **Delete**: Remove unwanted snapshots
-- 📝 **Metadata**: Timestamp, size, and description for each snapshot
-
-#### Network Management
-- 🌐 **Network List**: View all virtual networks
-- 🟢 **Network Control**: Start, stop, autostart networks
-- 📊 **Network Details**: DHCP ranges, connected VMs, bridge info
-- ➕ **Create Networks**: Wizard for NAT and isolated networks
-
-#### Storage Management
-- 💿 **Storage Pools**: Manage storage backends (dir, LVM, NFS, etc.)
-- 📊 **Pool Details**: Capacity, allocation, available space
-- 📁 **Volume Browser**: View and manage disk images
-- ➕ **Create Volumes**: New disk images for VMs
-- 🔄 **Refresh**: Update pool information
-
-#### Hardware Management
-- 🔌 **Device Tree**: Visual hardware hierarchy
-- ⚙️ **Hot-plug**: Add/remove devices while VM runs
-- 💾 **Storage Devices**: Manage disks, CDROMs, USBs
-- 🌐 **Network Interfaces**: Add/remove NICs
-- 🖥️ **Display/Graphics**: Configure video adapters
-
-#### Desktop Integration
-- 🎨 **Modern UI**: Clean, responsive interface with Tailwind CSS
-- 📱 **Multi-window**: Separate windows for console, details, etc.
-- ⚡ **Performance**: Fast Rust backend, efficient React frontend
-- 🎯 **Keyboard Shortcuts**: Power user productivity
-- 🌙 **Dark Mode Ready**: Prepared for theme support
+KVM Manager is a desktop application that provides a polished, VMware Workstation / Hyper-V quality experience for Linux virtualization. Built with Rust and modern web technologies.
 
 ---
 
-## Documentation
+## Overview
 
-- 📖 **[Console User Guide](docs/CONSOLE_USER_GUIDE.md)**: Complete guide to VM console features
-- 📋 **[Project Plan](PROJECT_PLAN.md)**: Full project roadmap and architecture
-- 🧪 **[Testing Guide](WEEK5_DAY3_TESTING_GUIDE.md)**: Comprehensive testing procedures
-- 👥 **[Agent System](AGENTS.md)**: Multi-agent development approach
-- 📊 **[Current Status](CURRENT_STATUS.md)**: Latest development status
+KVM Manager aims to be the best open-source GUI for managing KVM/QEMU virtual machines. It combines the power of libvirt with a modern, intuitive interface.
+
+### Key Features
+
+- **Full VM Lifecycle Management** - Create, configure, start, stop, pause, and delete VMs
+- **VNC/SPICE Console** - Built-in console access via noVNC with auto-reconnect
+- **Snapshot Management** - Create, revert, and manage VM snapshots
+- **Storage Management** - Create and manage storage pools and volumes
+- **Network Management** - Configure virtual networks (NAT, isolated, bridged)
+- **Hardware Editor** - Complete hardware configuration (CPU, memory, disks, NICs)
+- **Guest Agent Integration** - Monitor guest OS information, execute commands
+- **Multi-Window Support** - Open multiple console windows simultaneously
+- **Real-time Monitoring** - Live CPU and memory usage graphs
 
 ---
 
@@ -77,83 +32,131 @@ A modern, user-friendly desktop application for managing KVM/QEMU virtual machin
 
 ### Prerequisites
 
-- **Linux OS** (tested on Ubuntu 22.04+, Fedora 38+)
-- **KVM/QEMU** installed and configured
-- **libvirt** daemon running
-- **Rust** 1.75+ (for building from source)
-- **Node.js** 18+ (for building from source)
+```bash
+# Ubuntu/Debian
+sudo apt install libvirt-daemon qemu-kvm libvirt-clients
+
+# Fedora
+sudo dnf install libvirt qemu-kvm
+
+# Arch Linux
+sudo pacman -S libvirt qemu-full
+
+# Add your user to libvirt group
+sudo usermod -aG libvirt $USER
+# Log out and back in for group changes to take effect
+```
 
 ### Installation
 
-#### From Binary (Recommended - Coming Soon)
+Download the latest release from the [Releases](https://github.com/yourusername/kvm-manager/releases) page.
+
 ```bash
-# Download latest release
-wget https://github.com/yourusername/kvm-manager/releases/latest/kvm-manager.AppImage
+# AppImage (recommended - works on any distro)
+chmod +x kvm-manager-*.AppImage
+./kvm-manager-*.AppImage
 
-# Make executable
-chmod +x kvm-manager.AppImage
+# Debian/Ubuntu
+sudo dpkg -i kvm-manager-*.deb
 
-# Run
-./kvm-manager.AppImage
+# Fedora/RHEL/openSUSE
+sudo rpm -i kvm-manager-*.rpm
 ```
 
-#### From Source
+### Build from Source
+
 ```bash
-# Clone repository
 git clone https://github.com/yourusername/kvm-manager.git
 cd kvm-manager
 
-# Install dependencies
 npm install
-
-# Run in development mode
-npm run tauri dev
-
-# Build for production
 npm run tauri build
 ```
 
-### First Launch
+---
 
-1. **Grant Permissions**: Add your user to libvirt group
-   ```bash
-   sudo usermod -aG libvirt $USER
-   newgrp libvirt
-   ```
+## Documentation
 
-2. **Launch Application**: Run KVM Manager
-
-3. **Connect to libvirt**: Default connection to `qemu:///system`
-
-4. **Start Managing VMs**: Click "Virtual Machines" in sidebar
+| Document | Description |
+|----------|-------------|
+| [Console Guide](docs/CONSOLE_USER_GUIDE.md) | VNC and SPICE console setup |
+| [UEFI Setup](docs/UEFI_SETUP.md) | UEFI and Secure Boot configuration |
+| [Libvirt Permissions](docs/LIBVIRT_PERMISSIONS.md) | Permission troubleshooting |
+| [UI Architecture](docs/UI_ARCHITECTURE.md) | Technical UI documentation |
+| [Project Plan](docs/PROJECT_PLAN.md) | Development roadmap |
 
 ---
 
-## Usage
+## Features
 
-### Opening VM Console
+### VM Management
 
-1. Go to **Virtual Machines** page
-2. Find a running VM
-3. Click **"Console"** button
-4. Interact with VM display
+| Feature | Description |
+|---------|-------------|
+| Create VMs | Full wizard with UEFI/BIOS, storage, and networking options |
+| VM Control | Start, stop, pause, resume, force stop, reboot |
+| Live Status | Real-time status updates with event-driven refresh |
+| Grouping | Group VMs by status (Running/Paused/Stopped) |
+| Multi-Select | Select and control multiple VMs at once |
+| Context Menus | Right-click actions for quick access |
 
-See [Console User Guide](docs/CONSOLE_USER_GUIDE.md) for detailed console features.
+### Console Access
 
-### Creating a Snapshot
+| Feature | Description |
+|---------|-------------|
+| VNC Console | High-quality VNC via noVNC |
+| SPICE Console | SPICE protocol support for better performance |
+| Keyboard Mapping | Proper keyboard handling including special keys |
+| Auto-Reconnect | Automatic reconnection on connection loss |
+| Multi-Window | Open multiple console windows simultaneously |
 
-1. Select a VM
-2. Go to **Snapshots** tab
-3. Click **"Create Snapshot"**
-4. Enter name and description
-5. Click **"Create"**
+### Snapshots
 
-### Managing Networks
+| Feature | Description |
+|---------|-------------|
+| Create | Save VM state with descriptions |
+| Revert | Restore to any previous state |
+| Delete | Clean up old snapshots |
+| Tree View | Visualize snapshot hierarchy |
 
-1. Go to **Networks** page (sidebar)
-2. View all virtual networks
-3. Start/stop networks as needed
-4. Create new networks with wizard
+### Storage Management
+
+| Feature | Description |
+|---------|-------------|
+| Storage Pools | Create and manage storage pools (dir, LVM, etc.) |
+| Volumes | Create, delete, and resize volumes |
+| Format Support | qcow2, raw, vmdk, and more |
+| Thin Provisioning | Efficient disk space usage |
+
+### Network Management
+
+| Feature | Description |
+|---------|-------------|
+| Virtual Networks | Create NAT, isolated, and bridged networks |
+| Network Status | Monitor network activity and connected VMs |
+| Interface Management | Add/remove network interfaces from VMs |
+
+### Hardware Configuration
+
+| Feature | Description |
+|---------|-------------|
+| CPU | Configure vCPUs, topology (sockets/cores/threads), CPU model |
+| Memory | Set memory size with ballooning support |
+| Disks | Add, remove, and configure virtual disks |
+| NICs | Add and configure network interfaces |
+| Graphics | Configure VNC/SPICE displays |
+| Boot Order | Set boot device priority |
+| USB/PCI | Passthrough USB and PCI devices |
+
+### Guest Agent Integration
+
+| Feature | Description |
+|---------|-------------|
+| System Info | OS, hostname, timezone from guest |
+| Network Info | Guest IP addresses and interfaces |
+| File Operations | Read/write files in guest |
+| Commands | Execute commands in guest |
+| User Management | List logged-in users |
 
 ---
 
@@ -161,21 +164,18 @@ See [Console User Guide](docs/CONSOLE_USER_GUIDE.md) for detailed console featur
 
 ### Tech Stack
 
-**Frontend**:
-- React 19 (UI framework)
-- TypeScript (type safety)
-- Vite (build tool)
-- Tailwind CSS (styling)
-- TanStack Query (state management)
-- shadcn/ui (component library)
+**Backend (Rust)**
+- Tauri 2.0 - Desktop application framework
+- libvirt-rs - KVM/QEMU management bindings
+- tokio - Async runtime
+- serde - Serialization
 
-**Backend**:
-- Rust (systems programming)
-- Tauri 2.x (desktop framework)
-- virt (libvirt bindings)
-
-**Console**:
-- noVNC 1.6.0 (VNC viewer)
+**Frontend (TypeScript)**
+- React 19 - UI framework
+- TanStack Query - Server state management
+- shadcn/ui - Component library
+- Tailwind CSS - Styling
+- noVNC - VNC console
 
 ### Project Structure
 
@@ -183,125 +183,114 @@ See [Console User Guide](docs/CONSOLE_USER_GUIDE.md) for detailed console featur
 kvm-manager/
 ├── src/                    # React frontend
 │   ├── components/         # UI components
-│   ├── pages/              # Application pages
 │   ├── hooks/              # Custom React hooks
-│   └── lib/                # Utilities
+│   ├── lib/                # Utilities and Tauri bindings
+│   └── pages/              # Page components
 ├── src-tauri/              # Rust backend
 │   └── src/
-│       ├── commands/       # Tauri commands
-│       └── services/       # Business logic
-├── guest-agent/            # VM guest agent (future)
-├── docs/                   # Documentation
-└── archive/                # Historical records
+│       ├── commands/       # Tauri IPC commands
+│       ├── vm/             # VM management
+│       ├── storage/        # Storage management
+│       ├── network/        # Network management
+│       └── main.rs         # Entry point
+├── guest-agent/            # QEMU guest agent
+│   ├── agent-linux/        # Linux agent daemon
+│   └── agent-common/       # Shared protocol code
+└── docs/                   # Documentation
 ```
 
-### Development Workflow
+### Development Commands
 
 ```bash
-# Start development server
+# Start development server (hot reload)
 npm run tauri dev
 
-# Run frontend only (fast refresh)
+# Run frontend only (faster iteration)
 npm run dev
 
 # Build for production
 npm run tauri build
 
-# Run tests
-npm test
-cargo test
+# Type checking
+npx tsc --noEmit
 
-# Lint
+# Linting
 npm run lint
 cargo clippy
+
+# Testing
+cargo test
 ```
 
 ### Contributing
 
-See [AGENTS.md](AGENTS.md) for our multi-agent development approach.
+Contributions are welcome. See [AGENTS.md](AGENTS.md) for the multi-agent development approach used in this project.
 
 ---
 
-## Roadmap
+## System Requirements
 
-See [PROJECT_PLAN.md](PROJECT_PLAN.md) for detailed roadmap.
+### Minimum
 
-### Upcoming Features (Week 6+)
-
-- 🎨 **Theme System**: Dark/light mode with customization
-- 📊 **Performance Monitoring**: Real-time CPU/memory graphs
-- 🔐 **Remote Connections**: Manage VMs on remote libvirt hosts
-- 📦 **VM Cloning**: Duplicate VMs easily
-- 🔧 **Advanced Settings**: Detailed VM configuration
-- 🎭 **SPICE Console**: Alternative to VNC with better performance
-- 🤖 **Guest Agent**: Enhanced guest OS integration
-- 📱 **System Tray**: Background monitoring
-- 🚀 **Quick Actions**: Global keyboard shortcuts
-
----
-
-## Known Issues
-
-- Console reconnection tested in development, needs real VM testing
-- Snapshot tree visualization works, needs UX polish
-- Network wizard covers NAT/isolated, more types planned
-- Guest agent protocol defined, implementations in progress
-
----
-
-## Requirements
-
-### System Requirements
-
-**Minimum**:
 - Linux kernel 4.5+
 - 2 GB RAM
 - 100 MB disk space
 
-**Recommended**:
+### Recommended
+
 - Linux kernel 5.0+
 - 4 GB RAM
 - 500 MB disk space
 - Hardware virtualization (Intel VT-x / AMD-V)
 
-### Software Dependencies
+### Dependencies
 
-- **libvirt** 6.0+ (VM management)
-- **qemu** 4.0+ (hypervisor)
-- **KVM** (kernel module)
-- Optional: **virt-manager** (for comparison/troubleshooting)
+- libvirt 6.0+ (VM management API)
+- QEMU 4.0+ (hypervisor)
+- KVM (kernel module)
+
+---
+
+## Roadmap
+
+See [PROJECT_PLAN.md](docs/PROJECT_PLAN.md) for the detailed development roadmap.
+
+**Planned Features**
+- Theme system (dark/light mode)
+- Remote libvirt connections
+- VM cloning and templates
+- System tray with background monitoring
+- Global keyboard shortcuts
 
 ---
 
 ## License
 
-[MIT License](LICENSE) - See LICENSE file for details
+MIT License - See [LICENSE](LICENSE) file for details.
 
 ---
 
 ## Acknowledgments
 
-- **libvirt**: Virtualization API
-- **Tauri**: Desktop application framework
-- **noVNC**: JavaScript VNC client
-- **shadcn/ui**: Component library
-- **virt-manager**: Inspiration and reference
+- [libvirt](https://libvirt.org/) - Virtualization API
+- [Tauri](https://tauri.app/) - Desktop application framework
+- [noVNC](https://novnc.com/) - JavaScript VNC client
+- [shadcn/ui](https://ui.shadcn.com/) - Component library
+- [virt-manager](https://virt-manager.org/) - Inspiration and reference
 
 ---
 
-## Support & Community
+## Support
 
-- 🐛 **Bug Reports**: [GitHub Issues](https://github.com/yourusername/kvm-manager/issues)
-- 💬 **Discussions**: [GitHub Discussions](https://github.com/yourusername/kvm-manager/discussions)
-- 📧 **Email**: your-email@example.com
-
----
-
-## Recommended IDE Setup
-
-- [VS Code](https://code.visualstudio.com/) + [Tauri](https://marketplace.visualstudio.com/items?itemName=tauri-apps.tauri-vscode) + [rust-analyzer](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer)
-- [VS Code](https://code.visualstudio.com/) + [ESLint](https://marketplace.visualstudio.com/items?itemName=dbaeumer.vscode-eslint) + [Prettier](https://marketplace.visualstudio.com/items?itemName=esbenp.prettier-vscode)
+- **Bug Reports**: [GitHub Issues](https://github.com/yourusername/kvm-manager/issues)
+- **Discussions**: [GitHub Discussions](https://github.com/yourusername/kvm-manager/discussions)
 
 ---
 
-**Built with ❤️ for the Linux virtualization community**
+## IDE Setup
+
+Recommended extensions for VS Code:
+- [Tauri](https://marketplace.visualstudio.com/items?itemName=tauri-apps.tauri-vscode)
+- [rust-analyzer](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer)
+- [ESLint](https://marketplace.visualstudio.com/items?itemName=dbaeumer.vscode-eslint)
+- [Prettier](https://marketplace.visualstudio.com/items?itemName=esbenp.prettier-vscode)
