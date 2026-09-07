@@ -7,6 +7,7 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/component
 import { Activity, HardDrive, Network, Server, Cpu, MemoryStick, Clock, Users, Globe, BarChart3, AlertCircle, ChevronDown, Copy, Terminal } from 'lucide-react'
 import { toast } from 'sonner'
 import { useState } from 'react'
+import { useActiveConnection } from '@/hooks/useActiveConnection'
 
 interface GuestInfoProps {
   vmId?: string  // Kept for backwards compatibility, not currently used
@@ -19,6 +20,7 @@ interface GuestInfoProps {
 export function GuestInfo({ vmName, vmState, compact }: GuestInfoProps) {
   const [showInstallHelp, setShowInstallHelp] = useState(false)
   const isRunning = vmState === 'running'
+  const { connectionId, resourceQueryKey } = useActiveConnection()
 
   const copyToClipboard = (text: string, label: string) => {
     navigator.clipboard.writeText(text)
@@ -27,72 +29,80 @@ export function GuestInfo({ vmName, vmState, compact }: GuestInfoProps) {
 
   // Only check agent status if VM is running
   const { data: agentStatus, isLoading: statusLoading } = useQuery({
-    queryKey: ['guestAgentStatus', vmName],
+    queryKey: resourceQueryKey('guest-agent-status', vmName)
+      ?? ['connection', 'pending', 'guest-agent-status', vmName],
     queryFn: () => api.checkGuestAgentStatus(vmName),
     refetchInterval: 10000, // Check every 10 seconds
     retry: false,
-    enabled: isRunning,
+    enabled: !!connectionId && isRunning,
   })
 
   // Get system info if agent is available
   const { data: systemInfo, isLoading: systemLoading } = useQuery({
-    queryKey: ['guestSystemInfo', vmName],
+    queryKey: resourceQueryKey('guest-system-info', vmName)
+      ?? ['connection', 'pending', 'guest-system-info', vmName],
     queryFn: () => api.getGuestSystemInfo(vmName),
-    enabled: agentStatus?.available === true,
+    enabled: !!connectionId && agentStatus?.available === true,
     refetchInterval: 5000, // Refresh every 5 seconds
     retry: false,
   })
 
   // Get network info if agent is available
   const { data: networkInfo } = useQuery({
-    queryKey: ['guestNetworkInfo', vmName],
+    queryKey: resourceQueryKey('guest-network-info', vmName)
+      ?? ['connection', 'pending', 'guest-network-info', vmName],
     queryFn: () => api.getGuestNetworkInfo(vmName),
-    enabled: agentStatus?.available === true,
+    enabled: !!connectionId && agentStatus?.available === true,
     refetchInterval: 10000,
     retry: false,
   })
 
   // Get disk usage if agent is available
   const { data: diskUsage } = useQuery({
-    queryKey: ['guestDiskUsage', vmName],
+    queryKey: resourceQueryKey('guest-disk-usage', vmName)
+      ?? ['connection', 'pending', 'guest-disk-usage', vmName],
     queryFn: () => api.getGuestDiskUsage(vmName),
-    enabled: agentStatus?.available === true,
+    enabled: !!connectionId && agentStatus?.available === true,
     refetchInterval: 30000, // Refresh every 30 seconds
     retry: false,
   })
 
   // Get CPU stats for performance monitoring
   const { data: cpuStats } = useQuery({
-    queryKey: ['guestCpuStats', vmName],
+    queryKey: resourceQueryKey('guest-cpu-stats', vmName)
+      ?? ['connection', 'pending', 'guest-cpu-stats', vmName],
     queryFn: () => api.getGuestCpuStats(vmName),
-    enabled: agentStatus?.available === true,
+    enabled: !!connectionId && agentStatus?.available === true,
     refetchInterval: 3000, // Refresh every 3 seconds for realtime feel
     retry: false,
   })
 
   // Get disk I/O stats
   const { data: diskStats } = useQuery({
-    queryKey: ['guestDiskStats', vmName],
+    queryKey: resourceQueryKey('guest-disk-stats', vmName)
+      ?? ['connection', 'pending', 'guest-disk-stats', vmName],
     queryFn: () => api.getGuestDiskStats(vmName),
-    enabled: agentStatus?.available === true,
+    enabled: !!connectionId && agentStatus?.available === true,
     refetchInterval: 5000,
     retry: false,
   })
 
   // Get logged-in users
   const { data: users } = useQuery({
-    queryKey: ['guestUsers', vmName],
+    queryKey: resourceQueryKey('guest-users', vmName)
+      ?? ['connection', 'pending', 'guest-users', vmName],
     queryFn: () => api.getGuestUsers(vmName),
-    enabled: agentStatus?.available === true,
+    enabled: !!connectionId && agentStatus?.available === true,
     refetchInterval: 30000,
     retry: false,
   })
 
   // Get timezone
   const { data: timezone } = useQuery({
-    queryKey: ['guestTimezone', vmName],
+    queryKey: resourceQueryKey('guest-timezone', vmName)
+      ?? ['connection', 'pending', 'guest-timezone', vmName],
     queryFn: () => api.getGuestTimezone(vmName),
-    enabled: agentStatus?.available === true,
+    enabled: !!connectionId && agentStatus?.available === true,
     refetchInterval: 60000, // Timezone rarely changes
     retry: false,
   })

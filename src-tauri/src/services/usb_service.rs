@@ -1,24 +1,21 @@
 use std::collections::HashSet;
-use std::process::Command;
 use std::fs;
+use std::process::Command;
 
+use crate::models::usb::UsbDevice;
+use crate::services::libvirt::ConnectionProvider;
 use virt::domain::Domain;
 use virt::sys;
-use crate::models::usb::UsbDevice;
-use crate::services::libvirt::LibvirtService;
 
 /// Scan the host system for USB devices
-pub fn list_usb_devices(libvirt: &LibvirtService) -> Result<Vec<UsbDevice>, String> {
+pub fn list_usb_devices(libvirt: &impl ConnectionProvider) -> Result<Vec<UsbDevice>, String> {
     // Use lsusb to list USB devices
     let output = Command::new("lsusb")
         .output()
-        .map_err(|e| format!("Failed to execute lsusb: {}. Is usbutils installed?", e))?;
+        .map_err(|_| "The USB inventory command is unavailable.".to_string())?;
 
     if !output.status.success() {
-        return Err(format!(
-            "lsusb failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        ));
+        return Err("The USB inventory command failed.".to_string());
     }
 
     let lsusb_output = String::from_utf8_lossy(&output.stdout);
@@ -32,7 +29,11 @@ pub fn list_usb_devices(libvirt: &LibvirtService) -> Result<Vec<UsbDevice>, Stri
     for line in lsusb_output.lines() {
         if let Some(device) = parse_lsusb_line(line, &used_devices) {
             // Skip USB hubs
-            if device.device_class.as_ref().map_or(false, |c| c.contains("Hub")) {
+            if device
+                .device_class
+                .as_ref()
+                .is_some_and(|c| c.contains("Hub"))
+            {
                 continue;
             }
             devices.push(device);
@@ -63,7 +64,10 @@ fn parse_lsusb_line(line: &str, used_devices: &HashSet<String>) -> Option<UsbDev
 
     // Find "Device "
     let device_start = line.find("Device ")?;
-    let device = line.get(device_start + 7..device_start + 10)?.trim_end_matches(':').to_string();
+    let device = line
+        .get(device_start + 7..device_start + 10)?
+        .trim_end_matches(':')
+        .to_string();
 
     // Find "ID " and extract vendor:product
     let id_start = line.find("ID ")?;
@@ -78,7 +82,8 @@ fn parse_lsusb_line(line: &str, used_devices: &HashSet<String>) -> Option<UsbDev
 
     // Validate hex IDs
     if !vendor_id.chars().all(|c| c.is_ascii_hexdigit())
-        || !product_id.chars().all(|c| c.is_ascii_hexdigit()) {
+        || !product_id.chars().all(|c| c.is_ascii_hexdigit())
+    {
         return None;
     }
 
@@ -92,16 +97,17 @@ fn parse_lsusb_line(line: &str, used_devices: &HashSet<String>) -> Option<UsbDev
     let (vendor_name, product_name) = parse_description(&description);
 
     let device_key = format!("{}:{}", vendor_id, product_id);
-    let (in_use, used_by_vm) = if let Some(vm_name) = used_devices.iter().find(|s| s.starts_with(&device_key)) {
-        let parts: Vec<&str> = vm_name.split('=').collect();
-        if parts.len() > 1 {
-            (true, Some(parts[1].to_string()))
+    let (in_use, used_by_vm) =
+        if let Some(vm_name) = used_devices.iter().find(|s| s.starts_with(&device_key)) {
+            let parts: Vec<&str> = vm_name.split('=').collect();
+            if parts.len() > 1 {
+                (true, Some(parts[1].to_string()))
+            } else {
+                (true, None)
+            }
         } else {
-            (true, None)
-        }
-    } else {
-        (false, None)
-    };
+            (false, None)
+        };
 
     Some(UsbDevice {
         bus,
@@ -120,7 +126,11 @@ fn parse_lsusb_line(line: &str, used_devices: &HashSet<String>) -> Option<UsbDev
 
 /// Get device info from sysfs
 fn get_sysfs_device_info(bus: &str, device: &str) -> (Option<String>, Option<String>) {
-    let sysfs_base = format!("/sys/bus/usb/devices/{}-{}", bus.trim_start_matches('0'), device);
+    let sysfs_base = format!(
+        "/sys/bus/usb/devices/{}-{}",
+        bus.trim_start_matches('0'),
+        device
+    );
 
     // Try to read speed
     let speed = fs::read_to_string(format!("{}/speed", sysfs_base))
@@ -141,9 +151,9 @@ fn get_sysfs_device_info(bus: &str, device: &str) -> (Option<String>, Option<Str
     // Try to read device class
     let device_class = fs::read_to_string(format!("{}/bDeviceClass", sysfs_base))
         .ok()
-        .and_then(|class_code| {
+        .map(|class_code| {
             let code = class_code.trim();
-            Some(match code {
+            match code {
                 "00" => "Defined by Interface".to_string(),
                 "01" => "Audio".to_string(),
                 "02" => "Communications".to_string(),
@@ -166,7 +176,7 @@ fn get_sysfs_device_info(bus: &str, device: &str) -> (Option<String>, Option<Str
                 "fe" => "Application Specific".to_string(),
                 "ff" => "Vendor Specific".to_string(),
                 _ => format!("Class {}", code),
-            })
+            }
         });
 
     (speed, device_class)
@@ -205,7 +215,14 @@ fn parse_description(description: &str) -> (String, String) {
     if let Some(pos) = description.find(" Technology") {
         let vendor = description[..pos + 11].to_string();
         let product = description[pos + 11..].trim().to_string();
-        return (vendor, if product.is_empty() { "USB Device".to_string() } else { product });
+        return (
+            vendor,
+            if product.is_empty() {
+                "USB Device".to_string()
+            } else {
+                product
+            },
+        );
     }
 
     // Default: first word is vendor, rest is product
@@ -218,7 +235,7 @@ fn parse_description(description: &str) -> (String, String) {
 }
 
 /// Get list of USB devices currently attached to running VMs
-fn get_usb_devices_in_use(libvirt: &LibvirtService) -> Result<HashSet<String>, String> {
+fn get_usb_devices_in_use(libvirt: &impl ConnectionProvider) -> Result<HashSet<String>, String> {
     let mut used = HashSet::new();
 
     let conn = libvirt.get_connection();
@@ -292,7 +309,7 @@ fn extract_id_from_xml(xml: &str, tag: &str) -> Option<String> {
 
 /// Attach a USB device to a running VM
 pub fn attach_usb_device(
-    libvirt: &LibvirtService,
+    libvirt: &impl ConnectionProvider,
     vm_id: &str,
     vendor_id: &str,
     product_id: &str,
@@ -337,7 +354,7 @@ pub fn attach_usb_device(
 
 /// Detach a USB device from a running VM
 pub fn detach_usb_device(
-    libvirt: &LibvirtService,
+    libvirt: &impl ConnectionProvider,
     vm_id: &str,
     vendor_id: &str,
     product_id: &str,
@@ -378,7 +395,7 @@ fn is_valid_hex_id(id: &str) -> bool {
 
 /// Get list of USB devices attached to a specific VM
 pub fn get_vm_usb_devices(
-    libvirt: &LibvirtService,
+    libvirt: &impl ConnectionProvider,
     vm_id: &str,
 ) -> Result<Vec<UsbDevice>, String> {
     let conn = libvirt.get_connection();
@@ -459,5 +476,9 @@ fn get_device_names_from_lsusb(vendor_id: &str, product_id: &str) -> (String, St
         }
     }
 
-    ("Unknown".to_string(), "Unknown".to_string(), format!("{}:{}", vendor_id, product_id))
+    (
+        "Unknown".to_string(),
+        "Unknown".to_string(),
+        format!("{}:{}", vendor_id, product_id),
+    )
 }

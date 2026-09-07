@@ -10,6 +10,7 @@ import { cn } from '@/lib/utils'
 import { Monitor, Cpu, MemoryStick, HardDrive, Network, Play, Square, Pause, MonitorPlay } from 'lucide-react'
 import { toast } from 'sonner'
 import type { VM } from '@/lib/types'
+import { useActiveConnection } from '@/hooks/useActiveConnection'
 
 interface VmCardViewProps {
   vms: VM[]
@@ -33,12 +34,14 @@ interface VmCardProps {
 
 function VmCard({ vm, isSelected, onToggleSelect, onDoubleClick, onOpenRename, onOpenDelete, onOpenMigrate }: VmCardProps) {
   const queryClient = useQueryClient()
+  const { connectionId, resourceQueryKey } = useActiveConnection()
+  const vmsQueryKey = resourceQueryKey('vms') ?? ['connection', 'pending', 'vms']
 
   // Poll stats for running VMs
   const { data: vmStats } = useQuery({
-    queryKey: ['vm-stats', vm.id],
+    queryKey: resourceQueryKey('vm-stats', vm.id) ?? ['connection', 'pending', 'vm-stats', vm.id],
     queryFn: () => api.getVmStats(vm.id),
-    enabled: vm.state === 'running',
+    enabled: !!connectionId && vm.state === 'running',
     refetchInterval: 2000,
   })
 
@@ -46,7 +49,7 @@ function VmCard({ vm, isSelected, onToggleSelect, onDoubleClick, onOpenRename, o
   const startMutation = useMutation({
     mutationFn: () => api.startVm(vm.id),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['vms'] })
+      queryClient.invalidateQueries({ queryKey: vmsQueryKey })
       toast.success(`${vm.name} started`)
     },
     onError: (error) => toast.error(`Failed to start: ${error}`),
@@ -55,7 +58,7 @@ function VmCard({ vm, isSelected, onToggleSelect, onDoubleClick, onOpenRename, o
   const stopMutation = useMutation({
     mutationFn: () => api.forceStopVm(vm.id),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['vms'] })
+      queryClient.invalidateQueries({ queryKey: vmsQueryKey })
       toast.success(`${vm.name} stopped`)
     },
     onError: (error) => toast.error(`Failed to stop: ${error}`),
@@ -64,7 +67,7 @@ function VmCard({ vm, isSelected, onToggleSelect, onDoubleClick, onOpenRename, o
   const pauseMutation = useMutation({
     mutationFn: () => api.pauseVm(vm.id),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['vms'] })
+      queryClient.invalidateQueries({ queryKey: vmsQueryKey })
       toast.success(`${vm.name} paused`)
     },
     onError: (error) => toast.error(`Failed to pause: ${error}`),

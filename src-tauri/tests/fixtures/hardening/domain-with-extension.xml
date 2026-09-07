@@ -1,0 +1,6 @@
+<domain type='kvm' xmlns:vendor='urn:kvm-manager:test'>
+  <name>fixture-vm</name>
+  <metadata>
+    <vendor:extension data='preserve-me'>unknown content</vendor:extension>
+  </metadata>
+</domain>

@@ -32,24 +32,14 @@ KVM Manager aims to be the best open-source GUI for managing KVM/QEMU virtual ma
 
 ### Prerequisites
 
-```bash
-# Ubuntu/Debian
-sudo apt install libvirt-daemon qemu-kvm libvirt-clients
-
-# Fedora
-sudo dnf install libvirt qemu-kvm
-
-# Arch Linux
-sudo pacman -S libvirt qemu-full
-
-# Add your user to libvirt group
-sudo usermod -aG libvirt $USER
-# Log out and back in for group changes to take effect
-```
+See the [Linux support matrix](docs/LINUX_SUPPORT.md) for verified package, service, firmware, and
+permission guidance for Arch/CachyOS, Debian/Ubuntu LTS, Fedora/RHEL-compatible, and openSUSE.
+The Host Readiness panel in Settings detects the current family and provides the matching recovery
+steps. Do not run KVM Manager as root.
 
 ### Installation
 
-Download the latest release from the [Releases](https://github.com/yourusername/kvm-manager/releases) page.
+Download the latest release from the [Releases](https://github.com/theonlytruebigmac/kvm-manager/releases) page.
 
 ```bash
 # AppImage (recommended - works on any distro)
@@ -66,12 +56,16 @@ sudo rpm -i kvm-manager-*.rpm
 ### Build from Source
 
 ```bash
-git clone https://github.com/yourusername/kvm-manager.git
+git clone https://github.com/theonlytruebigmac/kvm-manager.git
 cd kvm-manager
 
-npm install
+npm ci
 npm run tauri build
 ```
+
+For contributor validation, use the required locked checks in
+[CONTRIBUTING.md](CONTRIBUTING.md), then run the relevant feature quickstart before requesting
+review.
 
 ---
 
@@ -82,6 +76,9 @@ npm run tauri build
 | [Console Guide](docs/CONSOLE_USER_GUIDE.md) | VNC and SPICE console setup |
 | [UEFI Setup](docs/UEFI_SETUP.md) | UEFI and Secure Boot configuration |
 | [Libvirt Permissions](docs/LIBVIRT_PERMISSIONS.md) | Permission troubleshooting |
+| [Linux Support](docs/LINUX_SUPPORT.md) | Supported distributions and prerequisites |
+| [Connection Limits](docs/CONNECTIONS.md) | Selected-connection routing and capability availability |
+| [Security and Recovery](docs/SECURITY.md) | Safe diagnostics, confirmation, and recovery behavior |
 | [UI Architecture](docs/UI_ARCHITECTURE.md) | Technical UI documentation |
 | [Project Plan](docs/PROJECT_PLAN.md) | Development roadmap |
 
@@ -216,10 +213,11 @@ npx tsc --noEmit
 
 # Linting
 npm run lint
-cargo clippy
+cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 
 # Testing
-cargo test
+npm test
+cargo test --locked --manifest-path src-tauri/Cargo.toml
 ```
 
 ### Contributing
@@ -282,8 +280,8 @@ MIT License - See [LICENSE](LICENSE) file for details.
 
 ## Support
 
-- **Bug Reports**: [GitHub Issues](https://github.com/yourusername/kvm-manager/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/yourusername/kvm-manager/discussions)
+- **Bug Reports**: [GitHub Issues](https://github.com/theonlytruebigmac/kvm-manager/issues)
+- **Discussions**: [GitHub Discussions](https://github.com/theonlytruebigmac/kvm-manager/discussions)
 
 ---
 

@@ -7,6 +7,7 @@ import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContai
 import { Activity, HardDrive, Network, Cpu, Clock, Calendar } from 'lucide-react'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Button } from '@/components/ui/button'
+import { useActiveConnection } from '@/hooks/useActiveConnection'
 
 interface ResourceGraphsProps {
   vmId: string
@@ -34,13 +35,14 @@ const MAX_POINTS = 60 // Keep last 60 data points (1 minute at 1s interval)
 export function ResourceGraphs({ vmId, compact, dataOnly }: ResourceGraphsProps) {
   const [metrics, setMetrics] = useState<MetricPoint[]>([])
   const [timeRange, setTimeRange] = useState<TimeRange>('live')
+  const { connectionId, resourceQueryKey } = useActiveConnection()
 
   // Poll VM stats every second (only for live view)
   const { data: stats } = useQuery({
-    queryKey: ['vm-stats', vmId],
+    queryKey: resourceQueryKey('vm-stats', vmId) ?? ['connection', 'pending', 'vm-stats', vmId],
     queryFn: () => api.getVmStats(vmId),
     refetchInterval: 1000,
-    enabled: timeRange === 'live',
+    enabled: !!connectionId && timeRange === 'live',
   })
 
   // Store metrics mutation
@@ -50,7 +52,8 @@ export function ResourceGraphs({ vmId, compact, dataOnly }: ResourceGraphsProps)
 
   // Fetch historical metrics
   const { data: historical, isLoading: historyLoading } = useQuery({
-    queryKey: ['historical-metrics', vmId, timeRange],
+    queryKey: resourceQueryKey('historical-metrics', vmId, timeRange)
+      ?? ['connection', 'pending', 'historical-metrics', vmId, timeRange],
     queryFn: async () => {
       if (timeRange === 'live') return null
 
@@ -69,7 +72,7 @@ export function ResourceGraphs({ vmId, compact, dataOnly }: ResourceGraphsProps)
 
       return await api.getHistoricalMetrics(vmId, startTime, now, maxPoints)
     },
-    enabled: timeRange !== 'live',
+    enabled: !!connectionId && timeRange !== 'live',
     staleTime: 30000, // Cache for 30s
   })
 

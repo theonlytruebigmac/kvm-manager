@@ -17,13 +17,13 @@ pub struct NetworkInterface {
     pub name: String,
     pub mac_address: String,
     #[serde(rename = "mac")]
-    pub mac: String,  // Alias for mac_address for frontend compatibility
+    pub mac: String, // Alias for mac_address for frontend compatibility
     pub network: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ip_address: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(rename = "type")]
-    pub model_type: Option<String>,  // NIC model type (virtio, e1000, etc.)
+    pub model_type: Option<String>, // NIC model type (virtio, e1000, etc.)
     // QoS / Bandwidth settings (in KB/s for average, peak; KB for burst)
     #[serde(default)]
     pub inbound_average: Option<u64>,
@@ -115,6 +115,9 @@ pub struct VmConfig {
     pub cpu_count: u32,
     pub memory_mb: u64,
     pub disk_size_gb: u64,
+    /// UUID of the selected connection-owned pool. Required for new-disk installs.
+    #[serde(default)]
+    pub storage_pool_id: Option<String>,
     #[serde(default = "default_os_type")]
     pub os_type: String,
     #[serde(default)]
@@ -172,12 +175,12 @@ pub struct VmConfig {
     #[serde(default)]
     pub kernel_args: Option<String>,
     #[serde(default)]
-    pub dtb_path: Option<String>,  // Device tree blob for ARM
+    pub dtb_path: Option<String>, // Device tree blob for ARM
     // Hugepages memory backing
     #[serde(default)]
     pub hugepages_enabled: bool,
     #[serde(default)]
-    pub hugepage_size: Option<u64>,  // Size in KiB (2048 = 2MB, 1048576 = 1GB)
+    pub hugepage_size: Option<u64>, // Size in KiB (2048 = 2MB, 1048576 = 1GB)
 }
 
 fn default_installation_type() -> String {

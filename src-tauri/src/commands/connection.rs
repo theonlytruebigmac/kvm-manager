@@ -1,41 +1,86 @@
-use tauri::State;
+use crate::models::operation::{OperationContext, OperationKind};
+use crate::services::connection_service::{ConnectionType, SavedConnection};
 use crate::state::app_state::AppState;
-use crate::services::connection_service::{SavedConnection, ConnectionType};
+use tauri::State;
 
 /// Get all saved connections
 #[tauri::command]
-pub async fn get_saved_connections(state: State<'_, AppState>) -> Result<Vec<SavedConnection>, String> {
+pub async fn get_saved_connections(
+    state: State<'_, AppState>,
+) -> Result<Vec<SavedConnection>, String> {
     tracing::debug!("get_saved_connections command called");
-    state.connections.get_saved_connections()
+    state
+        .connections
+        .get_saved_connections()
         .map_err(|e| e.to_string())
 }
 
 /// Get currently active connection info
 #[tauri::command]
-pub async fn get_active_connection(state: State<'_, AppState>) -> Result<Option<SavedConnection>, String> {
+pub async fn get_active_connection(
+    state: State<'_, AppState>,
+) -> Result<Option<SavedConnection>, String> {
     tracing::debug!("get_active_connection command called");
-    state.connections.get_active_connection_info()
+    state
+        .connections
+        .get_active_connection_info()
         .map_err(|e| e.to_string())
+}
+
+/// Get a fresh immutable context for the selected connection, including capability gates.
+#[tauri::command]
+pub async fn get_active_operation_context(
+    state: State<'_, AppState>,
+) -> Result<OperationContext, String> {
+    state
+        .resolve_operation(OperationKind::Query, None)
+        .map(|operation| operation.context)
+        .map_err(|error| error.to_string())
 }
 
 /// Connect to a saved connection by ID
 #[tauri::command]
 pub async fn connect_to(state: State<'_, AppState>, connection_id: String) -> Result<(), String> {
     tracing::info!("connect_to command called for: {}", connection_id);
-    state.connections.connect(&connection_id)
+    state
+        .connections
+        .connect(&connection_id)
+        .map_err(|e| e.to_string())
+}
+
+/// Connect to a saved SSH connection using a password supplied only for this attempt.
+#[tauri::command]
+pub async fn connect_to_with_password(
+    state: State<'_, AppState>,
+    connection_id: String,
+    password: String,
+) -> Result<(), String> {
+    tracing::info!(
+        "connect_to_with_password command called for: {}",
+        connection_id
+    );
+    state
+        .connections
+        .connect_with_password(&connection_id, password)
         .map_err(|e| e.to_string())
 }
 
 /// Disconnect from a connection
 #[tauri::command]
-pub async fn disconnect_from(state: State<'_, AppState>, connection_id: String) -> Result<(), String> {
+pub async fn disconnect_from(
+    state: State<'_, AppState>,
+    connection_id: String,
+) -> Result<(), String> {
     tracing::info!("disconnect_from command called for: {}", connection_id);
-    state.connections.disconnect(&connection_id)
+    state
+        .connections
+        .disconnect(&connection_id)
         .map_err(|e| e.to_string())
 }
 
 /// Add a new connection
 #[tauri::command]
+#[allow(clippy::too_many_arguments)] // Tauri IPC exposes the existing field-level client contract.
 pub async fn add_connection(
     state: State<'_, AppState>,
     name: String,
@@ -57,7 +102,14 @@ pub async fn add_connection(
     };
 
     // Generate unique ID
-    let id = format!("conn_{}", uuid::Uuid::new_v4().to_string().split('-').next().unwrap_or("unknown"));
+    let id = format!(
+        "conn_{}",
+        uuid::Uuid::new_v4()
+            .to_string()
+            .split('-')
+            .next()
+            .unwrap_or("unknown")
+    );
 
     let config = SavedConnection {
         id: id.clone(),
@@ -72,7 +124,9 @@ pub async fn add_connection(
         path: "system".to_string(),
     };
 
-    state.connections.add_connection(config.clone())
+    state
+        .connections
+        .add_connection(config.clone())
         .map_err(|e| e.to_string())?;
 
     Ok(config)
@@ -80,6 +134,7 @@ pub async fn add_connection(
 
 /// Update an existing connection
 #[tauri::command]
+#[allow(clippy::too_many_arguments)] // Tauri IPC exposes the existing field-level client contract.
 pub async fn update_connection(
     state: State<'_, AppState>,
     id: String,
@@ -114,15 +169,22 @@ pub async fn update_connection(
         path: "system".to_string(),
     };
 
-    state.connections.update_connection(config)
+    state
+        .connections
+        .update_connection(config)
         .map_err(|e| e.to_string())
 }
 
 /// Remove a saved connection
 #[tauri::command]
-pub async fn remove_connection(state: State<'_, AppState>, connection_id: String) -> Result<(), String> {
+pub async fn remove_connection(
+    state: State<'_, AppState>,
+    connection_id: String,
+) -> Result<(), String> {
     tracing::info!("remove_connection command called: {}", connection_id);
-    state.connections.remove_connection(&connection_id)
+    state
+        .connections
+        .remove_connection(&connection_id)
         .map_err(|e| e.to_string())
 }
 
@@ -162,15 +224,16 @@ pub async fn test_connection(
     };
 
     let uri = config.build_uri();
-    tracing::info!("Testing connection to: {}", uri);
+    tracing::info!("Testing connection");
 
     // Try to connect
     let conn = Connect::open(Some(&uri))
-        .map_err(|e| format!("Connection failed: {}", e))?;
+        .map_err(|_| "Connection could not be established.".to_string())?;
 
     // Get hostname as confirmation
-    let hostname = conn.get_hostname()
-        .map_err(|e| format!("Failed to get hostname: {}", e))?;
+    let hostname = conn
+        .get_hostname()
+        .map_err(|_| "Connection was established but could not be verified.".to_string())?;
 
     Ok(format!("Connected to {}", hostname))
 }

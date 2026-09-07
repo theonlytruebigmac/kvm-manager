@@ -10,6 +10,7 @@ import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, 
 import { Checkbox } from '@/components/ui/checkbox'
 import { Camera, Trash2, RotateCcw, Clock } from 'lucide-react'
 import type { Snapshot } from '@/lib/types'
+import { useActiveConnection } from '@/hooks/useActiveConnection'
 
 interface SnapshotManagerProps {
   vmId: string
@@ -18,6 +19,10 @@ interface SnapshotManagerProps {
 
 export function SnapshotManager({ vmId, vmName }: SnapshotManagerProps) {
   const queryClient = useQueryClient()
+  const { connectionId, resourceQueryKey } = useActiveConnection()
+  const snapshotsQueryKey = resourceQueryKey('snapshots', vmId)
+    ?? ['connection', 'pending', 'snapshots', vmId]
+  const vmsQueryKey = resourceQueryKey('vms') ?? ['connection', 'pending', 'vms']
   const [showCreateDialog, setShowCreateDialog] = useState(false)
   const [showDeleteDialog, setShowDeleteDialog] = useState(false)
   const [showRevertDialog, setShowRevertDialog] = useState(false)
@@ -29,8 +34,9 @@ export function SnapshotManager({ vmId, vmName }: SnapshotManagerProps) {
 
   // Query snapshots
   const { data: snapshots = [], isLoading, error } = useQuery({
-    queryKey: ['snapshots', vmId],
+    queryKey: snapshotsQueryKey,
     queryFn: () => api.getSnapshots(vmId),
+    enabled: !!connectionId,
     refetchInterval: 30000, // Refresh every 30 seconds
   })
 
@@ -42,7 +48,7 @@ export function SnapshotManager({ vmId, vmName }: SnapshotManagerProps) {
       includeMemory,
     }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['snapshots', vmId] })
+      queryClient.invalidateQueries({ queryKey: snapshotsQueryKey })
       toast.success(`Snapshot "${snapshotName}" created successfully`)
       setShowCreateDialog(false)
       setSnapshotName('')
@@ -58,7 +64,7 @@ export function SnapshotManager({ vmId, vmName }: SnapshotManagerProps) {
   const deleteMutation = useMutation({
     mutationFn: (snapshotName: string) => api.deleteSnapshot(vmId, snapshotName),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['snapshots', vmId] })
+      queryClient.invalidateQueries({ queryKey: snapshotsQueryKey })
       toast.success(`Snapshot deleted successfully`)
       setShowDeleteDialog(false)
       setSelectedSnapshot(null)
@@ -72,8 +78,8 @@ export function SnapshotManager({ vmId, vmName }: SnapshotManagerProps) {
   const revertMutation = useMutation({
     mutationFn: (snapshotName: string) => api.revertSnapshot(vmId, snapshotName),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['vms'] })
-      queryClient.invalidateQueries({ queryKey: ['snapshots', vmId] })
+      queryClient.invalidateQueries({ queryKey: vmsQueryKey })
+      queryClient.invalidateQueries({ queryKey: snapshotsQueryKey })
       toast.success(`VM reverted to snapshot successfully`)
       setShowRevertDialog(false)
       setSelectedSnapshot(null)
@@ -269,10 +275,14 @@ export function SnapshotManager({ vmId, vmName }: SnapshotManagerProps) {
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>Delete Snapshot</AlertDialogTitle>
-            <AlertDialogDescription>
+          <AlertDialogDescription>
               Are you sure you want to delete snapshot "{selectedSnapshot?.name}"? This action cannot be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>
+          <div className="rounded-md border bg-muted/40 p-3 text-sm">
+            <div><span className="font-medium">Target:</span> Snapshot “{selectedSnapshot?.name}”</div>
+            <div><span className="font-medium">Connection:</span> QEMU/KVM (Local)</div>
+          </div>
           <AlertDialogFooter>
             <AlertDialogCancel onClick={() => setSelectedSnapshot(null)}>Cancel</AlertDialogCancel>
             <AlertDialogAction
@@ -291,11 +301,15 @@ export function SnapshotManager({ vmId, vmName }: SnapshotManagerProps) {
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>Revert to Snapshot</AlertDialogTitle>
-            <AlertDialogDescription>
+          <AlertDialogDescription>
               Are you sure you want to revert VM "{vmName}" to snapshot "{selectedSnapshot?.name}"?
               All changes made after this snapshot will be lost.
             </AlertDialogDescription>
           </AlertDialogHeader>
+          <div className="rounded-md border bg-muted/40 p-3 text-sm">
+            <div><span className="font-medium">Target:</span> Snapshot “{selectedSnapshot?.name}” on “{vmName}”</div>
+            <div><span className="font-medium">Connection:</span> QEMU/KVM (Local)</div>
+          </div>
           <AlertDialogFooter>
             <AlertDialogCancel onClick={() => setSelectedSnapshot(null)}>Cancel</AlertDialogCancel>
             <AlertDialogAction

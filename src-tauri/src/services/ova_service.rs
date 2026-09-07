@@ -1,9 +1,9 @@
+use crate::utils::error::AppError;
+use serde::{Deserialize, Serialize};
 use std::fs::{self, File};
 use std::io::{BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use serde::{Deserialize, Serialize};
-use crate::utils::error::AppError;
 
 /// OVA/OVF Import Service
 /// Handles importing VMs from OVA (Open Virtual Appliance) and OVF (Open Virtualization Format) files
@@ -49,8 +49,12 @@ pub struct OvaImportConfig {
     /// Optional: Override VM name
     pub vm_name: Option<String>,
     /// Optional: Override memory (MB)
+    #[allow(dead_code)]
+    // The import currently copies disks only; VM definition creation is separate.
     pub memory_mb: Option<u64>,
     /// Optional: Override CPU count
+    #[allow(dead_code)]
+    // The import currently copies disks only; VM definition creation is separate.
     pub cpu_count: Option<u32>,
     /// Convert disks to qcow2 (recommended)
     #[serde(default = "default_true")]
@@ -67,11 +71,15 @@ impl OvaService {
         let path = Path::new(source_path);
 
         if !path.exists() {
-            return Err(AppError::NotFound(format!("File not found: {}", source_path)));
+            return Err(AppError::NotFound(format!(
+                "File not found: {}",
+                source_path
+            )));
         }
 
         // Determine if it's OVA (tarball) or OVF (XML file)
-        let extension = path.extension()
+        let extension = path
+            .extension()
             .and_then(|e| e.to_str())
             .unwrap_or("")
             .to_lowercase();
@@ -80,9 +88,11 @@ impl OvaService {
             "ova" => Self::extract_ovf_from_ova(path)?,
             "ovf" => fs::read_to_string(path)
                 .map_err(|e| AppError::Other(format!("Failed to read OVF file: {}", e)))?,
-            _ => return Err(AppError::InvalidConfig(
-                "Unsupported file format. Expected .ova or .ovf".to_string()
-            )),
+            _ => {
+                return Err(AppError::InvalidConfig(
+                    "Unsupported file format. Expected .ova or .ovf".to_string(),
+                ))
+            }
         };
 
         Self::parse_ovf(&ovf_content)
@@ -96,24 +106,29 @@ impl OvaService {
         let reader = BufReader::new(file);
         let mut archive = tar::Archive::new(reader);
 
-        for entry_result in archive.entries()
+        for entry_result in archive
+            .entries()
             .map_err(|e| AppError::Other(format!("Failed to read OVA archive: {}", e)))?
         {
             let mut entry = entry_result
                 .map_err(|e| AppError::Other(format!("Failed to read archive entry: {}", e)))?;
 
-            let path = entry.path()
+            let path = entry
+                .path()
                 .map_err(|e| AppError::Other(format!("Failed to get entry path: {}", e)))?;
 
             if path.extension().and_then(|e| e.to_str()) == Some("ovf") {
                 let mut content = String::new();
-                entry.read_to_string(&mut content)
-                    .map_err(|e| AppError::Other(format!("Failed to read OVF from archive: {}", e)))?;
+                entry.read_to_string(&mut content).map_err(|e| {
+                    AppError::Other(format!("Failed to read OVF from archive: {}", e))
+                })?;
                 return Ok(content);
             }
         }
 
-        Err(AppError::NotFound("No .ovf file found in OVA archive".to_string()))
+        Err(AppError::NotFound(
+            "No .ovf file found in OVA archive".to_string(),
+        ))
     }
 
     /// Parse OVF XML to extract metadata
@@ -172,13 +187,21 @@ impl OvaService {
     /// Extract a simple XML element value
     fn extract_xml_value(xml: &str, tag: &str) -> Option<String> {
         // Try both with and without namespace prefix
-        for pattern in [format!("<{}>", tag), format!("<ovf:{}>", tag), format!("<rasd:{}>", tag)] {
+        for pattern in [
+            format!("<{}>", tag),
+            format!("<ovf:{}>", tag),
+            format!("<rasd:{}>", tag),
+        ] {
             if let Some(start) = xml.find(&pattern) {
                 let start_pos = start + pattern.len();
                 let remaining = &xml[start_pos..];
 
                 // Find the closing tag
-                for close_pattern in [format!("</{}>", tag), format!("</ovf:{}>", tag), format!("</rasd:{}>", tag)] {
+                for close_pattern in [
+                    format!("</{}>", tag),
+                    format!("</ovf:{}>", tag),
+                    format!("</rasd:{}>", tag),
+                ] {
                     if let Some(end) = remaining.find(&close_pattern) {
                         let value = remaining[..end].trim().to_string();
                         if !value.is_empty() {
@@ -237,8 +260,7 @@ impl OvaService {
                 let id = Self::extract_attribute(disk_elem, "diskId")
                     .unwrap_or_else(|| format!("disk-{}", disks.len()));
 
-                let file_ref = Self::extract_attribute(disk_elem, "fileRef")
-                    .unwrap_or_default();
+                let file_ref = Self::extract_attribute(disk_elem, "fileRef").unwrap_or_default();
 
                 let capacity = Self::extract_attribute(disk_elem, "capacity")
                     .and_then(|s| s.parse::<u64>().ok())
@@ -248,8 +270,7 @@ impl OvaService {
                     .unwrap_or_else(|| "vmdk".to_string());
 
                 // Get actual filename from File element
-                let file_name = Self::find_file_by_id(ovf, &file_ref)
-                    .unwrap_or(file_ref);
+                let file_name = Self::find_file_by_id(ovf, &file_ref).unwrap_or(file_ref);
 
                 disks.push(OvfDisk {
                     id,
@@ -293,7 +314,10 @@ impl OvaService {
         let mut pos = 0;
         while let Some(start) = ovf[pos..].find("<Network ") {
             let net_start = pos + start;
-            if let Some(end) = ovf[net_start..].find("</Network>").or_else(|| ovf[net_start..].find("/>")) {
+            if let Some(end) = ovf[net_start..]
+                .find("</Network>")
+                .or_else(|| ovf[net_start..].find("/>"))
+            {
                 let net_elem = &ovf[net_start..net_start + end];
 
                 let name = Self::extract_attribute(net_elem, "name")
@@ -331,12 +355,18 @@ impl OvaService {
         let source_path = Path::new(&config.source_path);
 
         if !source_path.exists() {
-            return Err(AppError::NotFound(format!("Source file not found: {}", config.source_path)));
+            return Err(AppError::NotFound(format!(
+                "Source file not found: {}",
+                config.source_path
+            )));
         }
 
         let target_path = Path::new(&config.target_pool_path);
         if !target_path.exists() {
-            return Err(AppError::NotFound(format!("Target pool path not found: {}", config.target_pool_path)));
+            return Err(AppError::NotFound(format!(
+                "Target pool path not found: {}",
+                config.target_pool_path
+            )));
         }
 
         // Get metadata
@@ -344,7 +374,8 @@ impl OvaService {
         let vm_name = config.vm_name.unwrap_or(metadata.name.clone());
 
         // Determine extraction directory
-        let extension = source_path.extension()
+        let extension = source_path
+            .extension()
             .and_then(|e| e.to_str())
             .unwrap_or("")
             .to_lowercase();
@@ -354,7 +385,8 @@ impl OvaService {
             Self::extract_ova_disks(source_path, target_path, &metadata.disks)?
         } else {
             // OVF file - disks should be in same directory
-            let ovf_dir = source_path.parent()
+            let ovf_dir = source_path
+                .parent()
                 .ok_or_else(|| AppError::Other("Cannot determine OVF directory".to_string()))?;
             Self::locate_ovf_disks(ovf_dir, target_path, &metadata.disks)?
         };
@@ -367,12 +399,18 @@ impl OvaService {
         };
 
         // Return the path to the first disk (main disk)
-        converted_disks.into_iter().next()
+        converted_disks
+            .into_iter()
+            .next()
             .ok_or_else(|| AppError::NotFound("No disks found in OVA/OVF".to_string()))
     }
 
     /// Extract disk files from OVA archive
-    fn extract_ova_disks(ova_path: &Path, target_dir: &Path, disks: &[OvfDisk]) -> Result<Vec<PathBuf>, AppError> {
+    fn extract_ova_disks(
+        ova_path: &Path,
+        target_dir: &Path,
+        disks: &[OvfDisk],
+    ) -> Result<Vec<PathBuf>, AppError> {
         let file = File::open(ova_path)
             .map_err(|e| AppError::Other(format!("Failed to open OVA: {}", e)))?;
 
@@ -381,20 +419,21 @@ impl OvaService {
         let mut extracted = Vec::new();
 
         // Get list of disk filenames we're looking for
-        let disk_names: Vec<&str> = disks.iter()
-            .map(|d| d.file_name.as_str())
-            .collect();
+        let disk_names: Vec<&str> = disks.iter().map(|d| d.file_name.as_str()).collect();
 
-        for entry_result in archive.entries()
+        for entry_result in archive
+            .entries()
             .map_err(|e| AppError::Other(format!("Failed to read archive: {}", e)))?
         {
             let mut entry = entry_result
                 .map_err(|e| AppError::Other(format!("Failed to read entry: {}", e)))?;
 
-            let entry_path = entry.path()
+            let entry_path = entry
+                .path()
                 .map_err(|e| AppError::Other(format!("Failed to get path: {}", e)))?;
 
-            let file_name_owned = entry_path.file_name()
+            let file_name_owned = entry_path
+                .file_name()
                 .and_then(|n| n.to_str())
                 .unwrap_or("")
                 .to_string();
@@ -402,16 +441,20 @@ impl OvaService {
             let file_name = file_name_owned.as_str();
 
             // Check if this is a disk file
-            if disk_names.iter().any(|d| d.ends_with(file_name) || file_name.ends_with(d)) {
+            if disk_names
+                .iter()
+                .any(|d| d.ends_with(file_name) || file_name.ends_with(d))
+            {
                 let dest_path = target_dir.join(file_name);
 
-                tracing::info!("Extracting disk: {} -> {:?}", file_name, dest_path);
+                tracing::info!("Extracting disk from OVA archive");
 
                 // Drop the path borrow before unpacking
                 drop(entry_path);
 
-                entry.unpack(&dest_path)
-                    .map_err(|e| AppError::Other(format!("Failed to extract {}: {}", file_name, e)))?;
+                entry
+                    .unpack(&dest_path)
+                    .map_err(|_| AppError::Other("Failed to extract an OVA disk".to_string()))?;
 
                 extracted.push(dest_path);
             }
@@ -424,23 +467,30 @@ impl OvaService {
             let reader = BufReader::new(file);
             let mut archive = tar::Archive::new(reader);
 
-            for entry_result in archive.entries()
+            for entry_result in archive
+                .entries()
                 .map_err(|e| AppError::Other(format!("Failed to read archive: {}", e)))?
             {
                 let mut entry = entry_result
                     .map_err(|e| AppError::Other(format!("Failed to read entry: {}", e)))?;
 
-                let entry_path = entry.path()
+                let entry_path = entry
+                    .path()
                     .map_err(|e| AppError::Other(format!("Failed to get path: {}", e)))?;
 
-                let file_name_owned = entry_path.file_name()
+                let file_name_owned = entry_path
+                    .file_name()
                     .and_then(|n| n.to_str())
                     .unwrap_or("")
                     .to_string();
 
                 let file_name = file_name_owned.as_str();
 
-                let ext = entry_path.extension().and_then(|e| e.to_str()).unwrap_or("").to_string();
+                let ext = entry_path
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("")
+                    .to_string();
 
                 // Drop the path borrow before unpacking
                 drop(entry_path);
@@ -448,10 +498,11 @@ impl OvaService {
                 if ["vmdk", "vhd", "vhdx", "vdi", "raw", "qcow2"].contains(&ext.as_str()) {
                     let dest_path = target_dir.join(file_name);
 
-                    tracing::info!("Extracting disk file: {} -> {:?}", file_name, dest_path);
+                    tracing::info!("Extracting disk file from OVA archive");
 
-                    entry.unpack(&dest_path)
-                        .map_err(|e| AppError::Other(format!("Failed to extract {}: {}", file_name, e)))?;
+                    entry.unpack(&dest_path).map_err(|_| {
+                        AppError::Other("Failed to extract an OVA disk".to_string())
+                    })?;
 
                     extracted.push(dest_path);
                 }
@@ -462,7 +513,11 @@ impl OvaService {
     }
 
     /// Locate disk files for OVF (they should be in the same directory)
-    fn locate_ovf_disks(ovf_dir: &Path, target_dir: &Path, disks: &[OvfDisk]) -> Result<Vec<PathBuf>, AppError> {
+    fn locate_ovf_disks(
+        ovf_dir: &Path,
+        target_dir: &Path,
+        disks: &[OvfDisk],
+    ) -> Result<Vec<PathBuf>, AppError> {
         let mut found = Vec::new();
 
         for disk in disks {
@@ -471,7 +526,7 @@ impl OvaService {
             if source_path.exists() {
                 let dest_path = target_dir.join(&disk.file_name);
 
-                tracing::info!("Copying disk: {:?} -> {:?}", source_path, dest_path);
+                tracing::info!("Copying OVA disk into selected storage");
 
                 fs::copy(&source_path, &dest_path)
                     .map_err(|e| AppError::Other(format!("Failed to copy disk: {}", e)))?;
@@ -484,23 +539,34 @@ impl OvaService {
     }
 
     /// Convert disk files to qcow2 using qemu-img
-    fn convert_disks_to_qcow2(disks: &[PathBuf], target_dir: &Path, vm_name: &str) -> Result<Vec<PathBuf>, AppError> {
+    fn convert_disks_to_qcow2(
+        disks: &[PathBuf],
+        target_dir: &Path,
+        vm_name: &str,
+    ) -> Result<Vec<PathBuf>, AppError> {
         let mut converted = Vec::new();
 
         for (i, disk) in disks.iter().enumerate() {
-            let suffix = if i == 0 { String::new() } else { format!("-{}", i) };
+            let suffix = if i == 0 {
+                String::new()
+            } else {
+                format!("-{}", i)
+            };
             let qcow2_name = format!("{}{}.qcow2", vm_name, suffix);
             let dest_path = target_dir.join(&qcow2_name);
 
-            tracing::info!("Converting disk: {:?} -> {:?}", disk, dest_path);
+            tracing::info!("Converting OVA disk into selected storage");
 
             // Use qemu-img to convert
             let output = Command::new("qemu-img")
                 .args([
                     "convert",
-                    "-f", "vmdk",  // Source format (auto-detected if wrong)
-                    "-O", "qcow2",
-                    "-o", "compat=1.1",
+                    "-f",
+                    "vmdk", // Source format (auto-detected if wrong)
+                    "-O",
+                    "qcow2",
+                    "-o",
+                    "compat=1.1",
                     disk.to_str().unwrap_or(""),
                     dest_path.to_str().unwrap_or(""),
                 ])
@@ -508,8 +574,7 @@ impl OvaService {
                 .map_err(|e| AppError::Other(format!("Failed to run qemu-img: {}", e)))?;
 
             if !output.status.success() {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                return Err(AppError::Other(format!("qemu-img conversion failed: {}", stderr)));
+                return Err(AppError::Other("qemu-img conversion failed".to_string()));
             }
 
             // Remove the original VMDK

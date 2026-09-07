@@ -1,15 +1,124 @@
+use crate::models::operation::OperationContext;
+use crate::models::vm::{HostNetworkInterface, VmState, VM};
+use crate::services::cloud_init_service::CloudInitService;
+use crate::services::host_readiness_service::HostReadinessService;
+use crate::services::libvirt::ConnectionProvider;
+use crate::utils::error::{map_libvirt_error, AppError};
+use crate::utils::xml::{
+    descendant_attribute_values, escaped_attribute, escaped_text, first_element_attribute,
+    first_element_fragment, first_element_text, first_element_with_descendant_attribute,
+    insert_cpu_after_vcpu, remove_element_with_descendant_attribute, remove_first_element,
+    replace_direct_child, rewrite_cpu_model, rewrite_cpu_topology, rewrite_disk_settings,
+    rewrite_domain_boot_order, rewrite_domain_memory, rewrite_first_text_element,
+    rewrite_interface_bandwidth, rewrite_interface_link_state,
+};
 use virt::domain::Domain;
 use virt::sys;
-use crate::models::vm::{VM, VmState, HostNetworkInterface};
-use crate::services::libvirt::LibvirtService;
-use crate::utils::error::{AppError, map_libvirt_error};
 
 /// VmService provides VM management operations
 pub struct VmService;
 
+const LIBVIRT_TPM_UNDEFINE_MIN_VERSION: u32 = 8_009_000;
+
+fn deletion_undefine_flags(libvirt_version: u32) -> sys::virDomainUndefineFlagsValues {
+    let mut flags = sys::VIR_DOMAIN_UNDEFINE_MANAGED_SAVE | sys::VIR_DOMAIN_UNDEFINE_NVRAM;
+
+    // VIR_DOMAIN_UNDEFINE_TPM was added in libvirt 8.9.0. Passing it to an older
+    // daemon makes the entire undefine operation fail with an unsupported flag.
+    if libvirt_version >= LIBVIRT_TPM_UNDEFINE_MIN_VERSION {
+        flags |= sys::VIR_DOMAIN_UNDEFINE_TPM;
+    }
+
+    flags
+}
+
 impl VmService {
+    /// Build a virsh invocation bound to the same libvirt URI as the captured operation.
+    fn virsh_command(conn: &virt::connect::Connect) -> Result<std::process::Command, AppError> {
+        let uri = conn.get_uri().map_err(map_libvirt_error)?;
+        let mut command = std::process::Command::new("virsh");
+        command.args(["--connect", uri.as_str()]);
+        Ok(command)
+    }
+
+    fn virsh_command_for_domain(domain: &Domain) -> Result<std::process::Command, AppError> {
+        let conn = domain.get_connect().map_err(map_libvirt_error)?;
+        Self::virsh_command(&conn)
+    }
+
+    fn validate_vm_name(name: &str) -> Result<(), AppError> {
+        if name.is_empty()
+            || name.len() > 128
+            || !name
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+        {
+            return Err(AppError::InvalidConfig(
+                "VM name may only contain letters, numbers, dots, underscores, and hyphens"
+                    .to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn choice<'a>(value: &'a str, field: &str, allowed: &[&str]) -> Result<&'a str, AppError> {
+        if allowed.contains(&value) {
+            Ok(value)
+        } else {
+            Err(AppError::InvalidConfig(format!("{field} is not supported")))
+        }
+    }
+
+    fn parse_pci_address(address: &str) -> Result<(u16, u8, u8, u8), AppError> {
+        let (domain, remainder) = address.split_once(':').ok_or_else(|| {
+            AppError::InvalidConfig(
+                "PCI address must use domain:bus:slot.function format".to_string(),
+            )
+        })?;
+        let (bus, remainder) = remainder.split_once(':').ok_or_else(|| {
+            AppError::InvalidConfig(
+                "PCI address must use domain:bus:slot.function format".to_string(),
+            )
+        })?;
+        let (slot, function) = remainder.split_once('.').ok_or_else(|| {
+            AppError::InvalidConfig(
+                "PCI address must use domain:bus:slot.function format".to_string(),
+            )
+        })?;
+        if function.contains('.')
+            || domain.len() != 4
+            || bus.len() != 2
+            || slot.len() != 2
+            || function.len() != 1
+        {
+            return Err(AppError::InvalidConfig(
+                "PCI address must use domain:bus:slot.function format".to_string(),
+            ));
+        }
+        let parsed = (
+            u16::from_str_radix(domain, 16).map_err(|_| {
+                AppError::InvalidConfig("PCI address contains non-hexadecimal data".to_string())
+            })?,
+            u8::from_str_radix(bus, 16).map_err(|_| {
+                AppError::InvalidConfig("PCI address contains non-hexadecimal data".to_string())
+            })?,
+            u8::from_str_radix(slot, 16).map_err(|_| {
+                AppError::InvalidConfig("PCI address contains non-hexadecimal data".to_string())
+            })?,
+            u8::from_str_radix(function, 16).map_err(|_| {
+                AppError::InvalidConfig("PCI address contains non-hexadecimal data".to_string())
+            })?,
+        );
+        if parsed.3 > 7 {
+            return Err(AppError::InvalidConfig(
+                "PCI function must be between 0 and 7".to_string(),
+            ));
+        }
+        Ok(parsed)
+    }
+
     /// List all VMs (active and inactive)
-    pub fn list_vms(libvirt: &LibvirtService) -> Result<Vec<VM>, AppError> {
+    pub fn list_vms(libvirt: &impl ConnectionProvider) -> Result<Vec<VM>, AppError> {
         tracing::debug!("Listing all VMs");
 
         let conn = libvirt.get_connection();
@@ -17,25 +126,27 @@ impl VmService {
 
         // Get all domains (both active and inactive)
         let flags = sys::VIR_CONNECT_LIST_DOMAINS_ACTIVE | sys::VIR_CONNECT_LIST_DOMAINS_INACTIVE;
-        let domains = conn.list_all_domains(flags)
-            .map_err(map_libvirt_error)?;
+        let domains = conn.list_all_domains(flags).map_err(map_libvirt_error)?;
 
         for domain in domains {
             match Self::domain_to_vm(&domain) {
                 Ok(vm) => vms.push(vm),
-                Err(e) => {
-                    tracing::warn!("Failed to convert domain to VM: {}", e);
+                Err(_) => {
+                    tracing::warn!("A VM could not be read");
                     continue;
                 }
             }
         }
 
-        tracing::info!("Found {} VMs", vms.len());
+        // Inventory reads are expected to run periodically while a main window is
+        // open. Keep the result available for diagnostics without flooding normal
+        // application logs.
+        tracing::debug!("Found {} VMs", vms.len());
         Ok(vms)
     }
 
     /// Get a single VM by ID
-    pub fn get_vm(libvirt: &LibvirtService, vm_id: &str) -> Result<VM, AppError> {
+    pub fn get_vm(libvirt: &impl ConnectionProvider, vm_id: &str) -> Result<VM, AppError> {
         tracing::debug!("Getting VM with ID: {}", vm_id);
 
         let conn = libvirt.get_connection();
@@ -47,17 +158,14 @@ impl VmService {
 
     /// Convert a libvirt Domain to our VM model
     fn domain_to_vm(domain: &Domain) -> Result<VM, AppError> {
-        let uuid = domain.get_uuid_string()
-            .map_err(map_libvirt_error)?;
+        let uuid = domain.get_uuid_string().map_err(map_libvirt_error)?;
 
-        let name = domain.get_name()
-            .map_err(map_libvirt_error)?;
+        let name = domain.get_name().map_err(map_libvirt_error)?;
 
         let state = Self::get_domain_state(domain)?;
 
         // Get domain info for CPU and memory
-        let info = domain.get_info()
-            .map_err(map_libvirt_error)?;
+        let info = domain.get_info().map_err(map_libvirt_error)?;
 
         let cpu_count = info.nr_virt_cpu;
         let max_memory_mb = info.max_mem / 1024; // Convert from KiB to MiB
@@ -76,12 +184,11 @@ impl VmService {
         let tags = Self::get_vm_tags(domain).unwrap_or_default();
 
         // Extract firmware, TPM, and chipset from XML
-        let (firmware, tpm_enabled, chipset) = Self::get_vm_hardware_config(domain).unwrap_or_else(|_| {
-            ("bios".to_string(), false, "pc".to_string())
-        });
+        let (firmware, tpm_enabled, chipset) = Self::get_vm_hardware_config(domain)
+            .unwrap_or_else(|_| ("bios".to_string(), false, "pc".to_string()));
 
         // Extract CPU topology from XML
-        let (cpu_sockets, cpu_cores, cpu_threads) = Self::get_cpu_topology(domain).unwrap_or_else(|_| {
+        let (cpu_sockets, cpu_cores, cpu_threads) = Self::get_cpu_topology(domain).unwrap_or({
             // If no topology found, default to 1 socket, N cores, 1 thread
             (1, cpu_count, 1)
         });
@@ -109,13 +216,14 @@ impl VmService {
 
     /// Get the state of a domain
     fn get_domain_state(domain: &Domain) -> Result<VmState, AppError> {
-        let (state, _reason) = domain.get_state()
-            .map_err(map_libvirt_error)?;
+        let (state, _reason) = domain.get_state().map_err(map_libvirt_error)?;
 
         let vm_state = match state {
             sys::VIR_DOMAIN_RUNNING => VmState::Running,
             sys::VIR_DOMAIN_PAUSED => VmState::Paused,
-            sys::VIR_DOMAIN_SHUTDOWN | sys::VIR_DOMAIN_SHUTOFF | sys::VIR_DOMAIN_CRASHED => VmState::Stopped,
+            sys::VIR_DOMAIN_SHUTDOWN | sys::VIR_DOMAIN_SHUTOFF | sys::VIR_DOMAIN_CRASHED => {
+                VmState::Stopped
+            }
             sys::VIR_DOMAIN_PMSUSPENDED => VmState::Suspended,
             _ => VmState::Stopped,
         };
@@ -124,51 +232,47 @@ impl VmService {
     }
 
     /// Start a VM
-    pub fn start_vm(libvirt: &LibvirtService, vm_id: &str) -> Result<(), AppError> {
+    pub fn start_vm(libvirt: &impl ConnectionProvider, vm_id: &str) -> Result<(), AppError> {
         tracing::info!("Starting VM: {}", vm_id);
 
         let conn = libvirt.get_connection();
         let domain = Domain::lookup_by_uuid_string(conn, vm_id)
             .map_err(|_| AppError::VmNotFound(vm_id.to_string()))?;
 
-        let (state, _) = domain.get_state()
-            .map_err(map_libvirt_error)?;
+        let (state, _) = domain.get_state().map_err(map_libvirt_error)?;
 
         if state == sys::VIR_DOMAIN_RUNNING {
             return Err(AppError::InvalidVmState("running".to_string()));
         }
 
-        domain.create()
-            .map_err(map_libvirt_error)?;
+        domain.create().map_err(map_libvirt_error)?;
 
         tracing::info!("VM started successfully: {}", vm_id);
         Ok(())
     }
 
     /// Stop a VM
-    pub fn stop_vm(libvirt: &LibvirtService, vm_id: &str) -> Result<(), AppError> {
+    pub fn stop_vm(libvirt: &impl ConnectionProvider, vm_id: &str) -> Result<(), AppError> {
         tracing::info!("Stopping VM: {}", vm_id);
 
         let conn = libvirt.get_connection();
         let domain = Domain::lookup_by_uuid_string(conn, vm_id)
             .map_err(|_| AppError::VmNotFound(vm_id.to_string()))?;
 
-        let (state, _) = domain.get_state()
-            .map_err(map_libvirt_error)?;
+        let (state, _) = domain.get_state().map_err(map_libvirt_error)?;
 
         if state != sys::VIR_DOMAIN_RUNNING {
             return Err(AppError::InvalidVmState("not running".to_string()));
         }
 
-        domain.destroy()
-            .map_err(map_libvirt_error)?;
+        domain.destroy().map_err(map_libvirt_error)?;
 
         tracing::info!("VM stopped successfully: {}", vm_id);
         Ok(())
     }
 
     /// Force stop a VM (immediate power off, no state check)
-    pub fn force_stop_vm(libvirt: &LibvirtService, vm_id: &str) -> Result<(), AppError> {
+    pub fn force_stop_vm(libvirt: &impl ConnectionProvider, vm_id: &str) -> Result<(), AppError> {
         tracing::info!("Force stopping VM: {}", vm_id);
 
         let conn = libvirt.get_connection();
@@ -176,38 +280,35 @@ impl VmService {
             .map_err(|_| AppError::VmNotFound(vm_id.to_string()))?;
 
         // Force destroy without state check
-        domain.destroy()
-            .map_err(map_libvirt_error)?;
+        domain.destroy().map_err(map_libvirt_error)?;
 
         tracing::info!("VM force stopped successfully: {}", vm_id);
         Ok(())
     }
 
     /// Pause a VM
-    pub fn pause_vm(libvirt: &LibvirtService, vm_id: &str) -> Result<(), AppError> {
+    pub fn pause_vm(libvirt: &impl ConnectionProvider, vm_id: &str) -> Result<(), AppError> {
         tracing::info!("Pausing VM: {}", vm_id);
 
         let conn = libvirt.get_connection();
         let domain = Domain::lookup_by_uuid_string(conn, vm_id)
             .map_err(|_| AppError::VmNotFound(vm_id.to_string()))?;
 
-        domain.suspend()
-            .map_err(map_libvirt_error)?;
+        domain.suspend().map_err(map_libvirt_error)?;
 
         tracing::info!("VM paused successfully: {}", vm_id);
         Ok(())
     }
 
     /// Resume a paused VM
-    pub fn resume_vm(libvirt: &LibvirtService, vm_id: &str) -> Result<(), AppError> {
+    pub fn resume_vm(libvirt: &impl ConnectionProvider, vm_id: &str) -> Result<(), AppError> {
         tracing::info!("Resuming VM: {}", vm_id);
 
         let conn = libvirt.get_connection();
         let domain = Domain::lookup_by_uuid_string(conn, vm_id)
             .map_err(|_| AppError::VmNotFound(vm_id.to_string()))?;
 
-        domain.resume()
-            .map_err(map_libvirt_error)?;
+        domain.resume().map_err(map_libvirt_error)?;
 
         tracing::info!("VM resumed successfully: {}", vm_id);
         Ok(())
@@ -215,7 +316,7 @@ impl VmService {
 
     /// Hibernate (managed save) a VM - saves state to disk and stops
     /// The VM will resume from this state when started again
-    pub fn hibernate_vm(libvirt: &LibvirtService, vm_id: &str) -> Result<(), AppError> {
+    pub fn hibernate_vm(libvirt: &impl ConnectionProvider, vm_id: &str) -> Result<(), AppError> {
         tracing::info!("Hibernating VM: {}", vm_id);
 
         let conn = libvirt.get_connection();
@@ -223,15 +324,17 @@ impl VmService {
             .map_err(|_| AppError::VmNotFound(vm_id.to_string()))?;
 
         // Check if VM is running
-        let is_active = domain.is_active()
-            .map_err(map_libvirt_error)?;
+        let is_active = domain.is_active().map_err(map_libvirt_error)?;
 
         if !is_active {
-            return Err(AppError::InvalidVmState("stopped - must be running to hibernate".to_string()));
+            return Err(AppError::InvalidVmState(
+                "stopped - must be running to hibernate".to_string(),
+            ));
         }
 
         // Perform managed save (hibernate)
-        domain.managed_save(0)
+        domain
+            .managed_save(0)
             .map_err(|e| AppError::LibvirtError(format!("Failed to hibernate VM: {}", e)))?;
 
         tracing::info!("VM hibernated successfully: {}", vm_id);
@@ -239,21 +342,26 @@ impl VmService {
     }
 
     /// Check if VM has a managed save image (hibernated state)
-    pub fn has_managed_save(libvirt: &LibvirtService, vm_id: &str) -> Result<bool, AppError> {
+    pub fn has_managed_save(
+        libvirt: &impl ConnectionProvider,
+        vm_id: &str,
+    ) -> Result<bool, AppError> {
         tracing::debug!("Checking managed save for VM: {}", vm_id);
 
         let conn = libvirt.get_connection();
         let domain = Domain::lookup_by_uuid_string(conn, vm_id)
             .map_err(|_| AppError::VmNotFound(vm_id.to_string()))?;
 
-        let has_save = domain.has_managed_save(0)
-            .map_err(map_libvirt_error)?;
+        let has_save = domain.has_managed_save(0).map_err(map_libvirt_error)?;
 
         Ok(has_save)
     }
 
     /// Remove managed save image (discard hibernated state)
-    pub fn remove_managed_save(libvirt: &LibvirtService, vm_id: &str) -> Result<(), AppError> {
+    pub fn remove_managed_save(
+        libvirt: &impl ConnectionProvider,
+        vm_id: &str,
+    ) -> Result<(), AppError> {
         tracing::info!("Removing managed save for VM: {}", vm_id);
 
         let conn = libvirt.get_connection();
@@ -261,14 +369,16 @@ impl VmService {
             .map_err(|_| AppError::VmNotFound(vm_id.to_string()))?;
 
         // Check if there's a managed save image
-        let has_save = domain.has_managed_save(0)
-            .map_err(map_libvirt_error)?;
+        let has_save = domain.has_managed_save(0).map_err(map_libvirt_error)?;
 
         if !has_save {
-            return Err(AppError::InvalidVmState("no hibernated state to remove".to_string()));
+            return Err(AppError::InvalidVmState(
+                "no hibernated state to remove".to_string(),
+            ));
         }
 
-        domain.managed_save_remove(0)
+        domain
+            .managed_save_remove(0)
             .map_err(|e| AppError::LibvirtError(format!("Failed to remove managed save: {}", e)))?;
 
         tracing::info!("Managed save removed successfully: {}", vm_id);
@@ -276,14 +386,15 @@ impl VmService {
     }
 
     /// Reboot a VM
-    pub fn reboot_vm(libvirt: &LibvirtService, vm_id: &str) -> Result<(), AppError> {
+    pub fn reboot_vm(libvirt: &impl ConnectionProvider, vm_id: &str) -> Result<(), AppError> {
         tracing::info!("Rebooting VM: {}", vm_id);
 
         let conn = libvirt.get_connection();
         let domain = Domain::lookup_by_uuid_string(conn, vm_id)
             .map_err(|_| AppError::VmNotFound(vm_id.to_string()))?;
 
-        domain.reboot(sys::VIR_DOMAIN_REBOOT_DEFAULT)
+        domain
+            .reboot(sys::VIR_DOMAIN_REBOOT_DEFAULT)
             .map_err(map_libvirt_error)?;
 
         tracing::info!("VM reboot initiated: {}", vm_id);
@@ -291,7 +402,11 @@ impl VmService {
     }
 
     /// Delete a VM (undefine)
-    pub fn delete_vm(libvirt: &LibvirtService, vm_id: &str, delete_disks: bool) -> Result<(), AppError> {
+    pub fn delete_vm(
+        libvirt: &impl ConnectionProvider,
+        vm_id: &str,
+        delete_disks: bool,
+    ) -> Result<(), AppError> {
         tracing::info!("Deleting VM: {} (delete_disks: {})", vm_id, delete_disks);
 
         let conn = libvirt.get_connection();
@@ -299,11 +414,12 @@ impl VmService {
             .map_err(|_| AppError::VmNotFound(vm_id.to_string()))?;
 
         // Check if VM is running
-        let (state, _) = domain.get_state()
-            .map_err(map_libvirt_error)?;
+        let (state, _) = domain.get_state().map_err(map_libvirt_error)?;
 
         if state == sys::VIR_DOMAIN_RUNNING {
-            return Err(AppError::InvalidVmState("Cannot delete a running VM. Stop it first.".to_string()));
+            return Err(AppError::InvalidVmState(
+                "Cannot delete a running VM. Stop it first.".to_string(),
+            ));
         }
 
         // If delete_disks is true, get disk paths before undefining
@@ -313,8 +429,18 @@ impl VmService {
             Vec::new()
         };
 
-        // Undefine the domain (delete configuration)
-        domain.undefine()
+        // UEFI and TPM-backed VMs own persistent firmware state in addition to
+        // their domain XML. A plain undefine is rejected while that state exists.
+        // Include managed-save state as part of deleting the VM, but deliberately
+        // leave snapshot metadata to the caller's explicit delete_snapshots choice.
+        let libvirt_version = conn.get_lib_version().unwrap_or_else(|_| {
+            tracing::warn!(
+                "Could not determine the libvirt version; using legacy-compatible VM deletion flags"
+            );
+            0
+        });
+        domain
+            .undefine_flags(deletion_undefine_flags(libvirt_version))
             .map_err(map_libvirt_error)?;
 
         // Delete disk files if requested
@@ -322,7 +448,7 @@ impl VmService {
             use virt::storage_vol::StorageVol;
 
             for disk_path in disk_paths {
-                tracing::info!("Attempting to delete disk: {}", disk_path);
+                tracing::info!("Attempting to delete a VM disk");
 
                 // Try to delete via libvirt storage API
                 match StorageVol::lookup_by_path(conn, &disk_path) {
@@ -330,22 +456,25 @@ impl VmService {
                         // Use VIR_STORAGE_VOL_DELETE_NORMAL flag (0)
                         match vol.delete(0) {
                             Ok(_) => {
-                                tracing::info!("Successfully deleted volume: {}", disk_path);
+                                tracing::info!("Successfully deleted a VM disk");
                             }
-                            Err(e) => {
-                                let error_msg = format!("Failed to delete volume {}: {}. You may need to delete it manually with: sudo rm {}",
-                                    disk_path, e, disk_path);
-                                tracing::error!("{}", error_msg);
-                                // Return error so user knows deletion failed
-                                return Err(AppError::LibvirtError(error_msg));
+                            Err(_) => {
+                                tracing::warn!(
+                                    "Libvirt could not delete a VM-managed storage volume"
+                                );
+                                return Err(AppError::LibvirtError(
+                                    "A VM-managed storage volume could not be deleted. Review the operation diagnostics and inspect storage through libvirt.".to_string(),
+                                ));
                             }
                         }
                     }
-                    Err(e) => {
-                        let error_msg = format!("Volume not found in libvirt storage pool: {}. Error: {}. You may need to delete it manually with: sudo rm {}",
-                            disk_path, e, disk_path);
-                        tracing::error!("{}", error_msg);
-                        return Err(AppError::LibvirtError(error_msg));
+                    Err(_) => {
+                        tracing::warn!(
+                            "A VM-managed disk could not be resolved through libvirt storage"
+                        );
+                        return Err(AppError::LibvirtError(
+                            "A VM-managed storage volume could not be resolved through libvirt. Review the operation diagnostics and inspect storage through libvirt.".to_string(),
+                        ));
                     }
                 }
             }
@@ -357,36 +486,20 @@ impl VmService {
 
     /// Extract disk paths from domain XML
     fn get_vm_disk_paths(domain: &Domain) -> Result<Vec<String>, AppError> {
-        let xml = domain.get_xml_desc(0)
-            .map_err(map_libvirt_error)?;
-
-        let mut disk_paths = Vec::new();
-
-        // Simple XML parsing to find disk source files
-        for line in xml.lines() {
-            if line.contains("<source file=") {
-                if let Some(start) = line.find("file=\"") {
-                    let start_idx = start + 6;
-                    if let Some(end) = line[start_idx..].find('\"') {
-                        let path = line[start_idx..start_idx + end].to_string();
-                        disk_paths.push(path);
-                    }
-                }
-            }
-        }
-
-        Ok(disk_paths)
+        let xml = domain.get_xml_desc(0).map_err(map_libvirt_error)?;
+        Ok(Self::extract_disk_paths(&xml))
     }
 
     /// Get network interfaces from a VM
-    fn get_vm_network_interfaces(domain: &Domain) -> Result<Vec<crate::models::vm::NetworkInterface>, AppError> {
-        let xml = domain.get_xml_desc(0)
-            .map_err(map_libvirt_error)?;
+    fn get_vm_network_interfaces(
+        domain: &Domain,
+    ) -> Result<Vec<crate::models::vm::NetworkInterface>, AppError> {
+        let xml = domain.get_xml_desc(0).map_err(map_libvirt_error)?;
 
         let vm_name = domain.get_name().map_err(map_libvirt_error)?;
 
         // Get IP addresses from virsh domifaddr
-        let ip_map = Self::get_interface_ips(&vm_name);
+        let ip_map = Self::get_interface_ips(domain, &vm_name);
 
         let mut interfaces = Vec::new();
         let mut in_interface = false;
@@ -500,7 +613,7 @@ impl VmService {
                             current_target.clone()
                         },
                         mac_address: current_mac.clone(),
-                        mac: current_mac.clone(),  // Alias for frontend compatibility
+                        mac: current_mac.clone(), // Alias for frontend compatibility
                         network: if current_network.is_empty() {
                             "unknown".to_string()
                         } else {
@@ -529,15 +642,18 @@ impl VmService {
     }
 
     /// Get IP addresses for network interfaces using virsh domifaddr
-    fn get_interface_ips(vm_name: &str) -> std::collections::HashMap<String, String> {
+    fn get_interface_ips(
+        domain: &Domain,
+        vm_name: &str,
+    ) -> std::collections::HashMap<String, String> {
         let mut ip_map = std::collections::HashMap::new();
 
         // Try virsh domifaddr (uses QEMU guest agent or lease info)
-        let output = std::process::Command::new("virsh")
-            .args(["domifaddr", vm_name])
-            .output();
+        let output = Self::virsh_command_for_domain(domain)
+            .ok()
+            .and_then(|mut command| command.args(["domifaddr", vm_name]).output().ok());
 
-        if let Ok(out) = output {
+        if let Some(out) = output {
             if out.status.success() {
                 let text = String::from_utf8_lossy(&out.stdout);
                 // Parse output format:
@@ -551,20 +667,6 @@ impl VmService {
                         let addr = parts[3].to_string();
                         // Remove CIDR notation if present
                         let ip = addr.split('/').next().unwrap_or(&addr).to_string();
-                        ip_map.insert(mac, ip);
-                    }
-                }
-            }
-        }
-
-        // Fallback: try to get from DHCP leases for libvirt networks
-        if ip_map.is_empty() {
-            if let Ok(leases) = std::fs::read_to_string("/var/lib/libvirt/dnsmasq/default.leases") {
-                for line in leases.lines() {
-                    let parts: Vec<&str> = line.split_whitespace().collect();
-                    if parts.len() >= 3 {
-                        let mac = parts[1].to_lowercase();
-                        let ip = parts[2].to_string();
                         ip_map.insert(mac, ip);
                     }
                 }
@@ -599,8 +701,7 @@ impl VmService {
 
     /// Get disk devices from a VM
     fn get_vm_disks(domain: &Domain) -> Result<Vec<crate::models::vm::DiskDevice>, AppError> {
-        let xml = domain.get_xml_desc(0)
-            .map_err(map_libvirt_error)?;
+        let xml = domain.get_xml_desc(0).map_err(map_libvirt_error)?;
 
         let mut disks = Vec::new();
 
@@ -710,19 +811,27 @@ impl VmService {
             if in_iotune {
                 if let Some(ref mut disk) = current_disk {
                     if trimmed.starts_with("<read_iops_sec>") {
-                        let val = trimmed.replace("<read_iops_sec>", "").replace("</read_iops_sec>", "");
+                        let val = trimmed
+                            .replace("<read_iops_sec>", "")
+                            .replace("</read_iops_sec>", "");
                         disk.read_iops_sec = val.parse().ok();
                     }
                     if trimmed.starts_with("<write_iops_sec>") {
-                        let val = trimmed.replace("<write_iops_sec>", "").replace("</write_iops_sec>", "");
+                        let val = trimmed
+                            .replace("<write_iops_sec>", "")
+                            .replace("</write_iops_sec>", "");
                         disk.write_iops_sec = val.parse().ok();
                     }
                     if trimmed.starts_with("<read_bytes_sec>") {
-                        let val = trimmed.replace("<read_bytes_sec>", "").replace("</read_bytes_sec>", "");
+                        let val = trimmed
+                            .replace("<read_bytes_sec>", "")
+                            .replace("</read_bytes_sec>", "");
                         disk.read_bytes_sec = val.parse().ok();
                     }
                     if trimmed.starts_with("<write_bytes_sec>") {
-                        let val = trimmed.replace("<write_bytes_sec>", "").replace("</write_bytes_sec>", "");
+                        let val = trimmed
+                            .replace("<write_bytes_sec>", "")
+                            .replace("</write_bytes_sec>", "");
                         disk.write_bytes_sec = val.parse().ok();
                     }
                 }
@@ -764,11 +873,16 @@ impl VmService {
         let mut total_bytes: u64 = 0;
 
         // Get list of block devices using virsh domblklist
-        let output = std::process::Command::new("virsh")
-            .args(["domblklist", &vm_name, "--details"])
-            .output();
+        let output = Self::virsh_command_for_domain(domain)
+            .ok()
+            .and_then(|mut command| {
+                command
+                    .args(["domblklist", &vm_name, "--details"])
+                    .output()
+                    .ok()
+            });
 
-        if let Ok(out) = output {
+        if let Some(out) = output {
             if out.status.success() {
                 let text = String::from_utf8_lossy(&out.stdout);
                 // Parse output - skip header lines, get device names
@@ -782,16 +896,20 @@ impl VmService {
                         // Only count disks, not cdroms
                         if device_type == "file" || device_type == "block" {
                             // Get size using domblkinfo
-                            let info_output = std::process::Command::new("virsh")
-                                .args(["domblkinfo", &vm_name, target])
-                                .output();
+                            let info_output = Self::virsh_command_for_domain(domain).ok().and_then(
+                                |mut command| {
+                                    command.args(["domblkinfo", &vm_name, target]).output().ok()
+                                },
+                            );
 
-                            if let Ok(info_out) = info_output {
+                            if let Some(info_out) = info_output {
                                 if info_out.status.success() {
                                     let info_text = String::from_utf8_lossy(&info_out.stdout);
                                     for info_line in info_text.lines() {
                                         if info_line.starts_with("Capacity:") {
-                                            if let Some(size_str) = info_line.split_whitespace().nth(1) {
+                                            if let Some(size_str) =
+                                                info_line.split_whitespace().nth(1)
+                                            {
                                                 if let Ok(size) = size_str.parse::<u64>() {
                                                     total_bytes += size;
                                                 }
@@ -813,8 +931,7 @@ impl VmService {
 
     /// Get VM hardware configuration (firmware, TPM, chipset) from XML
     fn get_vm_hardware_config(domain: &Domain) -> Result<(String, bool, String), AppError> {
-        let xml = domain.get_xml_desc(0)
-            .map_err(map_libvirt_error)?;
+        let xml = domain.get_xml_desc(0).map_err(map_libvirt_error)?;
 
         let mut firmware = "bios".to_string();
         let mut tpm_enabled = false;
@@ -868,8 +985,7 @@ impl VmService {
 
     /// Get CPU topology from domain XML
     fn get_cpu_topology(domain: &Domain) -> Result<(u32, u32, u32), AppError> {
-        let xml = domain.get_xml_desc(0)
-            .map_err(map_libvirt_error)?;
+        let xml = domain.get_xml_desc(0).map_err(map_libvirt_error)?;
 
         let mut sockets = 1;
         let mut cores = 1;
@@ -939,8 +1055,33 @@ impl VmService {
     }
 
     /// Create a new VM
-    pub fn create_vm(libvirt: &LibvirtService, config: crate::models::vm::VmConfig) -> Result<String, AppError> {
+    pub fn create_vm(
+        libvirt: &impl ConnectionProvider,
+        context: &OperationContext,
+        config: crate::models::vm::VmConfig,
+    ) -> Result<String, AppError> {
         use virt::storage_pool::StoragePool;
+
+        Self::validate_vm_name(&config.name)?;
+        Self::choice(
+            &config.disk_format,
+            "Disk format",
+            &["raw", "qcow2", "qcow", "vmdk", "vdi", "vpc", "qed"],
+        )?;
+        Self::choice(
+            &config.firmware,
+            "Firmware",
+            &["bios", "uefi", "uefi-secure"],
+        )?;
+        Self::choice(&config.chipset, "Chipset", &["pc", "q35"])?;
+        Self::choice(&config.graphics_type, "Graphics type", &["spice", "vnc"])?;
+        Self::choice(
+            &config.video_model,
+            "Video model",
+            &[
+                "qxl", "virtio", "vga", "cirrus", "vmvga", "bochs", "ramfb", "none",
+            ],
+        )?;
 
         tracing::info!("Creating VM: {} (OS: {}, Network: {}, Firmware: {}, Chipset: {}, TPM: {}, Installation: {})",
                       config.name, config.os_type, config.network, config.firmware, config.chipset, config.tpm_enabled, config.installation_type);
@@ -954,21 +1095,38 @@ impl VmService {
             ));
         }
 
-        tracing::info!("CPU Topology: {} sockets × {} cores × {} threads = {} vCPUs",
-                      config.cpu_sockets, config.cpu_cores, config.cpu_threads, config.cpu_count);
+        tracing::info!(
+            "CPU Topology: {} sockets × {} cores × {} threads = {} vCPUs",
+            config.cpu_sockets,
+            config.cpu_cores,
+            config.cpu_threads,
+            config.cpu_count
+        );
 
         let conn = libvirt.get_connection();
+
+        let review = HostReadinessService::preflight(libvirt, context, &config)?;
+        if !review.can_create {
+            return Err(AppError::InvalidConfig(
+                "The selected connection does not satisfy the reviewed VM requirements".to_string(),
+            ));
+        }
 
         // Validate network install URL if network installation is selected
         if config.installation_type == "network" {
             if let Some(ref url) = config.network_install_url {
                 // Basic URL validation
-                if !url.starts_with("http://") && !url.starts_with("https://") && !url.starts_with("ftp://") {
+                if !url.starts_with("http://")
+                    && !url.starts_with("https://")
+                    && !url.starts_with("ftp://")
+                {
                     return Err(AppError::InvalidConfig(
-                        "Network install URL must start with http://, https://, or ftp://".to_string()
+                        "Network install URL must start with http://, https://, or ftp://"
+                            .to_string(),
                     ));
                 }
-                tracing::info!("Network installation configured with URL: {}", url);
+                let _ = url;
+                tracing::info!("Network installation was configured");
             }
             // URL is optional - network boot can work with PXE server on the network
         }
@@ -978,29 +1136,54 @@ impl VmService {
         // - "import": Use existing disk image
         // - "network": Create a new storage volume (boot from network)
         // - "manual": Create a new storage volume (but no ISO)
-        let (disk_path, created_volume): (String, Option<virt::storage_vol::StorageVol>) = if config.installation_type == "import" {
+        let (disk_path, created_volume): (String, Option<virt::storage_vol::StorageVol>) = if config
+            .installation_type
+            == "import"
+        {
             // Import existing disk image
             let existing_path = config.existing_disk_path.clone().ok_or_else(|| {
-                AppError::InvalidConfig("Import installation type requires existing_disk_path".to_string())
+                AppError::InvalidConfig(
+                    "Import installation type requires existing_disk_path".to_string(),
+                )
             })?;
 
             // Validate the existing disk path exists
             if !std::path::Path::new(&existing_path).exists() {
-                return Err(AppError::InvalidConfig(
-                    format!("Existing disk image not found: {}", existing_path)
+                return Err(AppError::InvalidConfig(format!(
+                    "Existing disk image not found: {}",
+                    existing_path
+                )));
+            }
+
+            tracing::info!("Using an existing disk image");
+            (existing_path, None)
+        } else {
+            let pool_id = config.storage_pool_id.as_deref().ok_or_else(|| {
+                AppError::InvalidConfig(
+                    "Select an active storage pool with enough available capacity".to_string(),
+                )
+            })?;
+            let pool = StoragePool::lookup_by_uuid_string(conn, pool_id).map_err(|_| {
+                AppError::InvalidConfig(
+                    "The selected storage pool is no longer available on this connection"
+                        .to_string(),
+                )
+            })?;
+            if !pool.is_active().map_err(map_libvirt_error)? {
+                return Err(AppError::Unavailable(
+                    "The selected storage pool is inactive".to_string(),
                 ));
             }
 
-            tracing::info!("Using existing disk image: {}", existing_path);
-            (existing_path, None)
-        } else {
-            // Create new storage volume for "iso" or "manual" installation types
-            let pool = StoragePool::lookup_by_name(conn, "default")
-                .map_err(|e| AppError::LibvirtError(format!("Failed to find default storage pool: {}", e)))?;
-
             // Define volume name with proper extension based on disk format
             let volume_name = format!("{}.{}", config.name, config.disk_format);
-            let disk_size_bytes = config.disk_size_gb * 1024 * 1024 * 1024; // Convert GB to bytes
+            let disk_size_bytes =
+                crate::services::storage_service::StorageService::disk_bytes(config.disk_size_gb)?;
+            if pool.get_info().map_err(map_libvirt_error)?.available < disk_size_bytes {
+                return Err(AppError::InvalidConfig(
+                    "The selected storage pool no longer has enough available capacity".to_string(),
+                ));
+            }
 
             // Create storage volume XML with proper disk format
             let volume_xml = format!(
@@ -1011,27 +1194,36 @@ impl VmService {
     <format type='{}'/>
   </target>
 </volume>"#,
-                volume_name, disk_size_bytes, config.disk_format
+                escaped_text(&volume_name, "Volume name")?,
+                disk_size_bytes,
+                escaped_attribute(&config.disk_format, "Disk format")?
             );
 
-            tracing::info!("Creating storage volume: {} ({}GB, format: {})",
-                          volume_name, config.disk_size_gb, config.disk_format);
+            tracing::info!(
+                "Creating storage volume: {} ({}GB, format: {})",
+                volume_name,
+                config.disk_size_gb,
+                config.disk_format
+            );
 
             // Create the volume using libvirt storage pool API
-            let volume = virt::storage_vol::StorageVol::create_xml(&pool, &volume_xml, 0)
-                .map_err(|e| AppError::LibvirtError(format!("Failed to create storage volume: {}", e)))?;
+            let volume =
+                virt::storage_vol::StorageVol::create_xml(&pool, &volume_xml, 0).map_err(|e| {
+                    AppError::LibvirtError(format!("Failed to create storage volume: {}", e))
+                })?;
 
-            let path = volume.get_path()
+            let path = volume
+                .get_path()
                 .map_err(|e| AppError::LibvirtError(format!("Failed to get volume path: {}", e)))?;
 
-            tracing::info!("Storage volume created: {}", path);
+            tracing::info!("Storage volume created");
             (path, Some(volume))
         };
 
         // Determine chipset/machine type
         let machine_type = match config.chipset.as_str() {
-            "q35" => "pc-q35-6.2",
-            _ => "pc-i440fx-6.2",
+            "q35" => "q35",
+            _ => "pc",
         };
 
         // Build boot device order from configuration
@@ -1048,64 +1240,27 @@ impl VmService {
 
         let boot_order = boot_devices
             .iter()
-            .map(|dev| format!("    <boot dev='{}'/>", dev))
-            .collect::<Vec<_>>()
+            .map(|dev| {
+                Self::choice(dev, "Boot device", &["hd", "cdrom", "network", "fd"])?;
+                Ok(format!("    <boot dev='{dev}'/>"))
+            })
+            .collect::<Result<Vec<_>, AppError>>()?
             .join("\n");
 
-        // Detect available OVMF firmware paths (try common locations)
-        let (uefi_code_path, uefi_vars_path) = if std::path::Path::new("/usr/share/OVMF/OVMF_CODE_4M.fd").exists() {
-            ("/usr/share/OVMF/OVMF_CODE_4M.fd", "/usr/share/OVMF/OVMF_VARS_4M.fd")
-        } else if std::path::Path::new("/usr/share/edk2/ovmf/OVMF_CODE.fd").exists() {
-            ("/usr/share/edk2/ovmf/OVMF_CODE.fd", "/usr/share/edk2/ovmf/OVMF_VARS.fd")
-        } else if std::path::Path::new("/usr/share/edk2-ovmf/x64/OVMF_CODE.fd").exists() {
-            ("/usr/share/edk2-ovmf/x64/OVMF_CODE.fd", "/usr/share/edk2-ovmf/x64/OVMF_VARS.fd")
-        } else {
-            ("/usr/share/OVMF/OVMF_CODE.fd", "/usr/share/OVMF/OVMF_VARS.fd") // Fallback
-        };
-
-        let (uefi_secboot_code_path, uefi_secboot_vars_path) = if std::path::Path::new("/usr/share/OVMF/OVMF_CODE_4M.secboot.fd").exists() {
-            ("/usr/share/OVMF/OVMF_CODE_4M.secboot.fd", "/usr/share/OVMF/OVMF_VARS_4M.ms.fd")
-        } else if std::path::Path::new("/usr/share/edk2/ovmf/OVMF_CODE.secboot.fd").exists() {
-            ("/usr/share/edk2/ovmf/OVMF_CODE.secboot.fd", "/usr/share/edk2/ovmf/OVMF_VARS.ms.fd")
-        } else {
-            // Fallback to regular UEFI if secboot not found
-            (uefi_code_path, uefi_vars_path)
-        };
-
-        // Build firmware/UEFI loader XML
-        let firmware_xml = match config.firmware.as_str() {
+        // Let libvirt select firmware advertised by this connection. Capability preflight has
+        // already verified the selected mode without assuming distribution-specific paths.
+        let firmware_section = match config.firmware.as_str() {
             "uefi" => {
-                // Verify firmware files exist
-                if !std::path::Path::new(uefi_code_path).exists() {
-                    return Err(AppError::InvalidConfig(
-                        format!("UEFI firmware not found at {}. Install OVMF package: sudo apt install ovmf", uefi_code_path)
-                    ));
-                }
-                tracing::info!("Using UEFI firmware: {} with NVRAM template: {}", uefi_code_path, uefi_vars_path);
-                format!(
-                    r#"    <loader readonly='yes' type='pflash'>{}</loader>
-    <nvram template='{}'>/var/lib/libvirt/qemu/nvram/{}_VARS.fd</nvram>"#,
-                    uefi_code_path, uefi_vars_path, config.name
-                )
-            },
-            "uefi-secure" => {
-                // Verify secure boot firmware files exist
-                if !std::path::Path::new(uefi_secboot_code_path).exists() {
-                    return Err(AppError::InvalidConfig(
-                        format!("UEFI Secure Boot firmware not found at {}. Install OVMF package: sudo apt install ovmf", uefi_secboot_code_path)
-                    ));
-                }
-                tracing::info!("Using UEFI Secure Boot firmware: {} with NVRAM template: {}", uefi_secboot_code_path, uefi_secboot_vars_path);
-                format!(
-                    r#"    <loader readonly='yes' secure='yes' type='pflash'>{}</loader>
-    <nvram template='{}'>/var/lib/libvirt/qemu/nvram/{}_VARS.fd</nvram>"#,
-                    uefi_secboot_code_path, uefi_secboot_vars_path, config.name
-                )
-            },
-            _ => String::new() // BIOS (default)
+                "    <firmware><feature enabled='no' name='secure-boot'/></firmware>".to_string()
+            }
+            "uefi-secure" => "    <firmware><feature enabled='yes' name='secure-boot'/><feature enabled='yes' name='enrolled-keys'/></firmware>".to_string(),
+            _ => String::new(),
         };
-
-        let firmware_section = firmware_xml;
+        let os_firmware_attribute = if config.firmware == "bios" {
+            ""
+        } else {
+            " firmware='efi'"
+        };
 
         // Determine disk format - for imports, detect from file extension
         let actual_disk_format = if config.installation_type == "import" {
@@ -1118,7 +1273,7 @@ impl VmService {
                 Some("vdi") => "vdi",
                 Some("vpc") | Some("vhd") => "vpc",
                 Some("qed") => "qed",
-                _ => &config.disk_format // Fallback to config
+                _ => &config.disk_format, // Fallback to config
             }
         } else {
             &config.disk_format
@@ -1131,7 +1286,8 @@ impl VmService {
       <source file='{}'/>
       <target dev='vda' bus='virtio'/>
     </disk>"#,
-            actual_disk_format, disk_path
+            escaped_attribute(actual_disk_format, "Disk format")?,
+            escaped_attribute(&disk_path, "Disk path")?
         );
 
         // Build CDROM/ISO disk XML if ISO path is provided
@@ -1150,8 +1306,27 @@ impl VmService {
       <target dev='{}' bus='{}'/>
       <readonly/>
     </disk>"#,
-                iso_path, cdrom_dev, cdrom_bus
+                escaped_attribute(iso_path, "ISO path")?,
+                cdrom_dev,
+                cdrom_bus
             )
+        } else {
+            String::new()
+        };
+
+        // Cloud-init uses a separate readonly CD-ROM from installation media. The service derives
+        // and validates the filename before creating the ISO and emits an escaped XML fragment.
+        let cloud_init_xml = if let Some(cloud_init) =
+            config.cloud_init.as_ref().filter(|config| config.enabled)
+        {
+            let instance_id = uuid::Uuid::new_v4().to_string();
+            let iso_path = CloudInitService::generate_iso(cloud_init, &config.name, &instance_id)?;
+            let (target, bus) = if config.chipset == "q35" {
+                ("sdb", "sata")
+            } else {
+                ("hdd", "ide")
+            };
+            CloudInitService::attachment_definition(&iso_path, target, bus)?
         } else {
             String::new()
         };
@@ -1165,7 +1340,7 @@ impl VmService {
       <model type='virtio'/>
       <boot order='1'/>
     </interface>"#,
-                config.network
+                escaped_attribute(&config.network, "Network name")?
             )
         } else {
             format!(
@@ -1173,7 +1348,7 @@ impl VmService {
       <source network='{}'/>
       <model type='virtio'/>
     </interface>"#,
-                config.network
+                escaped_attribute(&config.network, "Network name")?
             )
         };
 
@@ -1193,11 +1368,15 @@ impl VmService {
                 if !kernel_path.is_empty() {
                     // Verify kernel file exists
                     if !std::path::Path::new(kernel_path).exists() {
-                        return Err(AppError::InvalidConfig(
-                            format!("Kernel file not found: {}", kernel_path)
-                        ));
+                        return Err(AppError::InvalidConfig(format!(
+                            "Kernel file not found: {}",
+                            kernel_path
+                        )));
                     }
-                    kernel_xml.push_str(&format!("    <kernel>{}</kernel>\n", kernel_path));
+                    kernel_xml.push_str(&format!(
+                        "    <kernel>{}</kernel>\n",
+                        escaped_text(kernel_path, "Kernel path")?
+                    ));
                 }
             }
 
@@ -1205,24 +1384,24 @@ impl VmService {
                 if !initrd_path.is_empty() {
                     // Verify initrd file exists
                     if !std::path::Path::new(initrd_path).exists() {
-                        return Err(AppError::InvalidConfig(
-                            format!("Initrd file not found: {}", initrd_path)
-                        ));
+                        return Err(AppError::InvalidConfig(format!(
+                            "Initrd file not found: {}",
+                            initrd_path
+                        )));
                     }
-                    kernel_xml.push_str(&format!("    <initrd>{}</initrd>\n", initrd_path));
+                    kernel_xml.push_str(&format!(
+                        "    <initrd>{}</initrd>\n",
+                        escaped_text(initrd_path, "Initrd path")?
+                    ));
                 }
             }
 
             if let Some(ref kernel_args) = config.kernel_args {
                 if !kernel_args.is_empty() {
-                    // Escape XML special characters in kernel args
-                    let escaped_args = kernel_args
-                        .replace("&", "&amp;")
-                        .replace("<", "&lt;")
-                        .replace(">", "&gt;")
-                        .replace("\"", "&quot;")
-                        .replace("'", "&apos;");
-                    kernel_xml.push_str(&format!("    <cmdline>{}</cmdline>\n", escaped_args));
+                    kernel_xml.push_str(&format!(
+                        "    <cmdline>{}</cmdline>\n",
+                        escaped_text(kernel_args, "Kernel arguments")?
+                    ));
                 }
             }
 
@@ -1230,11 +1409,15 @@ impl VmService {
                 if !dtb_path.is_empty() {
                     // Verify DTB file exists (for ARM systems)
                     if !std::path::Path::new(dtb_path).exists() {
-                        return Err(AppError::InvalidConfig(
-                            format!("Device tree blob file not found: {}", dtb_path)
-                        ));
+                        return Err(AppError::InvalidConfig(format!(
+                            "Device tree blob file not found: {}",
+                            dtb_path
+                        )));
                     }
-                    kernel_xml.push_str(&format!("    <dtb>{}</dtb>\n", dtb_path));
+                    kernel_xml.push_str(&format!(
+                        "    <dtb>{}</dtb>\n",
+                        escaped_text(dtb_path, "Device tree path")?
+                    ));
                 }
             }
 
@@ -1255,30 +1438,20 @@ impl VmService {
         // Build PCI device passthrough XML
         let mut pci_devices_xml = String::new();
         for pci_address in &config.pci_devices {
-            // Parse PCI address (format: 0000:01:00.0)
-            let parts: Vec<&str> = pci_address.split(':').collect();
-            if parts.len() == 3 {
-                let domain_part = parts[0];
-                let bus = parts[1];
-                let slot_func: Vec<&str> = parts[2].split('.').collect();
-
-                if slot_func.len() == 2 {
-                    let slot = slot_func[0];
-                    let func = slot_func[1];
-
-                    let hostdev = format!(
-                        r#"    <hostdev mode='subsystem' type='pci' managed='yes'>
+            let (domain_part, bus, slot, function) = Self::parse_pci_address(pci_address)?;
+            let hostdev = format!(
+                r#"    <hostdev mode='subsystem' type='pci' managed='yes'>
       <source>
-        <address domain='0x{}' bus='0x{}' slot='0x{}' function='0x{}'/>
+        <address domain='0x{domain_part:04x}' bus='0x{bus:02x}' slot='0x{slot:02x}' function='0x{function:x}'/>
       </source>
     </hostdev>
 "#,
-                        domain_part, bus, slot, func
-                    );
-                    pci_devices_xml.push_str(&hostdev);
-                    tracing::info!("Adding PCI device {} to VM configuration", pci_address);
-                }
-            }
+            );
+            pci_devices_xml.push_str(&hostdev);
+            tracing::info!(
+                operation = "vm-pci-device-configured",
+                "Configured PCI device"
+            );
         }
 
         // Determine OS type
@@ -1306,8 +1479,10 @@ impl VmService {
         let graphics_xml = match config.graphics_type.as_str() {
             "spice" => r#"    <graphics type='spice' autoport='yes'>
       <listen type='address'/>
-    </graphics>"#.to_string(),
-            "vnc" | _ => "    <graphics type='vnc' port='-1' autoport='yes'/>".to_string(),
+    </graphics>"#
+                .to_string(),
+            "vnc" => "    <graphics type='vnc' port='-1' autoport='yes'/>".to_string(),
+            _ => "    <graphics type='vnc' port='-1' autoport='yes'/>".to_string(),
         };
 
         // Build video XML based on config
@@ -1315,23 +1490,43 @@ impl VmService {
             r#"    <video>
       <model type='{}'/>
     </video>"#,
-            config.video_model
+            escaped_attribute(&config.video_model, "Video model")?
         );
 
         // Build RNG device XML if enabled
         let rng_xml = if config.rng_enabled {
             r#"    <rng model='virtio'>
       <backend model='random'>/dev/urandom</backend>
-    </rng>"#.to_string()
+    </rng>"#
+                .to_string()
         } else {
             String::new()
         };
 
         // Build watchdog device XML if specified
         let watchdog_xml = if let Some(ref model) = config.watchdog_model {
+            Self::choice(
+                model,
+                "Watchdog model",
+                &["i6300esb", "ib700", "diag288", "itco", "watchdog"],
+            )?;
+            Self::choice(
+                &config.watchdog_action,
+                "Watchdog action",
+                &[
+                    "reset",
+                    "shutdown",
+                    "poweroff",
+                    "pause",
+                    "none",
+                    "dump",
+                    "inject-nmi",
+                ],
+            )?;
             format!(
                 r#"    <watchdog model='{}' action='{}'/>"#,
-                model, config.watchdog_action
+                escaped_attribute(model, "Watchdog model")?,
+                escaped_attribute(&config.watchdog_action, "Watchdog action")?
             )
         } else {
             String::new()
@@ -1352,7 +1547,8 @@ impl VmService {
                 // Use default hugepage size
                 r#"  <memoryBacking>
     <hugepages/>
-  </memoryBacking>"#.to_string()
+  </memoryBacking>"#
+                    .to_string()
             }
         } else {
             String::new()
@@ -1363,14 +1559,14 @@ impl VmService {
         let max_memory_mb = std::cmp::min(config.memory_mb * 2, 131072);
 
         let xml = format!(
-            r#"<domain type='qemu'>
+            r#"<domain type='kvm'>
   <name>{}</name>
   <memory unit='MiB'>{}</memory>
   <currentMemory unit='MiB'>{}</currentMemory>
 {}
   <vcpu>{}</vcpu>
 {}
-  <os>
+  <os{}>
     <type arch='x86_64' machine='{}'>{}</type>
 {}
 {}
@@ -1379,7 +1575,7 @@ impl VmService {
   </os>
 {}
   <devices>
-    <emulator>/usr/bin/qemu-system-x86_64</emulator>
+{}
 {}
 {}
 {}
@@ -1403,12 +1599,13 @@ impl VmService {
 {}
   </devices>
 </domain>"#,
-            config.name,
-            max_memory_mb,  // max memory
-            config.memory_mb,  // current memory
-            memory_backing_xml,  // hugepages if enabled
+            escaped_text(&config.name, "VM name")?,
+            max_memory_mb,      // max memory
+            config.memory_mb,   // current memory
+            memory_backing_xml, // hugepages if enabled
             config.cpu_count,
             cpu_topology_xml,
+            os_firmware_attribute,
             machine_type,
             os_type_str,
             firmware_section,
@@ -1418,6 +1615,7 @@ impl VmService {
             features_xml,
             main_disk_xml,
             cdrom_xml,
+            cloud_init_xml,
             interface_xml,
             graphics_xml,
             video_xml,
@@ -1427,26 +1625,25 @@ impl VmService {
             watchdog_xml
         );
 
-        tracing::debug!("VM XML:\n{}", xml);
+        tracing::debug!("Generated VM definition");
 
         // Define the domain (create VM configuration)
         let domain = match Domain::define_xml(conn, &xml) {
             Ok(d) => d,
             Err(e) => {
                 // VM creation failed, clean up the storage volume if we created one
-                tracing::error!("Failed to define VM: {}", e);
+                tracing::error!("VM definition failed");
                 if let Some(ref vol) = created_volume {
                     tracing::info!("Cleaning up storage volume after VM creation failure");
-                    if let Err(cleanup_err) = vol.delete(0) {
-                        tracing::warn!("Failed to clean up storage volume after VM creation failure: {}", cleanup_err);
+                    if vol.delete(0).is_err() {
+                        tracing::warn!("VM creation cleanup did not complete");
                     }
                 }
                 return Err(map_libvirt_error(e));
             }
         };
 
-        let uuid = domain.get_uuid_string()
-            .map_err(map_libvirt_error)?;
+        let uuid = domain.get_uuid_string().map_err(map_libvirt_error)?;
 
         tracing::info!("VM created successfully: {} (UUID: {})", config.name, uuid);
         Ok(uuid)
@@ -1454,7 +1651,10 @@ impl VmService {
 
     /// Get VM performance statistics
     /// Tries to get stats from guest agent first, falls back to libvirt stats
-    pub fn get_vm_stats(libvirt: &LibvirtService, vm_id: &str) -> Result<crate::models::vm::VmStats, AppError> {
+    pub fn get_vm_stats(
+        libvirt: &impl ConnectionProvider,
+        vm_id: &str,
+    ) -> Result<crate::models::vm::VmStats, AppError> {
         use virt::sys;
 
         tracing::debug!("Getting stats for VM: {}", vm_id);
@@ -1464,12 +1664,10 @@ impl VmService {
             .map_err(|_| AppError::VmNotFound(vm_id.to_string()))?;
 
         let vm_name = domain.get_name().map_err(map_libvirt_error)?;
-        let info = domain.get_info()
-            .map_err(map_libvirt_error)?;
+        let info = domain.get_info().map_err(map_libvirt_error)?;
 
         // For stopped VMs, return zeros
-        let (state, _) = domain.get_state()
-            .map_err(map_libvirt_error)?;
+        let (state, _) = domain.get_state().map_err(map_libvirt_error)?;
 
         if state != sys::VIR_DOMAIN_RUNNING {
             return Ok(crate::models::vm::VmStats {
@@ -1486,21 +1684,23 @@ impl VmService {
         }
 
         // Get actual memory usage from dommemstat (not just allocated memory)
-        let (memory_used_mb, memory_available_mb) = Self::get_libvirt_memory_stats(&vm_name)
-            .unwrap_or_else(|| {
+        let (memory_used_mb, memory_available_mb) = Self::get_libvirt_memory_stats(conn, &vm_name)
+            .unwrap_or({
                 // Fallback to basic info (allocated memory)
                 ((info.memory / 1024) as u64, (info.max_mem / 1024) as u64)
             });
 
         // Try to get CPU usage from guest agent
-        let cpu_usage_percent = Self::get_cpu_from_guest_agent(&vm_name)
-            .unwrap_or_else(|_| Self::calculate_libvirt_cpu_usage(&domain, info.nr_virt_cpu as u32));
+        let cpu_usage_percent =
+            Self::get_cpu_from_guest_agent(conn, &vm_name).unwrap_or_else(|_| {
+                Self::calculate_libvirt_cpu_usage(&domain, info.nr_virt_cpu as u32)
+            });
 
         // Get disk stats from libvirt
-        let (disk_read_bytes, disk_write_bytes) = Self::get_libvirt_disk_stats(&vm_name);
+        let (disk_read_bytes, disk_write_bytes) = Self::get_libvirt_disk_stats(conn, &vm_name);
 
         // Get network stats from libvirt
-        let (network_rx_bytes, network_tx_bytes) = Self::get_libvirt_network_stats(&vm_name);
+        let (network_rx_bytes, network_tx_bytes) = Self::get_libvirt_network_stats(conn, &vm_name);
 
         Ok(crate::models::vm::VmStats {
             vm_id: vm_id.to_string(),
@@ -1516,10 +1716,17 @@ impl VmService {
     }
 
     /// Try to get CPU usage from guest agent
-    fn get_cpu_from_guest_agent(vm_name: &str) -> Result<f64, AppError> {
+    fn get_cpu_from_guest_agent(
+        conn: &virt::connect::Connect,
+        vm_name: &str,
+    ) -> Result<f64, AppError> {
         // Use virsh qemu-agent-command to get CPU stats
-        let output = std::process::Command::new("virsh")
-            .args(["qemu-agent-command", vm_name, r#"{"execute":"guest-get-cpustats"}"#])
+        let output = Self::virsh_command(conn)?
+            .args([
+                "qemu-agent-command",
+                vm_name,
+                r#"{"execute":"guest-get-cpustats"}"#,
+            ])
             .output()
             .map_err(|e| AppError::Other(format!("Failed to execute virsh: {}", e)))?;
 
@@ -1531,7 +1738,9 @@ impl VmService {
             .map_err(|e| AppError::Other(format!("Failed to parse guest agent response: {}", e)))?;
 
         // Parse CPU stats and calculate usage
-        let cpus = result.get("return").and_then(|r| r.as_array())
+        let cpus = result
+            .get("return")
+            .and_then(|r| r.as_array())
             .ok_or_else(|| AppError::Other("Invalid guest agent response".to_string()))?;
 
         let mut total_active: u64 = 0;
@@ -1600,18 +1809,21 @@ impl VmService {
         // Usage across all vCPUs
         let usage = (cpu_time_delta as f64 / (real_time_ns as f64 * vcpus as f64)) * 100.0;
 
-        usage.min(100.0).max(0.0)
+        usage.clamp(0.0, 100.0)
     }
 
     /// Get disk I/O stats from libvirt using virsh domblkstat
-    fn get_libvirt_disk_stats(vm_name: &str) -> (u64, u64) {
+    fn get_libvirt_disk_stats(conn: &virt::connect::Connect, vm_name: &str) -> (u64, u64) {
         // Use virsh domblkstat to get disk stats
-        let output = std::process::Command::new("virsh")
-            .args(["domblkstat", vm_name, "--human"])
-            .output();
+        let output = Self::virsh_command(conn).ok().and_then(|mut command| {
+            command
+                .args(["domblkstat", vm_name, "--human"])
+                .output()
+                .ok()
+        });
 
         match output {
-            Ok(out) if out.status.success() => {
+            Some(out) if out.status.success() => {
                 let text = String::from_utf8_lossy(&out.stdout);
                 let mut read_bytes: u64 = 0;
                 let mut write_bytes: u64 = 0;
@@ -1636,8 +1848,12 @@ impl VmService {
     }
 
     /// Get actual memory usage from libvirt using virsh dommemstat
-    fn get_libvirt_memory_stats(vm_name: &str) -> Option<(u64, u64)> {
-        let output = std::process::Command::new("virsh")
+    fn get_libvirt_memory_stats(
+        conn: &virt::connect::Connect,
+        vm_name: &str,
+    ) -> Option<(u64, u64)> {
+        let output = Self::virsh_command(conn)
+            .ok()?
             .args(["dommemstat", vm_name])
             .output()
             .ok()?;
@@ -1680,20 +1896,20 @@ impl VmService {
     }
 
     /// Get network I/O stats from libvirt using virsh domifstat
-    fn get_libvirt_network_stats(vm_name: &str) -> (u64, u64) {
+    fn get_libvirt_network_stats(conn: &virt::connect::Connect, vm_name: &str) -> (u64, u64) {
         // First get list of interfaces
-        let iface_list = std::process::Command::new("virsh")
-            .args(["domiflist", vm_name])
-            .output();
+        let iface_list = Self::virsh_command(conn)
+            .ok()
+            .and_then(|mut command| command.args(["domiflist", vm_name]).output().ok());
 
         let ifaces: Vec<String> = match iface_list {
-            Ok(out) if out.status.success() => {
+            Some(out) if out.status.success() => {
                 let text = String::from_utf8_lossy(&out.stdout);
                 text.lines()
                     .skip(2) // Skip header line and separator
                     .filter(|line| !line.trim().is_empty())
                     .filter_map(|line| {
-                        let first = line.trim().split_whitespace().next()?;
+                        let first = line.split_whitespace().next()?;
                         // Skip lines that are just dashes (separator)
                         if first.chars().all(|c| c == '-') {
                             None
@@ -1710,11 +1926,11 @@ impl VmService {
         let mut total_tx: u64 = 0;
 
         for iface in &ifaces {
-            let output = std::process::Command::new("virsh")
-                .args(["domifstat", vm_name, iface])
-                .output();
+            let output = Self::virsh_command(conn)
+                .ok()
+                .and_then(|mut command| command.args(["domifstat", vm_name, iface]).output().ok());
 
-            if let Ok(out) = output {
+            if let Some(out) = output {
                 if out.status.success() {
                     let text = String::from_utf8_lossy(&out.stdout);
                     for line in text.lines() {
@@ -1736,34 +1952,48 @@ impl VmService {
 
     /// Clone a VM with disk and snapshot options
     pub fn clone_vm_with_options(
-        libvirt: &LibvirtService,
+        libvirt: &impl ConnectionProvider,
         source_vm_id: &str,
         config: &crate::models::vm::CloneConfig,
     ) -> Result<String, AppError> {
-        use std::process::Command;
         use std::path::Path;
+        use std::process::Command;
 
-        tracing::info!("Cloning VM {} to {} (clone_disks: {}, clone_snapshots: {})",
-            source_vm_id, config.new_name, config.clone_disks, config.clone_snapshots);
+        let cleanup_cloned_disks = |paths: &[String]| {
+            paths.iter().all(|path| match std::fs::remove_file(path) {
+                Ok(()) => true,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
+                Err(_) => false,
+            })
+        };
+
+        tracing::info!(
+            "Cloning VM {} to {} (clone_disks: {}, clone_snapshots: {})",
+            source_vm_id,
+            config.new_name,
+            config.clone_disks,
+            config.clone_snapshots
+        );
 
         let conn = libvirt.get_connection();
         let source_domain = Domain::lookup_by_uuid_string(conn, source_vm_id)
             .map_err(|_| AppError::VmNotFound(source_vm_id.to_string()))?;
 
         // Ensure source VM is not running
-        let state = source_domain.get_state()
-            .map_err(map_libvirt_error)?;
+        let state = source_domain.get_state().map_err(map_libvirt_error)?;
         if state.0 == virt::sys::VIR_DOMAIN_RUNNING {
-            return Err(AppError::LibvirtError("Cannot clone a running VM. Please shut it down first.".to_string()));
+            return Err(AppError::LibvirtError(
+                "Cannot clone a running VM. Please shut it down first.".to_string(),
+            ));
         }
 
         // Get source VM XML
-        let source_xml = source_domain.get_xml_desc(0)
-            .map_err(map_libvirt_error)?;
+        let source_xml = source_domain.get_xml_desc(0).map_err(map_libvirt_error)?;
 
         // Extract disk paths from source XML
         let disk_paths = Self::extract_disk_paths(&source_xml);
         let mut disk_mappings: Vec<(String, String)> = Vec::new();
+        let mut created_disk_paths = Vec::new();
 
         if config.clone_disks && !disk_paths.is_empty() {
             tracing::info!("Cloning {} disk(s)", disk_paths.len());
@@ -1777,8 +2007,11 @@ impl VmService {
                 }
 
                 // Generate new disk filename
-                let parent = source_path_obj.parent().unwrap_or(Path::new("/var/lib/libvirt/images"));
-                let extension = source_path_obj.extension()
+                let parent = source_path_obj
+                    .parent()
+                    .unwrap_or(Path::new("/var/lib/libvirt/images"));
+                let extension = source_path_obj
+                    .extension()
                     .and_then(|e| e.to_str())
                     .unwrap_or("qcow2");
 
@@ -1790,7 +2023,9 @@ impl VmService {
 
                 let target_path = if let Some(ref pool) = config.target_pool {
                     // Get pool path from libvirt
-                    if let Ok(pool_obj) = virt::storage_pool::StoragePool::lookup_by_name(conn, pool) {
+                    if let Ok(pool_obj) =
+                        virt::storage_pool::StoragePool::lookup_by_name(conn, pool)
+                    {
                         if let Ok(pool_xml) = pool_obj.get_xml_desc(0) {
                             let pool_path = Self::extract_pool_path(&pool_xml)
                                 .unwrap_or_else(|| "/var/lib/libvirt/images".to_string());
@@ -1806,49 +2041,143 @@ impl VmService {
                 };
 
                 // Clone the disk using qemu-img
-                tracing::info!("Cloning disk: {} -> {}", source_path, target_path);
-                let output = Command::new("qemu-img")
-                    .args(["create", "-f", "qcow2", "-F", "qcow2", "-b", source_path, &target_path])
+                tracing::info!("Cloning a VM disk");
+                let output = match Command::new("qemu-img")
+                    .args([
+                        "create",
+                        "-f",
+                        "qcow2",
+                        "-F",
+                        "qcow2",
+                        "-b",
+                        source_path,
+                        &target_path,
+                    ])
                     .output()
-                    .map_err(|e| AppError::Other(format!("Failed to run qemu-img: {}", e)))?;
+                {
+                    Ok(output) => output,
+                    Err(_) => {
+                        return Err(if cleanup_cloned_disks(&created_disk_paths) {
+                            AppError::Other("Disk clone could not be started".to_string())
+                        } else {
+                            AppError::Partial(
+                                "A failed disk clone left resources that require inspection"
+                                    .to_string(),
+                            )
+                        });
+                    }
+                };
 
                 if !output.status.success() {
                     // If backing file method fails, try full copy
                     tracing::info!("Backing file clone failed, attempting full copy");
-                    let output = Command::new("qemu-img")
+                    let _ = std::fs::remove_file(&target_path);
+                    let output = match Command::new("qemu-img")
                         .args(["convert", "-O", "qcow2", source_path, &target_path])
                         .output()
-                        .map_err(|e| AppError::Other(format!("Failed to run qemu-img: {}", e)))?;
+                    {
+                        Ok(output) => output,
+                        Err(_) => {
+                            let mut cleanup_paths = created_disk_paths.clone();
+                            cleanup_paths.push(target_path.clone());
+                            return Err(if cleanup_cloned_disks(&cleanup_paths) {
+                                AppError::Other("Disk clone could not be started".to_string())
+                            } else {
+                                AppError::Partial(
+                                    "A failed disk clone left resources that require inspection"
+                                        .to_string(),
+                                )
+                            });
+                        }
+                    };
 
                     if !output.status.success() {
-                        let stderr = String::from_utf8_lossy(&output.stderr);
-                        return Err(AppError::Other(format!("Disk clone failed: {}", stderr)));
+                        let mut cleanup_paths = created_disk_paths.clone();
+                        cleanup_paths.push(target_path.clone());
+                        return Err(if cleanup_cloned_disks(&cleanup_paths) {
+                            AppError::Other("Disk clone failed".to_string())
+                        } else {
+                            AppError::Partial(
+                                "A failed disk clone left resources that require inspection"
+                                    .to_string(),
+                            )
+                        });
                     }
                 }
 
+                created_disk_paths.push(target_path.clone());
                 disk_mappings.push((source_path.clone(), target_path));
             }
         }
 
         // Modify XML for clone (new name, MAC addresses, disk paths if cloned)
-        let clone_xml = Self::modify_xml_for_clone_extended(&source_xml, &config.new_name, &disk_mappings, &config.description)?;
+        let clone_xml = match Self::modify_xml_for_clone_extended(
+            &source_xml,
+            &config.new_name,
+            &disk_mappings,
+            &config.description,
+        ) {
+            Ok(xml) => xml,
+            Err(error) => {
+                return Err(if cleanup_cloned_disks(&created_disk_paths) {
+                    error
+                } else {
+                    AppError::Partial(
+                        "Clone preparation left disk resources that require inspection".to_string(),
+                    )
+                });
+            }
+        };
 
         // Define the cloned domain
-        let clone_domain = Domain::define_xml(conn, &clone_xml)
-            .map_err(map_libvirt_error)?;
+        let clone_domain = match Domain::define_xml(conn, &clone_xml) {
+            Ok(domain) => domain,
+            Err(_) => {
+                return Err(if cleanup_cloned_disks(&created_disk_paths) {
+                    AppError::LibvirtError(
+                        "The cloned virtual machine could not be defined".to_string(),
+                    )
+                } else {
+                    AppError::Partial(
+                        "Clone definition failed after creating disk resources".to_string(),
+                    )
+                });
+            }
+        };
 
-        let clone_uuid = clone_domain.get_uuid_string()
-            .map_err(map_libvirt_error)?;
+        let clone_uuid = match clone_domain.get_uuid_string() {
+            Ok(uuid) => uuid,
+            Err(_) => {
+                let domain_removed = clone_domain.undefine().is_ok();
+                let disks_removed = cleanup_cloned_disks(&created_disk_paths);
+                return Err(if domain_removed && disks_removed {
+                    AppError::LibvirtError(
+                        "The cloned virtual machine could not be finalized".to_string(),
+                    )
+                } else {
+                    AppError::Partial(
+                        "Clone finalization left resources that require inspection".to_string(),
+                    )
+                });
+            }
+        };
 
         // Clone snapshots if requested
         if config.clone_snapshots {
-            if let Err(e) = Self::clone_snapshots(libvirt, source_vm_id, &clone_uuid) {
-                tracing::warn!("Failed to clone snapshots: {}", e);
-                // Don't fail the whole clone operation if snapshot cloning fails
+            let snapshots_complete =
+                Self::clone_snapshots(libvirt, source_vm_id, &clone_uuid).unwrap_or(false);
+            if !snapshots_complete {
+                return Err(AppError::Partial(
+                    "The clone was created but its snapshots require inspection".to_string(),
+                ));
             }
         }
 
-        tracing::info!("VM cloned successfully: {} (UUID: {})", config.new_name, clone_uuid);
+        tracing::info!(
+            "VM cloned successfully: {} (UUID: {})",
+            config.new_name,
+            clone_uuid
+        );
         Ok(clone_uuid)
     }
 
@@ -1865,7 +2194,9 @@ impl VmService {
                 let disk_section = &xml[abs_disk_start..abs_disk_start + disk_end + 7];
 
                 // Check if it's a disk device (not cdrom)
-                if disk_section.contains("device='disk'") || disk_section.contains("device=\"disk\"") {
+                if disk_section.contains("device='disk'")
+                    || disk_section.contains("device=\"disk\"")
+                {
                     // Extract source file path
                     if let Some(source_match) = Self::extract_source_file(disk_section) {
                         paths.push(source_match);
@@ -1889,7 +2220,8 @@ impl VmService {
 
             // Try single quotes first
             if let Some(file_start) = source_section.find("file='") {
-                let path_start = source_section[file_start + 6..].find("'")
+                let path_start = source_section[file_start + 6..]
+                    .find("'")
                     .map(|end| &source_section[file_start + 6..file_start + 6 + end]);
                 if let Some(path) = path_start {
                     return Some(path.to_string());
@@ -1898,7 +2230,8 @@ impl VmService {
 
             // Try double quotes
             if let Some(file_start) = source_section.find("file=\"") {
-                let path_start = source_section[file_start + 6..].find("\"")
+                let path_start = source_section[file_start + 6..]
+                    .find("\"")
                     .map(|end| &source_section[file_start + 6..file_start + 6 + end]);
                 if let Some(path) = path_start {
                     return Some(path.to_string());
@@ -1928,46 +2261,29 @@ impl VmService {
         disk_mappings: &[(String, String)],
         description: &Option<String>,
     ) -> Result<String, AppError> {
-        let mut modified = xml.to_string();
-
-        // Remove UUID to let libvirt generate a new one
-        if let Some(uuid_start) = modified.find("<uuid>") {
-            if let Some(uuid_end) = modified[uuid_start..].find("</uuid>") {
-                let full_end = uuid_start + uuid_end + 7;
-                modified.replace_range(uuid_start..full_end, "");
-            }
-        }
-
-        // Change name
-        if let Some(name_start) = modified.find("<name>") {
-            if let Some(name_end) = modified[name_start..].find("</name>") {
-                let content_start = name_start + 6;
-                let content_end = name_start + name_end;
-                modified.replace_range(content_start..content_end, new_name);
-            }
-        }
+        Self::validate_vm_name(new_name)?;
+        let mut modified = crate::utils::xml::remove_first_element(xml, "uuid")?;
+        modified = crate::utils::xml::rewrite_first_text_element(&modified, "name", new_name)?;
 
         // Add or update description
         if let Some(desc) = description {
-            if let Some(desc_start) = modified.find("<description>") {
-                if let Some(desc_end) = modified[desc_start..].find("</description>") {
-                    let content_start = desc_start + 13;
-                    let content_end = desc_start + desc_end;
-                    modified.replace_range(content_start..content_end, desc);
-                }
+            if crate::utils::xml::first_element_text(&modified, "domain", "description")?.is_some()
+            {
+                modified =
+                    crate::utils::xml::rewrite_first_text_element(&modified, "description", desc)?;
             } else {
-                // Insert description after name
-                if let Some(name_end) = modified.find("</name>") {
-                    let insert_pos = name_end + 7;
-                    let desc_xml = format!("\n  <description>{}</description>", desc);
-                    modified.insert_str(insert_pos, &desc_xml);
-                }
+                modified = crate::utils::xml::insert_text_element_after_first(
+                    &modified,
+                    "name",
+                    "description",
+                    desc,
+                )?;
             }
         }
 
         // Update disk paths
         for (old_path, new_path) in disk_mappings {
-            modified = modified.replace(old_path, new_path);
+            modified = crate::utils::xml::rewrite_disk_source_path(&modified, old_path, new_path)?;
         }
 
         // Generate new MAC addresses for network interfaces
@@ -1978,13 +2294,17 @@ impl VmService {
 
     /// Clone snapshots from source VM to target VM
     fn clone_snapshots(
-        libvirt: &LibvirtService,
+        libvirt: &impl ConnectionProvider,
         source_vm_id: &str,
         target_vm_id: &str,
-    ) -> Result<(), AppError> {
+    ) -> Result<bool, AppError> {
         use virt::domain_snapshot::DomainSnapshot;
 
-        tracing::info!("Cloning snapshots from {} to {}", source_vm_id, target_vm_id);
+        tracing::info!(
+            "Cloning snapshots from {} to {}",
+            source_vm_id,
+            target_vm_id
+        );
 
         let conn = libvirt.get_connection();
         let source_domain = Domain::lookup_by_uuid_string(conn, source_vm_id)
@@ -1992,22 +2312,23 @@ impl VmService {
         let target_domain = Domain::lookup_by_uuid_string(conn, target_vm_id)
             .map_err(|_| AppError::VmNotFound(target_vm_id.to_string()))?;
 
-        let snapshot_count = DomainSnapshot::num(&source_domain, 0)
-            .map_err(map_libvirt_error)?;
+        let snapshot_count = DomainSnapshot::num(&source_domain, 0).map_err(map_libvirt_error)?;
 
         if snapshot_count == 0 {
             tracing::info!("No snapshots to clone");
-            return Ok(());
+            return Ok(true);
         }
 
-        let source_snapshots = source_domain.list_all_snapshots(0)
+        let source_snapshots = source_domain
+            .list_all_snapshots(0)
             .map_err(map_libvirt_error)?;
 
         // Clone each snapshot (without memory state - disk-only snapshots)
+        let mut complete = true;
         for snap in source_snapshots {
-            let name = snap.get_name()
-                .map_err(map_libvirt_error)?;
-            let description = snap.get_xml_desc(0)
+            let name = snap.get_name().map_err(map_libvirt_error)?;
+            let description = snap
+                .get_xml_desc(0)
                 .ok()
                 .and_then(|xml| {
                     if let Some(start) = xml.find("<description>") {
@@ -2032,16 +2353,19 @@ impl VmService {
 
             match DomainSnapshot::create_xml(&target_domain, &snap_xml, 0) {
                 Ok(_) => tracing::info!("Cloned snapshot: {}", name),
-                Err(e) => tracing::warn!("Failed to clone snapshot {}: {}", name, e),
+                Err(_) => {
+                    complete = false;
+                    tracing::warn!("A VM snapshot could not be cloned");
+                }
             }
         }
 
-        Ok(())
+        Ok(complete)
     }
 
     /// Clone a VM (legacy method - calls enhanced version with defaults)
     pub fn clone_vm(
-        libvirt: &LibvirtService,
+        libvirt: &impl ConnectionProvider,
         source_vm_id: &str,
         new_name: &str,
     ) -> Result<String, AppError> {
@@ -2085,8 +2409,7 @@ impl VmService {
 
     /// Get tags for a VM from its metadata
     fn get_vm_tags(domain: &Domain) -> Result<Vec<String>, AppError> {
-        let xml = domain.get_xml_desc(0)
-            .map_err(map_libvirt_error)?;
+        let xml = domain.get_xml_desc(0).map_err(map_libvirt_error)?;
 
         // Look for our custom metadata tags
         let mut tags = Vec::new();
@@ -2100,7 +2423,8 @@ impl VmService {
                 while let Some(tag_start) = metadata_section[search_pos..].find("<kvm:tag>") {
                     let abs_tag_start = search_pos + tag_start + 9;
                     if let Some(tag_end) = metadata_section[abs_tag_start..].find("</kvm:tag>") {
-                        let tag = metadata_section[abs_tag_start..abs_tag_start + tag_end].to_string();
+                        let tag =
+                            metadata_section[abs_tag_start..abs_tag_start + tag_end].to_string();
                         tags.push(tag);
                         search_pos = abs_tag_start + tag_end + 10;
                     } else {
@@ -2114,16 +2438,19 @@ impl VmService {
     }
 
     /// Add tags to a VM
-    pub fn add_vm_tags(libvirt: &LibvirtService, vm_id: &str, tags: Vec<String>) -> Result<(), AppError> {
-        tracing::info!("Adding tags to VM {}: {:?}", vm_id, tags);
+    pub fn add_vm_tags(
+        libvirt: &impl ConnectionProvider,
+        vm_id: &str,
+        tags: Vec<String>,
+    ) -> Result<(), AppError> {
+        tracing::info!("Adding VM tags");
 
         let conn = libvirt.get_connection();
         let domain = Domain::lookup_by_uuid_string(conn, vm_id)
             .map_err(|_| AppError::VmNotFound(vm_id.to_string()))?;
 
         // Get current XML
-        let xml = domain.get_xml_desc(0)
-            .map_err(map_libvirt_error)?;
+        let xml = domain.get_xml_desc(0).map_err(map_libvirt_error)?;
 
         // Get existing tags
         let mut existing_tags = Self::get_vm_tags(&domain)?;
@@ -2136,7 +2463,8 @@ impl VmService {
         }
 
         // Build metadata XML
-        let tags_xml = existing_tags.iter()
+        let tags_xml = existing_tags
+            .iter()
             .map(|t| format!("    <kvm:tag>{}</kvm:tag>", t))
             .collect::<Vec<_>>()
             .join("\n");
@@ -2162,24 +2490,26 @@ impl VmService {
         };
 
         // Redefine domain with new XML
-        let _new_domain = Domain::define_xml(conn, &new_xml)
-            .map_err(map_libvirt_error)?;
+        let _new_domain = Domain::define_xml(conn, &new_xml).map_err(map_libvirt_error)?;
 
         tracing::info!("Tags added successfully to VM {}", vm_id);
         Ok(())
     }
 
     /// Remove tags from a VM
-    pub fn remove_vm_tags(libvirt: &LibvirtService, vm_id: &str, tags_to_remove: Vec<String>) -> Result<(), AppError> {
-        tracing::info!("Removing tags from VM {}: {:?}", vm_id, tags_to_remove);
+    pub fn remove_vm_tags(
+        libvirt: &impl ConnectionProvider,
+        vm_id: &str,
+        tags_to_remove: Vec<String>,
+    ) -> Result<(), AppError> {
+        tracing::info!("Removing VM tags");
 
         let conn = libvirt.get_connection();
         let domain = Domain::lookup_by_uuid_string(conn, vm_id)
             .map_err(|_| AppError::VmNotFound(vm_id.to_string()))?;
 
         // Get current XML
-        let xml = domain.get_xml_desc(0)
-            .map_err(map_libvirt_error)?;
+        let xml = domain.get_xml_desc(0).map_err(map_libvirt_error)?;
 
         // Get existing tags
         let mut existing_tags = Self::get_vm_tags(&domain)?;
@@ -2200,8 +2530,7 @@ impl VmService {
                 xml
             };
 
-            let _new_domain = Domain::define_xml(conn, &new_xml)
-                .map_err(map_libvirt_error)?;
+            let _new_domain = Domain::define_xml(conn, &new_xml).map_err(map_libvirt_error)?;
         } else {
             // Update with remaining tags
             Self::add_vm_tags(libvirt, vm_id, existing_tags)?;
@@ -2212,7 +2541,7 @@ impl VmService {
     }
 
     /// Export a VM's configuration to XML
-    pub fn export_vm(libvirt: &LibvirtService, vm_id: &str) -> Result<String, AppError> {
+    pub fn export_vm(libvirt: &impl ConnectionProvider, vm_id: &str) -> Result<String, AppError> {
         tracing::info!("Exporting VM configuration for {}", vm_id);
 
         let conn = libvirt.get_connection();
@@ -2220,7 +2549,8 @@ impl VmService {
             .map_err(|_| AppError::VmNotFound(vm_id.to_string()))?;
 
         // Get XML description with secure flag to include sensitive data
-        let xml = domain.get_xml_desc(sys::VIR_DOMAIN_XML_SECURE)
+        let xml = domain
+            .get_xml_desc(sys::VIR_DOMAIN_XML_SECURE)
             .map_err(map_libvirt_error)?;
 
         tracing::info!("Successfully exported VM configuration for {}", vm_id);
@@ -2228,18 +2558,31 @@ impl VmService {
     }
 
     /// Import a VM from XML configuration
-    pub fn import_vm(libvirt: &LibvirtService, xml: &str) -> Result<String, AppError> {
+    pub fn import_vm(libvirt: &impl ConnectionProvider, xml: &str) -> Result<String, AppError> {
         tracing::info!("Importing VM from XML configuration");
+
+        crate::utils::xml::validate_document_root(xml, "domain")?;
 
         let conn = libvirt.get_connection();
 
         // Define domain from XML
-        let domain = Domain::define_xml(conn, xml)
-            .map_err(map_libvirt_error)?;
+        let domain = Domain::define_xml(conn, xml).map_err(map_libvirt_error)?;
 
-        // Get UUID of newly created domain
-        let uuid = domain.get_uuid_string()
-            .map_err(map_libvirt_error)?;
+        // A definition with no returned identity cannot be safely managed by the caller.
+        let uuid = match domain.get_uuid_string() {
+            Ok(uuid) => uuid,
+            Err(_) if domain.undefine().is_ok() => {
+                return Err(AppError::LibvirtError(
+                    "The imported virtual machine could not be finalized".to_string(),
+                ));
+            }
+            Err(_) => {
+                return Err(AppError::Partial(
+                    "Import finalization left a virtual machine that requires inspection"
+                        .to_string(),
+                ));
+            }
+        };
 
         tracing::info!("Successfully imported VM with UUID {}", uuid);
         Ok(uuid)
@@ -2247,13 +2590,18 @@ impl VmService {
 
     /// Attach a disk to a VM
     pub fn attach_disk(
-        libvirt: &LibvirtService,
+        libvirt: &impl ConnectionProvider,
         vm_id: &str,
         disk_path: &str,
         device_target: &str,
         bus_type: &str,
     ) -> Result<(), AppError> {
-        tracing::info!("Attaching disk {} to VM {} as {}", disk_path, vm_id, device_target);
+        tracing::info!(
+            "Attaching disk {} to VM {} as {}",
+            disk_path,
+            vm_id,
+            device_target
+        );
 
         let conn = libvirt.get_connection();
         let domain = Domain::lookup_by_uuid_string(conn, vm_id)
@@ -2267,6 +2615,17 @@ impl VmService {
                 bus_type, valid_bus_types
             )));
         }
+        if device_target.is_empty()
+            || device_target.len() > 32
+            || !device_target
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+        {
+            return Err(AppError::InvalidConfig(
+                "Disk target has an invalid format".to_string(),
+            ));
+        }
+        let disk_path = escaped_attribute(disk_path, "Disk path")?;
 
         // Build disk XML - NVMe requires different target naming
         let disk_xml = if bus_type == "nvme" {
@@ -2297,16 +2656,17 @@ impl VmService {
             sys::VIR_DOMAIN_AFFECT_CONFIG
         };
 
-        domain.attach_device_flags(&disk_xml, flags)
+        domain
+            .attach_device_flags(&disk_xml, flags)
             .map_err(map_libvirt_error)?;
 
-        tracing::info!("Successfully attached disk {} to VM {}", disk_path, vm_id);
+        tracing::info!("Successfully attached a disk to a VM");
         Ok(())
     }
 
     /// Detach a disk from a VM
     pub fn detach_disk(
-        libvirt: &LibvirtService,
+        libvirt: &impl ConnectionProvider,
         vm_id: &str,
         device_target: &str,
     ) -> Result<(), AppError> {
@@ -2317,36 +2677,16 @@ impl VmService {
             .map_err(|_| AppError::VmNotFound(vm_id.to_string()))?;
 
         // Get current XML to find the disk
-        let xml = domain.get_xml_desc(0)
-            .map_err(map_libvirt_error)?;
+        let xml = domain.get_xml_desc(0).map_err(map_libvirt_error)?;
 
-        // Find disk device XML by target
-        let disk_start_pattern = format!("<disk");
-        let target_pattern = format!("target dev='{}'", device_target);
-
-        let mut search_pos = 0;
-        let mut disk_xml = None;
-
-        while let Some(disk_pos) = xml[search_pos..].find(&disk_start_pattern) {
-            let abs_disk_pos = search_pos + disk_pos;
-            if let Some(disk_end) = xml[abs_disk_pos..].find("</disk>") {
-                let disk_section = &xml[abs_disk_pos..abs_disk_pos + disk_end + 7];
-
-                // Check if this disk has the target we're looking for
-                if disk_section.contains(&target_pattern) {
-                    disk_xml = Some(disk_section.to_string());
-                    break;
-                }
-
-                search_pos = abs_disk_pos + disk_end + 7;
-            } else {
-                break;
-            }
-        }
-
-        let disk_xml = disk_xml.ok_or_else(|| {
-            AppError::InvalidConfig(format!("Disk with target '{}' not found", device_target))
-        })?;
+        let disk_xml =
+            first_element_with_descendant_attribute(&xml, "disk", "target", "dev", device_target)?
+                .ok_or_else(|| {
+                    AppError::InvalidConfig(format!(
+                        "Disk with target '{}' not found",
+                        device_target
+                    ))
+                })?;
 
         // Detach disk (persistent and live if VM is running)
         let flags = if domain.is_active().map_err(map_libvirt_error)? {
@@ -2355,16 +2695,22 @@ impl VmService {
             sys::VIR_DOMAIN_AFFECT_CONFIG
         };
 
-        domain.detach_device_flags(&disk_xml, flags)
+        domain
+            .detach_device_flags(&disk_xml, flags)
             .map_err(map_libvirt_error)?;
 
-        tracing::info!("Successfully detached disk {} from VM {}", device_target, vm_id);
+        tracing::info!(
+            "Successfully detached disk {} from VM {}",
+            device_target,
+            vm_id
+        );
         Ok(())
     }
 
     /// Update disk I/O settings (cache, io mode, discard, throttling)
+    #[allow(clippy::too_many_arguments)] // Mirrors the existing Tauri command contract.
     pub fn update_disk_settings(
-        libvirt: &LibvirtService,
+        libvirt: &impl ConnectionProvider,
         vm_id: &str,
         device_target: &str,
         cache: Option<String>,
@@ -2376,7 +2722,11 @@ impl VmService {
         read_bytes_sec: Option<u64>,
         write_bytes_sec: Option<u64>,
     ) -> Result<(), AppError> {
-        tracing::info!("Updating disk settings for {} on VM {}", device_target, vm_id);
+        tracing::info!(
+            "Updating disk settings for {} on VM {}",
+            device_target,
+            vm_id
+        );
 
         let conn = libvirt.get_connection();
         let domain = Domain::lookup_by_uuid_string(conn, vm_id)
@@ -2418,160 +2768,36 @@ impl VmService {
         // Get current XML
         let xml = domain.get_xml_desc(0).map_err(map_libvirt_error)?;
 
-        // Find the disk in the XML
-        let target_pattern = format!("target dev='{}'", device_target);
-
-        let mut search_pos = 0;
-        let mut disk_start_pos = None;
-        let mut disk_end_pos = None;
-
-        while let Some(disk_pos) = xml[search_pos..].find("<disk") {
-            let abs_disk_pos = search_pos + disk_pos;
-            if let Some(disk_end) = xml[abs_disk_pos..].find("</disk>") {
-                let disk_section = &xml[abs_disk_pos..abs_disk_pos + disk_end + 7];
-
-                if disk_section.contains(&target_pattern) {
-                    disk_start_pos = Some(abs_disk_pos);
-                    disk_end_pos = Some(abs_disk_pos + disk_end + 7);
-                    break;
-                }
-
-                search_pos = abs_disk_pos + disk_end + 7;
-            } else {
-                break;
-            }
-        }
-
-        let (disk_start, disk_end) = match (disk_start_pos, disk_end_pos) {
-            (Some(s), Some(e)) => (s, e),
-            _ => {
-                return Err(AppError::InvalidConfig(format!(
-                    "Disk with target '{}' not found",
-                    device_target
-                )));
-            }
-        };
-
-        let old_disk_xml = &xml[disk_start..disk_end];
-
-        // Build new driver line
-        let mut driver_attrs = vec!["name='qemu'".to_string()];
-
-        // Extract existing driver type from old XML
-        if let Some(type_start) = old_disk_xml.find("<driver") {
-            if let Some(type_pos) = old_disk_xml[type_start..].find("type='") {
-                let start = type_start + type_pos + 6;
-                if let Some(end) = old_disk_xml[start..].find("'") {
-                    driver_attrs.push(format!("type='{}'", &old_disk_xml[start..start + end]));
-                }
-            }
-        } else {
-            driver_attrs.push("type='qcow2'".to_string());
-        }
-
-        // Add I/O settings
-        if let Some(ref c) = cache {
-            driver_attrs.push(format!("cache='{}'", c));
-        }
-        if let Some(ref i) = io {
-            driver_attrs.push(format!("io='{}'", i));
-        }
-        if let Some(ref d) = discard {
-            driver_attrs.push(format!("discard='{}'", d));
-        }
-        if let Some(ref dz) = detect_zeroes {
-            driver_attrs.push(format!("detect_zeroes='{}'", dz));
-        }
-
-        // Build iotune section if needed
-        let iotune_xml = if read_iops_sec.is_some()
-            || write_iops_sec.is_some()
-            || read_bytes_sec.is_some()
-            || write_bytes_sec.is_some()
-        {
-            let mut iotune_parts = Vec::new();
-            if let Some(val) = read_iops_sec {
-                iotune_parts.push(format!("    <read_iops_sec>{}</read_iops_sec>", val));
-            }
-            if let Some(val) = write_iops_sec {
-                iotune_parts.push(format!("    <write_iops_sec>{}</write_iops_sec>", val));
-            }
-            if let Some(val) = read_bytes_sec {
-                iotune_parts.push(format!("    <read_bytes_sec>{}</read_bytes_sec>", val));
-            }
-            if let Some(val) = write_bytes_sec {
-                iotune_parts.push(format!("    <write_bytes_sec>{}</write_bytes_sec>", val));
-            }
-            if iotune_parts.is_empty() {
-                String::new()
-            } else {
-                format!("\n  <iotune>\n{}\n  </iotune>", iotune_parts.join("\n"))
-            }
-        } else {
-            String::new()
-        };
-
-        // Extract source and target from old disk XML
-        let source_line = if let Some(source_start) = old_disk_xml.find("<source") {
-            if let Some(source_end) = old_disk_xml[source_start..].find("/>") {
-                Some(&old_disk_xml[source_start..source_start + source_end + 2])
-            } else if let Some(source_end) = old_disk_xml[source_start..].find(">") {
-                // Handle <source ...></source> format
-                if let Some(close_end) = old_disk_xml[source_start..].find("</source>") {
-                    Some(&old_disk_xml[source_start..source_start + close_end + 9])
-                } else {
-                    Some(&old_disk_xml[source_start..source_start + source_end + 1])
-                }
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-
-        let _target_line = if let Some(target_start) = old_disk_xml.find("<target") {
-            if let Some(target_end) = old_disk_xml[target_start..].find("/>") {
-                Some(&old_disk_xml[target_start..target_start + target_end + 2])
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-
-        // Extract disk type and device from opening tag
-        let disk_type = if old_disk_xml.contains("type='file'") {
-            "file"
-        } else if old_disk_xml.contains("type='block'") {
-            "block"
-        } else {
-            "file"
-        };
-
-        // Build new disk XML
-        let new_disk_xml = format!(
-            r#"<disk type='{}' device='disk'>
-  <driver {}/>
-  {}{}
-  <target dev='{}' bus='{}'/>
-</disk>"#,
-            disk_type,
-            driver_attrs.join(" "),
-            source_line.unwrap_or("<source file=''/>"),
-            iotune_xml,
+        let old_disk_xml =
+            first_element_with_descendant_attribute(&xml, "disk", "target", "dev", device_target)?
+                .ok_or_else(|| {
+                    AppError::InvalidConfig(format!(
+                        "Disk with target '{}' not found",
+                        device_target
+                    ))
+                })?;
+        // Rebuild only the selected disk's owned settings through XML events. The device handed
+        // to libvirt retains its source, addressing, and extension elements.
+        let updated_xml = rewrite_disk_settings(
+            &xml,
             device_target,
-            if old_disk_xml.contains("bus='virtio'") {
-                "virtio"
-            } else if old_disk_xml.contains("bus='scsi'") {
-                "scsi"
-            } else if old_disk_xml.contains("bus='sata'") {
-                "sata"
-            } else if old_disk_xml.contains("bus='ide'") {
-                "ide"
-            } else {
-                "virtio"
-            }
-        );
+            cache.as_deref(),
+            io.as_deref(),
+            discard.as_deref(),
+            detect_zeroes.as_deref(),
+            read_iops_sec,
+            write_iops_sec,
+            read_bytes_sec,
+            write_bytes_sec,
+        )?;
+        let new_disk_xml = first_element_with_descendant_attribute(
+            &updated_xml,
+            "disk",
+            "target",
+            "dev",
+            device_target,
+        )?
+        .ok_or_else(|| AppError::InvalidConfig("Updated disk was not found".to_string()))?;
 
         // VM must be stopped to change disk settings (unless using blkdeviotune for throttling)
         let is_running = domain.is_active().map_err(map_libvirt_error)?;
@@ -2587,11 +2813,17 @@ impl VmService {
             }
 
             // Apply I/O throttling to running VM using virsh
-            if read_iops_sec.is_some() || write_iops_sec.is_some()
-                || read_bytes_sec.is_some() || write_bytes_sec.is_some()
+            if read_iops_sec.is_some()
+                || write_iops_sec.is_some()
+                || read_bytes_sec.is_some()
+                || write_bytes_sec.is_some()
             {
                 let vm_name = domain.get_name().map_err(map_libvirt_error)?;
-                let mut args = vec!["blkdeviotune".to_string(), vm_name, device_target.to_string()];
+                let mut args = vec![
+                    "blkdeviotune".to_string(),
+                    vm_name,
+                    device_target.to_string(),
+                ];
 
                 if let Some(val) = read_iops_sec {
                     args.push("--read-iops-sec".to_string());
@@ -2614,20 +2846,22 @@ impl VmService {
                 args.push("--live".to_string());
                 args.push("--config".to_string());
 
-                let output = std::process::Command::new("virsh")
+                let output = Self::virsh_command(conn)?
                     .args(&args)
                     .output()
                     .map_err(|e| AppError::LibvirtError(format!("Failed to run virsh: {}", e)))?;
 
                 if !output.status.success() {
-                    let stderr = String::from_utf8_lossy(&output.stderr);
-                    return Err(AppError::LibvirtError(format!(
-                        "Failed to set I/O throttling: {}",
-                        stderr
-                    )));
+                    return Err(AppError::LibvirtError(
+                        "Failed to set I/O throttling".to_string(),
+                    ));
                 }
 
-                tracing::info!("Successfully updated I/O throttling for disk {} on VM {}", device_target, vm_id);
+                tracing::info!(
+                    "Successfully updated I/O throttling for disk {} on VM {}",
+                    device_target,
+                    vm_id
+                );
                 return Ok(());
             }
         } else {
@@ -2636,14 +2870,20 @@ impl VmService {
             let flags = sys::VIR_DOMAIN_AFFECT_CONFIG;
 
             // Detach old disk
-            domain.detach_device_flags(old_disk_xml, flags)
+            domain
+                .detach_device_flags(&old_disk_xml, flags)
                 .map_err(map_libvirt_error)?;
 
             // Attach new disk
-            domain.attach_device_flags(&new_disk_xml, flags)
+            domain
+                .attach_device_flags(&new_disk_xml, flags)
                 .map_err(map_libvirt_error)?;
 
-            tracing::info!("Successfully updated disk settings for {} on VM {}", device_target, vm_id);
+            tracing::info!(
+                "Successfully updated disk settings for {} on VM {}",
+                device_target,
+                vm_id
+            );
         }
 
         Ok(())
@@ -2651,11 +2891,11 @@ impl VmService {
 
     /// Mount an ISO image as a CDROM to a VM
     pub fn mount_cd_iso(
-        libvirt: &LibvirtService,
+        libvirt: &impl ConnectionProvider,
         vm_id: &str,
         iso_path: &str,
     ) -> Result<(), AppError> {
-        tracing::info!("Mounting ISO {} to VM {}", iso_path, vm_id);
+        tracing::info!("Mounting an ISO to a VM");
 
         let conn = libvirt.get_connection();
         let domain = Domain::lookup_by_uuid_string(conn, vm_id)
@@ -2663,7 +2903,10 @@ impl VmService {
 
         // Check if ISO file exists
         if !std::path::Path::new(iso_path).exists() {
-            return Err(AppError::InvalidConfig(format!("ISO file not found: {}", iso_path)));
+            return Err(AppError::InvalidConfig(format!(
+                "ISO file not found: {}",
+                iso_path
+            )));
         }
 
         let is_running = domain.is_active().map_err(map_libvirt_error)?;
@@ -2671,52 +2914,46 @@ impl VmService {
         // Get current XML to check for existing CDROM
         let xml = domain.get_xml_desc(0).map_err(map_libvirt_error)?;
 
-        // Check if there's already a CDROM device we can update
-        if let Some(cdrom_start) = xml.find("<disk type='file' device='cdrom'")
-            .or_else(|| xml.find("<disk type='block' device='cdrom'")) {
+        let escaped_iso_path = escaped_attribute(iso_path, "ISO path")?;
 
-            if let Some(cdrom_end) = xml[cdrom_start..].find("</disk>") {
-                let existing_cdrom = &xml[cdrom_start..cdrom_start + cdrom_end + 7];
+        // Check if there's already a CDROM device we can update. Selection is event-based and
+        // accepts either file/block devices plus either quote style.
+        if let Some(existing_cdrom) =
+            first_element_with_descendant_attribute(&xml, "disk", "disk", "device", "cdrom")?
+        {
+            // Read target and bus through parsed attributes, independent of quote style.
+            let target_dev = first_element_attribute(&existing_cdrom, "disk", "target", "dev")?
+                .unwrap_or_else(|| "hda".to_string());
+            let bus_type = first_element_attribute(&existing_cdrom, "disk", "target", "bus")?
+                .unwrap_or_else(|| "ide".to_string());
 
-                // Extract target device and bus from existing CDROM
-                let target_dev = if let Some(target_start) = existing_cdrom.find("target dev='") {
-                    let dev_start = target_start + 12;
-                    if let Some(dev_end) = existing_cdrom[dev_start..].find("'") {
-                        &existing_cdrom[dev_start..dev_start + dev_end]
-                    } else { "hda" }
-                } else { "hda" };
-
-                let bus_type = if let Some(bus_start) = existing_cdrom.find("bus='") {
-                    let bus_val_start = bus_start + 5;
-                    if let Some(bus_end) = existing_cdrom[bus_val_start..].find("'") {
-                        &existing_cdrom[bus_val_start..bus_val_start + bus_end]
-                    } else { "ide" }
-                } else { "ide" };
-
-                // Create updated CDROM XML with the ISO
-                let updated_cdrom_xml = format!(
-                    r#"<disk type='file' device='cdrom'>
+            // Create updated CDROM XML with the ISO
+            let updated_cdrom_xml = format!(
+                r#"<disk type='file' device='cdrom'>
   <driver name='qemu' type='raw'/>
   <source file='{}'/>
   <target dev='{}' bus='{}'/>
   <readonly/>
 </disk>"#,
-                    iso_path, target_dev, bus_type
-                );
+                escaped_iso_path, target_dev, bus_type
+            );
 
-                // Update the device
-                let flags = if is_running {
-                    sys::VIR_DOMAIN_DEVICE_MODIFY_LIVE | sys::VIR_DOMAIN_DEVICE_MODIFY_CONFIG
-                } else {
-                    sys::VIR_DOMAIN_DEVICE_MODIFY_CONFIG
-                };
+            // Update the device
+            let flags = if is_running {
+                sys::VIR_DOMAIN_DEVICE_MODIFY_LIVE | sys::VIR_DOMAIN_DEVICE_MODIFY_CONFIG
+            } else {
+                sys::VIR_DOMAIN_DEVICE_MODIFY_CONFIG
+            };
 
-                domain.update_device_flags(&updated_cdrom_xml, flags)
-                    .map_err(map_libvirt_error)?;
+            domain
+                .update_device_flags(&updated_cdrom_xml, flags)
+                .map_err(map_libvirt_error)?;
 
-                tracing::info!("Successfully mounted ISO to VM {} using existing CDROM", vm_id);
-                return Ok(());
-            }
+            tracing::info!(
+                "Successfully mounted ISO to VM {} using existing CDROM",
+                vm_id
+            );
+            return Ok(());
         }
 
         // No existing CDROM - for running VMs, we need to use virtio-scsi which can be hotplugged
@@ -2726,11 +2963,14 @@ impl VmService {
             if !xml.contains("controller type='scsi'") {
                 tracing::info!("Adding SCSI controller for hotplug CDROM support");
                 let scsi_controller_xml = r#"<controller type='scsi' model='virtio-scsi'/>"#;
-                if let Err(e) = domain.attach_device_flags(
-                    scsi_controller_xml,
-                    sys::VIR_DOMAIN_AFFECT_LIVE | sys::VIR_DOMAIN_AFFECT_CONFIG
-                ) {
-                    tracing::warn!("Could not add SCSI controller: {}", e);
+                if domain
+                    .attach_device_flags(
+                        scsi_controller_xml,
+                        sys::VIR_DOMAIN_AFFECT_LIVE | sys::VIR_DOMAIN_AFFECT_CONFIG,
+                    )
+                    .is_err()
+                {
+                    tracing::warn!("SCSI controller hotplug did not complete");
                 }
             }
 
@@ -2742,20 +2982,19 @@ impl VmService {
   <target dev='sda' bus='scsi'/>
   <readonly/>
 </disk>"#,
-                iso_path
+                escaped_iso_path
             );
 
             match domain.attach_device_flags(
                 &cdrom_xml,
-                sys::VIR_DOMAIN_AFFECT_LIVE | sys::VIR_DOMAIN_AFFECT_CONFIG
+                sys::VIR_DOMAIN_AFFECT_LIVE | sys::VIR_DOMAIN_AFFECT_CONFIG,
             ) {
                 Ok(_) => {
                     tracing::info!("Successfully mounted ISO to VM {} via SCSI hotplug", vm_id);
                     return Ok(());
                 }
-                Err(e) => {
-                    let err_msg = e.to_string();
-                    tracing::warn!("SCSI CDROM hotplug failed: {}", err_msg);
+                Err(_) => {
+                    tracing::warn!("SCSI CDROM hotplug failed");
                     return Err(AppError::InvalidConfig(
                         "Cannot hotplug CDROM to this VM. Please stop the VM, mount the ISO, then start it again.".to_string()
                     ));
@@ -2771,10 +3010,11 @@ impl VmService {
   <target dev='sda' bus='sata'/>
   <readonly/>
 </disk>"#,
-            iso_path
+            escaped_iso_path
         );
 
-        domain.attach_device_flags(&cdrom_xml, sys::VIR_DOMAIN_AFFECT_CONFIG)
+        domain
+            .attach_device_flags(&cdrom_xml, sys::VIR_DOMAIN_AFFECT_CONFIG)
             .map_err(map_libvirt_error)?;
 
         tracing::info!("Successfully mounted ISO to VM {}", vm_id);
@@ -2782,10 +3022,7 @@ impl VmService {
     }
 
     /// Eject CD/DVD from a VM
-    pub fn eject_cd(
-        libvirt: &LibvirtService,
-        vm_id: &str,
-    ) -> Result<(), AppError> {
+    pub fn eject_cd(libvirt: &impl ConnectionProvider, vm_id: &str) -> Result<(), AppError> {
         tracing::info!("Ejecting CD from VM {}", vm_id);
 
         let conn = libvirt.get_connection();
@@ -2793,18 +3030,12 @@ impl VmService {
             .map_err(|_| AppError::VmNotFound(vm_id.to_string()))?;
 
         // Get current XML to find the CDROM device
-        let xml = domain.get_xml_desc(0)
-            .map_err(map_libvirt_error)?;
+        let xml = domain.get_xml_desc(0).map_err(map_libvirt_error)?;
 
-        // Find CDROM device
-        let disk_start = xml.find("<disk type='file' device='cdrom'")
-            .or_else(|| xml.find("<disk type='block' device='cdrom'"))
-            .ok_or_else(|| AppError::InvalidConfig("No CD ROM device found".to_string()))?;
-
-        let disk_end = xml[disk_start..].find("</disk>")
-            .ok_or_else(|| AppError::InvalidConfig("Malformed CDROM device XML".to_string()))?;
-
-        let cdrom_xml = &xml[disk_start..disk_start + disk_end + 7];
+        // Select the CD-ROM device structurally rather than relying on serialized attribute order.
+        let cdrom_xml =
+            first_element_with_descendant_attribute(&xml, "disk", "disk", "device", "cdrom")?
+                .ok_or_else(|| AppError::InvalidConfig("No CD ROM device found".to_string()))?;
 
         // Detach CD (persistent and live if VM is running)
         let flags = if domain.is_active().map_err(map_libvirt_error)? {
@@ -2813,7 +3044,8 @@ impl VmService {
             sys::VIR_DOMAIN_AFFECT_CONFIG
         };
 
-        domain.detach_device_flags(cdrom_xml, flags)
+        domain
+            .detach_device_flags(&cdrom_xml, flags)
             .map_err(map_libvirt_error)?;
 
         tracing::info!("Successfully ejected CD from VM {}", vm_id);
@@ -2823,7 +3055,7 @@ impl VmService {
     /// Attach a sound device to a VM
     /// model: ich9, ich6, ac97, es1370, sb16, usb
     pub fn attach_sound(
-        libvirt: &LibvirtService,
+        libvirt: &impl ConnectionProvider,
         vm_id: &str,
         model: &str,
     ) -> Result<(), AppError> {
@@ -2859,26 +3091,26 @@ impl VmService {
             sys::VIR_DOMAIN_AFFECT_CONFIG
         };
 
-        domain.attach_device_flags(&sound_xml, flags)
-            .map_err(|e| {
-                if is_running {
-                    AppError::InvalidConfig(
-                        "Cannot add sound device to running VM. Please stop the VM first.".to_string()
-                    )
-                } else {
-                    map_libvirt_error(e)
-                }
-            })?;
+        domain.attach_device_flags(&sound_xml, flags).map_err(|e| {
+            if is_running {
+                AppError::InvalidConfig(
+                    "Cannot add sound device to running VM. Please stop the VM first.".to_string(),
+                )
+            } else {
+                map_libvirt_error(e)
+            }
+        })?;
 
-        tracing::info!("Successfully attached sound device {} to VM {}", model, vm_id);
+        tracing::info!(
+            "Successfully attached sound device {} to VM {}",
+            model,
+            vm_id
+        );
         Ok(())
     }
 
     /// Detach a sound device from a VM
-    pub fn detach_sound(
-        libvirt: &LibvirtService,
-        vm_id: &str,
-    ) -> Result<(), AppError> {
+    pub fn detach_sound(libvirt: &impl ConnectionProvider, vm_id: &str) -> Result<(), AppError> {
         tracing::info!("Detaching sound device from VM {}", vm_id);
 
         let conn = libvirt.get_connection();
@@ -2888,20 +3120,8 @@ impl VmService {
         // Get current XML to find the sound device
         let xml = domain.get_xml_desc(0).map_err(map_libvirt_error)?;
 
-        // Find sound device
-        let sound_start = xml.find("<sound model='")
+        let sound_xml = first_element_fragment(&xml, "sound")?
             .ok_or_else(|| AppError::InvalidConfig("No sound device found".to_string()))?;
-
-        let sound_end = xml[sound_start..].find("</sound>")
-            .or_else(|| xml[sound_start..].find("/>")) // For self-closing tags
-            .ok_or_else(|| AppError::InvalidConfig("Malformed sound device XML".to_string()))?;
-
-        // Determine if it's self-closing or has a closing tag
-        let sound_xml = if xml[sound_start + sound_end..].starts_with("/>") {
-            &xml[sound_start..sound_start + sound_end + 2]
-        } else {
-            &xml[sound_start..sound_start + sound_end + 8] // includes </sound>
-        };
 
         let is_running = domain.is_active().map_err(map_libvirt_error)?;
 
@@ -2911,16 +3131,16 @@ impl VmService {
             sys::VIR_DOMAIN_AFFECT_CONFIG
         };
 
-        domain.detach_device_flags(sound_xml, flags)
-            .map_err(|e| {
-                if is_running {
-                    AppError::InvalidConfig(
-                        "Cannot remove sound device from running VM. Please stop the VM first.".to_string()
-                    )
-                } else {
-                    map_libvirt_error(e)
-                }
-            })?;
+        domain.detach_device_flags(&sound_xml, flags).map_err(|e| {
+            if is_running {
+                AppError::InvalidConfig(
+                    "Cannot remove sound device from running VM. Please stop the VM first."
+                        .to_string(),
+                )
+            } else {
+                map_libvirt_error(e)
+            }
+        })?;
 
         tracing::info!("Successfully detached sound device from VM {}", vm_id);
         Ok(())
@@ -2930,12 +3150,17 @@ impl VmService {
     /// device_type: tablet, mouse, keyboard
     /// bus: usb, virtio, ps2
     pub fn attach_input(
-        libvirt: &LibvirtService,
+        libvirt: &impl ConnectionProvider,
         vm_id: &str,
         device_type: &str,
         bus: &str,
     ) -> Result<(), AppError> {
-        tracing::info!("Attaching input device {} ({}) to VM {}", device_type, bus, vm_id);
+        tracing::info!(
+            "Attaching input device {} ({}) to VM {}",
+            device_type,
+            bus,
+            vm_id
+        );
 
         let conn = libvirt.get_connection();
         let domain = Domain::lookup_by_uuid_string(conn, vm_id)
@@ -2962,10 +3187,7 @@ impl VmService {
         let is_running = domain.is_active().map_err(map_libvirt_error)?;
 
         // Build input device XML
-        let input_xml = format!(
-            r#"<input type='{}' bus='{}'/>"#,
-            device_type, bus
-        );
+        let input_xml = format!(r#"<input type='{}' bus='{}'/>"#, device_type, bus);
 
         let flags = if is_running {
             sys::VIR_DOMAIN_AFFECT_LIVE | sys::VIR_DOMAIN_AFFECT_CONFIG
@@ -2973,26 +3195,29 @@ impl VmService {
             sys::VIR_DOMAIN_AFFECT_CONFIG
         };
 
-        domain.attach_device_flags(&input_xml, flags)
-            .map_err(|e| {
-                if is_running {
-                    AppError::InvalidConfig(
-                        "Cannot add input device to running VM. Please stop the VM first.".to_string()
-                    )
-                } else {
-                    map_libvirt_error(e)
-                }
-            })?;
+        domain.attach_device_flags(&input_xml, flags).map_err(|e| {
+            if is_running {
+                AppError::InvalidConfig(
+                    "Cannot add input device to running VM. Please stop the VM first.".to_string(),
+                )
+            } else {
+                map_libvirt_error(e)
+            }
+        })?;
 
-        tracing::info!("Successfully attached input device {} to VM {}", device_type, vm_id);
+        tracing::info!(
+            "Successfully attached input device {} to VM {}",
+            device_type,
+            vm_id
+        );
         Ok(())
     }
 
     /// Attach an RNG (Random Number Generator) device to a VM
     pub fn attach_rng(
-        libvirt: &LibvirtService,
+        libvirt: &impl ConnectionProvider,
         vm_id: &str,
-        backend: &str,  // /dev/urandom or /dev/random
+        backend: &str, // /dev/urandom or /dev/random
     ) -> Result<(), AppError> {
         tracing::info!("Attaching RNG device ({}) to VM {}", backend, vm_id);
 
@@ -3024,16 +3249,15 @@ impl VmService {
             sys::VIR_DOMAIN_AFFECT_CONFIG
         };
 
-        domain.attach_device_flags(&rng_xml, flags)
-            .map_err(|e| {
-                if is_running {
-                    AppError::InvalidConfig(
-                        "Cannot add RNG device to running VM. Please stop the VM first.".to_string()
-                    )
-                } else {
-                    map_libvirt_error(e)
-                }
-            })?;
+        domain.attach_device_flags(&rng_xml, flags).map_err(|e| {
+            if is_running {
+                AppError::InvalidConfig(
+                    "Cannot add RNG device to running VM. Please stop the VM first.".to_string(),
+                )
+            } else {
+                map_libvirt_error(e)
+            }
+        })?;
 
         tracing::info!("Successfully attached RNG device to VM {}", vm_id);
         Ok(())
@@ -3043,12 +3267,17 @@ impl VmService {
     /// model: i6300esb, ib700, diag288
     /// action: reset, shutdown, poweroff, pause, none
     pub fn attach_watchdog(
-        libvirt: &LibvirtService,
+        libvirt: &impl ConnectionProvider,
         vm_id: &str,
         model: &str,
         action: &str,
     ) -> Result<(), AppError> {
-        tracing::info!("Attaching watchdog device {} (action: {}) to VM {}", model, action, vm_id);
+        tracing::info!(
+            "Attaching watchdog device {} (action: {}) to VM {}",
+            model,
+            action,
+            vm_id
+        );
 
         let conn = libvirt.get_connection();
         let domain = Domain::lookup_by_uuid_string(conn, vm_id)
@@ -3074,10 +3303,7 @@ impl VmService {
 
         let is_running = domain.is_active().map_err(map_libvirt_error)?;
 
-        let watchdog_xml = format!(
-            r#"<watchdog model='{}' action='{}'/>"#,
-            model, action
-        );
+        let watchdog_xml = format!(r#"<watchdog model='{}' action='{}'/>"#, model, action);
 
         let flags = if is_running {
             sys::VIR_DOMAIN_AFFECT_LIVE | sys::VIR_DOMAIN_AFFECT_CONFIG
@@ -3085,11 +3311,13 @@ impl VmService {
             sys::VIR_DOMAIN_AFFECT_CONFIG
         };
 
-        domain.attach_device_flags(&watchdog_xml, flags)
+        domain
+            .attach_device_flags(&watchdog_xml, flags)
             .map_err(|e| {
                 if is_running {
                     AppError::InvalidConfig(
-                        "Cannot add watchdog device to running VM. Please stop the VM first.".to_string()
+                        "Cannot add watchdog device to running VM. Please stop the VM first."
+                            .to_string(),
                     )
                 } else {
                     map_libvirt_error(e)
@@ -3103,7 +3331,7 @@ impl VmService {
     /// Attach a channel device to a VM
     /// channel_type: qemu-ga, spice
     pub fn attach_channel(
-        libvirt: &LibvirtService,
+        libvirt: &impl ConnectionProvider,
         vm_id: &str,
         channel_type: &str,
     ) -> Result<(), AppError> {
@@ -3117,21 +3345,18 @@ impl VmService {
 
         // Generate channel XML based on type
         let channel_xml = match channel_type {
-            "qemu-ga" => {
-                r#"<channel type='unix'>
+            "qemu-ga" => r#"<channel type='unix'>
   <target type='virtio' name='org.qemu.guest_agent.0'/>
-</channel>"#.to_string()
-            }
-            "kvmmanager-agent" => {
-                r#"<channel type='unix'>
+</channel>"#
+                .to_string(),
+            "kvmmanager-agent" => r#"<channel type='unix'>
   <target type='virtio' name='org.kvmmanager.agent.0'/>
-</channel>"#.to_string()
-            }
-            "spice" => {
-                r#"<channel type='spicevmc'>
+</channel>"#
+                .to_string(),
+            "spice" => r#"<channel type='spicevmc'>
   <target type='virtio' name='com.redhat.spice.0'/>
-</channel>"#.to_string()
-            }
+</channel>"#
+                .to_string(),
             _ => {
                 return Err(AppError::InvalidConfig(format!(
                     "Invalid channel type '{}'. Valid options: qemu-ga, kvmmanager-agent, spice",
@@ -3158,22 +3383,31 @@ impl VmService {
                 }
             })?;
 
-        tracing::info!("Successfully attached {} channel to VM {}", channel_type, vm_id);
+        tracing::info!(
+            "Successfully attached {} channel to VM {}",
+            channel_type,
+            vm_id
+        );
         Ok(())
     }
 
     /// Attach a filesystem (folder share) to a VM
     /// fs_type: virtio-9p, virtiofs
     pub fn attach_filesystem(
-        libvirt: &LibvirtService,
+        libvirt: &impl ConnectionProvider,
         vm_id: &str,
         source_path: &str,
         target_mount: &str,
         fs_type: &str,
         readonly: bool,
     ) -> Result<(), AppError> {
-        tracing::info!("Attaching filesystem {} -> {} ({}) to VM {}",
-            source_path, target_mount, fs_type, vm_id);
+        tracing::info!(
+            "Attaching filesystem {} -> {} ({}) to VM {}",
+            source_path,
+            target_mount,
+            fs_type,
+            vm_id
+        );
 
         let conn = libvirt.get_connection();
         let domain = Domain::lookup_by_uuid_string(conn, vm_id)
@@ -3227,25 +3461,28 @@ impl VmService {
             sys::VIR_DOMAIN_AFFECT_CONFIG
         };
 
-        domain.attach_device_flags(&fs_xml, flags)
-            .map_err(|e| {
-                if is_running {
-                    AppError::InvalidConfig(
-                        "Cannot add filesystem to running VM. Please stop the VM first.".to_string()
-                    )
-                } else {
-                    map_libvirt_error(e)
-                }
-            })?;
+        domain.attach_device_flags(&fs_xml, flags).map_err(|e| {
+            if is_running {
+                AppError::InvalidConfig(
+                    "Cannot add filesystem to running VM. Please stop the VM first.".to_string(),
+                )
+            } else {
+                map_libvirt_error(e)
+            }
+        })?;
 
-        tracing::info!("Successfully attached filesystem {} to VM {}", target_mount, vm_id);
+        tracing::info!(
+            "Successfully attached filesystem {} to VM {}",
+            target_mount,
+            vm_id
+        );
         Ok(())
     }
 
     /// Attach a serial port to a VM
     /// port_type: pty, tcp, unix, file
     pub fn attach_serial(
-        libvirt: &LibvirtService,
+        libvirt: &impl ConnectionProvider,
         vm_id: &str,
         port_type: &str,
         target_port: u32,
@@ -3295,24 +3532,30 @@ impl VmService {
             sys::VIR_DOMAIN_AFFECT_CONFIG
         };
 
-        domain.attach_device_flags(&serial_xml, flags)
+        domain
+            .attach_device_flags(&serial_xml, flags)
             .map_err(|e| {
                 if is_running {
                     AppError::InvalidConfig(
-                        "Cannot add serial port to running VM. Please stop the VM first.".to_string()
+                        "Cannot add serial port to running VM. Please stop the VM first."
+                            .to_string(),
                     )
                 } else {
                     map_libvirt_error(e)
                 }
             })?;
 
-        tracing::info!("Successfully attached serial port {} to VM {}", target_port, vm_id);
+        tracing::info!(
+            "Successfully attached serial port {} to VM {}",
+            target_port,
+            vm_id
+        );
         Ok(())
     }
 
     /// Attach a virtio console device to a VM
     pub fn attach_console(
-        libvirt: &LibvirtService,
+        libvirt: &impl ConnectionProvider,
         vm_id: &str,
         target_port: u32,
         target_type: &str,
@@ -3353,11 +3596,13 @@ impl VmService {
             sys::VIR_DOMAIN_AFFECT_CONFIG
         };
 
-        domain.attach_device_flags(&console_xml, flags)
+        domain
+            .attach_device_flags(&console_xml, flags)
             .map_err(|e| {
                 if is_running {
                     AppError::InvalidConfig(
-                        "Cannot add console device to running VM. Please stop the VM first.".to_string()
+                        "Cannot add console device to running VM. Please stop the VM first."
+                            .to_string(),
                     )
                 } else {
                     map_libvirt_error(e)
@@ -3372,7 +3617,7 @@ impl VmService {
     /// model: tpm-tis, tpm-crb
     /// version: 1.2, 2.0
     pub fn attach_tpm(
-        libvirt: &LibvirtService,
+        libvirt: &impl ConnectionProvider,
         vm_id: &str,
         model: &str,
         version: &str,
@@ -3387,7 +3632,7 @@ impl VmService {
 
         if is_running {
             return Err(AppError::InvalidConfig(
-                "Cannot add TPM to running VM. Please stop the VM first.".to_string()
+                "Cannot add TPM to running VM. Please stop the VM first.".to_string(),
             ));
         }
 
@@ -3416,7 +3661,8 @@ impl VmService {
             model, version
         );
 
-        domain.attach_device_flags(&tpm_xml, sys::VIR_DOMAIN_AFFECT_CONFIG)
+        domain
+            .attach_device_flags(&tpm_xml, sys::VIR_DOMAIN_AFFECT_CONFIG)
             .map_err(map_libvirt_error)?;
 
         tracing::info!("Successfully attached TPM to VM {}", vm_id);
@@ -3426,7 +3672,7 @@ impl VmService {
     /// Attach a USB controller to a VM
     /// model: piix3-uhci (USB 1.1), ich9-ehci1 (USB 2.0), nec-xhci (USB 3.0), qemu-xhci (USB 3.0)
     pub fn attach_usb_controller(
-        libvirt: &LibvirtService,
+        libvirt: &impl ConnectionProvider,
         vm_id: &str,
         model: &str,
     ) -> Result<(), AppError> {
@@ -3440,7 +3686,7 @@ impl VmService {
 
         if is_running {
             return Err(AppError::InvalidConfig(
-                "Cannot add USB controller to running VM. Please stop the VM first.".to_string()
+                "Cannot add USB controller to running VM. Please stop the VM first.".to_string(),
             ));
         }
 
@@ -3467,7 +3713,8 @@ impl VmService {
             controller_type, model_name
         );
 
-        domain.attach_device_flags(&controller_xml, sys::VIR_DOMAIN_AFFECT_CONFIG)
+        domain
+            .attach_device_flags(&controller_xml, sys::VIR_DOMAIN_AFFECT_CONFIG)
             .map_err(map_libvirt_error)?;
 
         tracing::info!("Successfully attached USB controller to VM {}", vm_id);
@@ -3478,12 +3725,16 @@ impl VmService {
     /// This adds redirdev elements that SPICE clients can use to redirect USB devices
     /// count: number of USB redirection channels (1-4, default 4)
     pub fn attach_usb_redirection(
-        libvirt: &LibvirtService,
+        libvirt: &impl ConnectionProvider,
         vm_id: &str,
         count: u32,
     ) -> Result<(), AppError> {
         let count = count.clamp(1, 4);
-        tracing::info!("Attaching {} USB redirection channel(s) to VM {}", count, vm_id);
+        tracing::info!(
+            "Attaching {} USB redirection channel(s) to VM {}",
+            count,
+            vm_id
+        );
 
         let conn = libvirt.get_connection();
         let domain = Domain::lookup_by_uuid_string(conn, vm_id)
@@ -3493,7 +3744,7 @@ impl VmService {
 
         if is_running {
             return Err(AppError::InvalidConfig(
-                "Cannot add USB redirection to running VM. Please stop the VM first.".to_string()
+                "Cannot add USB redirection to running VM. Please stop the VM first.".to_string(),
             ));
         }
 
@@ -3501,11 +3752,13 @@ impl VmService {
         let xml = domain.get_xml_desc(0).map_err(map_libvirt_error)?;
         if !xml.contains("type='spice'") {
             return Err(AppError::InvalidConfig(
-                "USB redirection requires SPICE graphics. Please add SPICE graphics first.".to_string()
+                "USB redirection requires SPICE graphics. Please add SPICE graphics first."
+                    .to_string(),
             ));
         }
 
         // Add USB redirection channels
+        let mut complete = true;
         for i in 0..count {
             let redir_xml = format!(
                 r#"<redirdev bus='usb' type='spicevmc'>
@@ -3518,19 +3771,32 @@ impl VmService {
                 Ok(_) => {
                     tracing::info!("Added USB redirection channel {} to VM {}", i, vm_id);
                 }
-                Err(e) => {
-                    tracing::warn!("Failed to add USB redirection channel {}: {}", i, e);
-                    // Continue with remaining channels
+                Err(_) => {
+                    complete = false;
+                    tracing::warn!("A USB redirection channel could not be added");
                 }
             }
         }
 
-        tracing::info!("Successfully attached {} USB redirection channel(s) to VM {}", count, vm_id);
+        if !complete {
+            return Err(AppError::Partial(
+                "USB redirection was only partially configured".to_string(),
+            ));
+        }
+
+        tracing::info!(
+            "Successfully attached {} USB redirection channel(s) to VM {}",
+            count,
+            vm_id
+        );
         Ok(())
     }
 
     /// Get USB redirection configuration for a VM
-    pub fn get_usb_redirection(libvirt: &LibvirtService, vm_id: &str) -> Result<UsbRedirectionInfo, AppError> {
+    pub fn get_usb_redirection(
+        libvirt: &impl ConnectionProvider,
+        vm_id: &str,
+    ) -> Result<UsbRedirectionInfo, AppError> {
         let conn = libvirt.get_connection();
         let domain = Domain::lookup_by_uuid_string(conn, vm_id)
             .map_err(|_| AppError::VmNotFound(vm_id.to_string()))?;
@@ -3549,7 +3815,10 @@ impl VmService {
     }
 
     /// Remove all USB redirection channels from a VM
-    pub fn remove_usb_redirection(libvirt: &LibvirtService, vm_id: &str) -> Result<(), AppError> {
+    pub fn remove_usb_redirection(
+        libvirt: &impl ConnectionProvider,
+        vm_id: &str,
+    ) -> Result<(), AppError> {
         tracing::info!("Removing USB redirection channels from VM {}", vm_id);
 
         let conn = libvirt.get_connection();
@@ -3560,40 +3829,34 @@ impl VmService {
 
         if is_running {
             return Err(AppError::InvalidConfig(
-                "Cannot remove USB redirection from running VM. Please stop the VM first.".to_string()
+                "Cannot remove USB redirection from running VM. Please stop the VM first."
+                    .to_string(),
             ));
         }
 
-        let xml = domain.get_xml_desc(0).map_err(map_libvirt_error)?;
-        let mut new_xml = xml.clone();
+        let mut new_xml = domain.get_xml_desc(0).map_err(map_libvirt_error)?;
 
-        // Remove all redirdev elements
-        while let Some(start) = new_xml.find("<redirdev") {
-            if let Some(end) = new_xml[start..].find("</redirdev>") {
-                let before = &new_xml[..start];
-                let after = &new_xml[start + end + 11..];
-                new_xml = format!("{}{}", before.trim_end(), after);
-            } else if let Some(end) = new_xml[start..].find("/>") {
-                let before = &new_xml[..start];
-                let after = &new_xml[start + end + 2..];
-                new_xml = format!("{}{}", before.trim_end(), after);
-            } else {
-                break;
-            }
+        // Remove complete device events rather than slicing a definition. This accepts either
+        // element form and retains all unrelated devices and extension namespaces.
+        while first_element_fragment(&new_xml, "redirdev")?.is_some() {
+            new_xml = remove_first_element(&new_xml, "redirdev")?;
         }
 
         // Redefine the domain with updated XML
         Domain::define_xml(conn, &new_xml)
             .map_err(|e| AppError::Other(format!("Failed to remove USB redirection: {}", e)))?;
 
-        tracing::info!("Successfully removed USB redirection channels from VM {}", vm_id);
+        tracing::info!(
+            "Successfully removed USB redirection channels from VM {}",
+            vm_id
+        );
         Ok(())
     }
 
     /// Attach a SCSI controller to a VM
     /// model: virtio-scsi, lsilogic, lsisas1068, megasas
     pub fn attach_scsi_controller(
-        libvirt: &LibvirtService,
+        libvirt: &impl ConnectionProvider,
         vm_id: &str,
         model: &str,
     ) -> Result<(), AppError> {
@@ -3607,12 +3870,18 @@ impl VmService {
 
         if is_running {
             return Err(AppError::InvalidConfig(
-                "Cannot add SCSI controller to running VM. Please stop the VM first.".to_string()
+                "Cannot add SCSI controller to running VM. Please stop the VM first.".to_string(),
             ));
         }
 
         // Validate model
-        let valid_models = ["virtio-scsi", "lsilogic", "lsisas1068", "lsisas1078", "megasas"];
+        let valid_models = [
+            "virtio-scsi",
+            "lsilogic",
+            "lsisas1068",
+            "lsisas1078",
+            "megasas",
+        ];
         if !valid_models.contains(&model) {
             return Err(AppError::InvalidConfig(format!(
                 "Invalid SCSI controller model '{}'. Valid options: {:?}",
@@ -3626,7 +3895,8 @@ impl VmService {
             model
         );
 
-        domain.attach_device_flags(&controller_xml, sys::VIR_DOMAIN_AFFECT_CONFIG)
+        domain
+            .attach_device_flags(&controller_xml, sys::VIR_DOMAIN_AFFECT_CONFIG)
             .map_err(map_libvirt_error)?;
 
         tracing::info!("Successfully attached SCSI controller to VM {}", vm_id);
@@ -3635,7 +3905,7 @@ impl VmService {
 
     /// Update VM boot order
     pub fn update_boot_order(
-        libvirt: &LibvirtService,
+        libvirt: &impl ConnectionProvider,
         vm_id: &str,
         boot_order: Vec<String>,
     ) -> Result<(), AppError> {
@@ -3649,43 +3919,16 @@ impl VmService {
         let is_running = domain.is_active().map_err(map_libvirt_error)?;
         if is_running {
             return Err(AppError::InvalidConfig(
-                "Cannot change boot order while VM is running. Please stop the VM first.".to_string()
+                "Cannot change boot order while VM is running. Please stop the VM first."
+                    .to_string(),
             ));
         }
 
         // Get current XML
         let xml = domain.get_xml_desc(0).map_err(map_libvirt_error)?;
 
-        // Parse and rebuild XML with new boot order
-        // Find the <os> section
-        let os_start = xml.find("<os>")
-            .ok_or_else(|| AppError::InvalidConfig("No <os> section found in VM XML".to_string()))?;
-        let os_end = xml[os_start..].find("</os>")
-            .ok_or_else(|| AppError::InvalidConfig("Malformed <os> section in VM XML".to_string()))?;
-        let os_section = &xml[os_start..os_start + os_end + 5];
-
-        // Build new boot order XML
-        let boot_lines = boot_order
-            .iter()
-            .map(|dev| format!("    <boot dev='{}'/>"  , dev))
-            .collect::<Vec<_>>()
-            .join("\n");
-
-        // Extract everything from <os> except old boot entries and bootmenu
-        let mut new_os_content = String::new();
-        for line in os_section.lines() {
-            let trimmed = line.trim();
-            if !trimmed.starts_with("<boot ") && !trimmed.starts_with("<bootmenu ") {
-                new_os_content.push_str(line);
-                new_os_content.push('\n');
-            }
-        }
-
-        // Insert new boot order before </os>
-        let new_os_section = new_os_content.replace("</os>", &format!("{}\n  </os>", boot_lines));
-
-        // Replace old <os> section with new one in full XML
-        let new_xml = xml.replace(os_section, &new_os_section);
+        let boot_devices = boot_order.iter().map(String::as_str).collect::<Vec<_>>();
+        let new_xml = rewrite_domain_boot_order(&xml, &boot_devices)?;
 
         // Undefine and redefine domain with new XML
         domain.undefine().map_err(map_libvirt_error)?;
@@ -3697,7 +3940,7 @@ impl VmService {
 
     /// Rename a VM (change domain name)
     pub fn rename_vm(
-        libvirt: &LibvirtService,
+        libvirt: &impl ConnectionProvider,
         vm_id: &str,
         new_name: &str,
     ) -> Result<(), AppError> {
@@ -3711,26 +3954,29 @@ impl VmService {
         let is_running = domain.is_active().map_err(map_libvirt_error)?;
         if is_running {
             return Err(AppError::InvalidConfig(
-                "Cannot rename a running VM. Please stop the VM first.".to_string()
+                "Cannot rename a running VM. Please stop the VM first.".to_string(),
             ));
         }
 
         // Validate new name (basic validation)
         if new_name.is_empty() {
-            return Err(AppError::InvalidConfig("VM name cannot be empty".to_string()));
+            return Err(AppError::InvalidConfig(
+                "VM name cannot be empty".to_string(),
+            ));
         }
 
         if new_name.contains(' ') || new_name.contains('/') || new_name.contains('\\') {
             return Err(AppError::InvalidConfig(
-                "VM name cannot contain spaces or slashes".to_string()
+                "VM name cannot contain spaces or slashes".to_string(),
             ));
         }
 
         // Check if name already exists
         if let Ok(_existing) = Domain::lookup_by_name(conn, new_name) {
-            return Err(AppError::InvalidConfig(
-                format!("A VM with name '{}' already exists", new_name)
-            ));
+            return Err(AppError::InvalidConfig(format!(
+                "A VM with name '{}' already exists",
+                new_name
+            )));
         }
 
         // Get current XML
@@ -3739,18 +3985,7 @@ impl VmService {
         // Extract old name for disk renaming
         let old_name = domain.get_name().map_err(map_libvirt_error)?;
 
-        // Replace name in XML
-        let new_xml = if let Some(name_start) = xml.find("<name>") {
-            let name_end = xml[name_start..].find("</name>")
-                .ok_or_else(|| AppError::InvalidConfig("Malformed XML: no closing </name> tag".to_string()))?;
-
-            let before = &xml[..name_start + 6];
-            let after = &xml[name_start + name_end..];
-
-            format!("{}{}{}", before, new_name, after)
-        } else {
-            return Err(AppError::InvalidConfig("No <name> tag found in VM XML".to_string()));
-        };
+        let new_xml = rewrite_first_text_element(&xml, "name", new_name)?;
 
         // Undefine the old domain
         domain.undefine().map_err(map_libvirt_error)?;
@@ -3760,19 +3995,28 @@ impl VmService {
 
         // Optionally rename disk files (best effort, don't fail if it doesn't work)
         // This is a convenience feature - we'll try to rename disk files to match the new VM name
-        let disk_paths = Self::get_vm_disk_paths(&Domain::lookup_by_name(conn, new_name).map_err(map_libvirt_error)?)?;
+        let disk_paths = Self::get_vm_disk_paths(
+            &Domain::lookup_by_name(conn, new_name).map_err(map_libvirt_error)?,
+        )?;
         for disk_path in disk_paths {
             if disk_path.contains(&old_name) {
                 let new_disk_path = disk_path.replace(&old_name, new_name);
-                if let Err(e) = std::fs::rename(&disk_path, &new_disk_path) {
-                    tracing::warn!("Failed to rename disk file {} to {}: {}. You may want to rename it manually.", disk_path, new_disk_path, e);
+                if let Err(_error) = std::fs::rename(&disk_path, &new_disk_path) {
+                    tracing::warn!(
+                        "Failed to rename a VM disk file; manual reconciliation may be required"
+                    );
                 } else {
-                    tracing::info!("Renamed disk file {} to {}", disk_path, new_disk_path);
+                    tracing::info!("Renamed a VM disk file");
 
                     // Update XML with new disk path
-                    let updated_domain = Domain::lookup_by_name(conn, new_name).map_err(map_libvirt_error)?;
+                    let updated_domain =
+                        Domain::lookup_by_name(conn, new_name).map_err(map_libvirt_error)?;
                     let updated_xml = updated_domain.get_xml_desc(0).map_err(map_libvirt_error)?;
-                    let final_xml = updated_xml.replace(&disk_path, &new_disk_path);
+                    let final_xml = crate::utils::xml::rewrite_disk_source_path(
+                        &updated_xml,
+                        &disk_path,
+                        &new_disk_path,
+                    )?;
 
                     updated_domain.undefine().map_err(map_libvirt_error)?;
                     Domain::define_xml(conn, &final_xml).map_err(map_libvirt_error)?;
@@ -3785,29 +4029,34 @@ impl VmService {
     }
 
     /// Get VM autostart status
-    pub fn get_vm_autostart(libvirt: &LibvirtService, vm_id: &str) -> Result<bool, AppError> {
+    pub fn get_vm_autostart(
+        libvirt: &impl ConnectionProvider,
+        vm_id: &str,
+    ) -> Result<bool, AppError> {
         tracing::debug!("Getting autostart for VM: {}", vm_id);
 
         let conn = libvirt.get_connection();
         let domain = Domain::lookup_by_uuid_string(conn, vm_id)
             .map_err(|_| AppError::VmNotFound(vm_id.to_string()))?;
 
-        let autostart = domain.get_autostart()
-            .map_err(map_libvirt_error)?;
+        let autostart = domain.get_autostart().map_err(map_libvirt_error)?;
 
         Ok(autostart)
     }
 
     /// Set VM autostart status
-    pub fn set_vm_autostart(libvirt: &LibvirtService, vm_id: &str, enable: bool) -> Result<(), AppError> {
+    pub fn set_vm_autostart(
+        libvirt: &impl ConnectionProvider,
+        vm_id: &str,
+        enable: bool,
+    ) -> Result<(), AppError> {
         tracing::info!("Setting autostart for VM {}: {}", vm_id, enable);
 
         let conn = libvirt.get_connection();
         let domain = Domain::lookup_by_uuid_string(conn, vm_id)
             .map_err(|_| AppError::VmNotFound(vm_id.to_string()))?;
 
-        domain.set_autostart(enable)
-            .map_err(map_libvirt_error)?;
+        domain.set_autostart(enable).map_err(map_libvirt_error)?;
 
         tracing::info!("Autostart set to {} for VM: {}", enable, vm_id);
         Ok(())
@@ -3815,13 +4064,17 @@ impl VmService {
 
     /// Attach a network interface to a VM
     pub fn attach_interface(
-        libvirt: &LibvirtService,
+        libvirt: &impl ConnectionProvider,
         vm_id: &str,
         network: &str,
         model: &str,
         mac_address: Option<&str>,
     ) -> Result<String, AppError> {
-        tracing::info!("Attaching network interface to VM {} on network {}", vm_id, network);
+        tracing::info!(
+            "Attaching network interface to VM {} on network {}",
+            vm_id,
+            network
+        );
 
         let conn = libvirt.get_connection();
         let domain = Domain::lookup_by_uuid_string(conn, vm_id)
@@ -3840,7 +4093,10 @@ impl VmService {
         let mac = mac_address.map(String::from).unwrap_or_else(|| {
             // Generate random MAC with the common QEMU OUI prefix 52:54:00
             use std::time::{SystemTime, UNIX_EPOCH};
-            let t = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+            let t = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
             format!(
                 "52:54:00:{:02x}:{:02x}:{:02x}",
                 ((t >> 16) & 0xff) as u8,
@@ -3866,28 +4122,39 @@ impl VmService {
             sys::VIR_DOMAIN_AFFECT_CONFIG
         };
 
-        domain.attach_device_flags(&interface_xml, flags)
+        domain
+            .attach_device_flags(&interface_xml, flags)
             .map_err(map_libvirt_error)?;
 
-        tracing::info!("Successfully attached network interface to VM {} with MAC {}", vm_id, mac);
+        tracing::info!(
+            "Successfully attached network interface to VM {} with MAC {}",
+            vm_id,
+            mac
+        );
         Ok(mac)
     }
 
     /// Attach a network interface to a VM with advanced options
     /// Supports: network (NAT/isolated), bridge, direct (macvtap), and OVS
+    #[allow(clippy::too_many_arguments)] // Mirrors the existing Tauri command contract.
     pub fn attach_interface_advanced(
-        libvirt: &LibvirtService,
+        libvirt: &impl ConnectionProvider,
         vm_id: &str,
-        interface_type: &str,   // "network", "bridge", "direct", "ovs"
-        source: &str,           // network name, bridge name, or host interface
+        interface_type: &str, // "network", "bridge", "direct", "ovs"
+        source: &str,         // network name, bridge name, or host interface
         model: &str,
         mac_address: Option<&str>,
-        source_mode: Option<&str>,  // For direct: bridge, vepa, private, passthrough
+        source_mode: Option<&str>, // For direct: bridge, vepa, private, passthrough
         vlan_id: Option<u16>,
         portgroup: Option<&str>,
         mtu: Option<u32>,
     ) -> Result<String, AppError> {
-        tracing::info!("Attaching {} interface to VM {} source={}", interface_type, vm_id, source);
+        tracing::info!(
+            "Attaching {} interface to VM {} source={}",
+            interface_type,
+            vm_id,
+            source
+        );
 
         let conn = libvirt.get_connection();
         let domain = Domain::lookup_by_uuid_string(conn, vm_id)
@@ -3905,7 +4172,10 @@ impl VmService {
         // Generate MAC address if not provided
         let mac = mac_address.map(String::from).unwrap_or_else(|| {
             use std::time::{SystemTime, UNIX_EPOCH};
-            let t = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+            let t = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
             format!(
                 "52:54:00:{:02x}:{:02x}:{:02x}",
                 ((t >> 16) & 0xff) as u8,
@@ -3914,17 +4184,30 @@ impl VmService {
             )
         });
 
-        // Build interface XML based on type
+        let mtu_xml = mtu
+            .map(|size| format!("\n  <mtu size='{size}'/>"))
+            .unwrap_or_default();
+        let safe_mac = escaped_attribute(&mac, "MAC address")?;
+        let safe_source = escaped_attribute(source, "Interface source")?;
+        let safe_model = escaped_attribute(model, "Interface model")?;
+
+        // Build interface XML based on type.
         let interface_xml = match interface_type {
             "network" => {
-                let pg_attr = portgroup.map(|p| format!(" portgroup='{}'", p)).unwrap_or_default();
+                let pg_attr = portgroup
+                    .map(|value| {
+                        escaped_attribute(value, "Network port group")
+                            .map(|escaped| format!(" portgroup='{escaped}'"))
+                    })
+                    .transpose()?
+                    .unwrap_or_default();
                 format!(
                     r#"<interface type='network'>
   <mac address='{}'/>
   <source network='{}'{}/>
-  <model type='{}'/>
+  <model type='{}'/>{}
 </interface>"#,
-                    mac, source, pg_attr, model
+                    safe_mac, safe_source, pg_attr, safe_model, mtu_xml
                 )
             }
             "bridge" => {
@@ -3932,9 +4215,9 @@ impl VmService {
                     r#"<interface type='bridge'>
   <mac address='{}'/>
   <source bridge='{}'/>
-  <model type='{}'/>
+  <model type='{}'/>{}
 </interface>"#,
-                    mac, source, model
+                    safe_mac, safe_source, safe_model, mtu_xml
                 )
             }
             "direct" => {
@@ -3951,22 +4234,28 @@ impl VmService {
                     r#"<interface type='direct'>
   <mac address='{}'/>
   <source dev='{}' mode='{}'/>
-  <model type='{}'/>
+  <model type='{}'/>{}
 </interface>"#,
-                    mac, source, mode, model
+                    safe_mac,
+                    safe_source,
+                    escaped_attribute(mode, "Direct interface mode")?,
+                    safe_model,
+                    mtu_xml
                 )
             }
             "ovs" => {
                 // Open vSwitch bridge
-                let vlan_xml = vlan_id.map(|v| format!("\n  <vlan>\n    <tag id='{}'/>\n  </vlan>", v)).unwrap_or_default();
+                let vlan_xml = vlan_id
+                    .map(|v| format!("\n  <vlan>\n    <tag id='{}'/>\n  </vlan>", v))
+                    .unwrap_or_default();
                 format!(
                     r#"<interface type='bridge'>
   <mac address='{}'/>
   <source bridge='{}'/>
   <virtualport type='openvswitch'/>
-  <model type='{}'/>{}
+  <model type='{}'/>{}{}
 </interface>"#,
-                    mac, source, model, vlan_xml
+                    safe_mac, safe_source, safe_model, vlan_xml, mtu_xml
                 )
             }
             _ => {
@@ -3977,14 +4266,6 @@ impl VmService {
             }
         };
 
-        // Add MTU if specified
-        let interface_xml = if let Some(mtu_val) = mtu {
-            // Insert MTU before </interface>
-            interface_xml.replace("</interface>", &format!("  <mtu size='{}'/>\n</interface>", mtu_val))
-        } else {
-            interface_xml
-        };
-
         // Attach interface (persistent and live if VM is running)
         let flags = if domain.is_active().map_err(map_libvirt_error)? {
             sys::VIR_DOMAIN_AFFECT_LIVE | sys::VIR_DOMAIN_AFFECT_CONFIG
@@ -3992,10 +4273,16 @@ impl VmService {
             sys::VIR_DOMAIN_AFFECT_CONFIG
         };
 
-        domain.attach_device_flags(&interface_xml, flags)
+        domain
+            .attach_device_flags(&interface_xml, flags)
             .map_err(map_libvirt_error)?;
 
-        tracing::info!("Successfully attached {} interface to VM {} with MAC {}", interface_type, vm_id, mac);
+        tracing::info!(
+            "Successfully attached {} interface to VM {} with MAC {}",
+            interface_type,
+            vm_id,
+            mac
+        );
         Ok(mac)
     }
 
@@ -4016,12 +4303,13 @@ impl VmService {
             let name = entry.file_name().to_string_lossy().to_string();
 
             // Skip virtual interfaces (lo, virbr*, veth*, docker*, etc.)
-            if name == "lo" ||
-               name.starts_with("virbr") ||
-               name.starts_with("veth") ||
-               name.starts_with("docker") ||
-               name.starts_with("br-") ||
-               name.starts_with("vnet") {
+            if name == "lo"
+                || name.starts_with("virbr")
+                || name.starts_with("veth")
+                || name.starts_with("docker")
+                || name.starts_with("br-")
+                || name.starts_with("vnet")
+            {
                 continue;
             }
 
@@ -4067,12 +4355,10 @@ impl VmService {
         }
 
         // Sort physical interfaces first
-        interfaces.sort_by(|a, b| {
-            match (a.is_physical, b.is_physical) {
-                (true, false) => std::cmp::Ordering::Less,
-                (false, true) => std::cmp::Ordering::Greater,
-                _ => a.name.cmp(&b.name),
-            }
+        interfaces.sort_by(|a, b| match (a.is_physical, b.is_physical) {
+            (true, false) => std::cmp::Ordering::Less,
+            (false, true) => std::cmp::Ordering::Greater,
+            _ => a.name.cmp(&b.name),
         });
 
         Ok(interfaces)
@@ -4080,43 +4366,31 @@ impl VmService {
 
     /// Detach a network interface from a VM by MAC address
     pub fn detach_interface(
-        libvirt: &LibvirtService,
+        libvirt: &impl ConnectionProvider,
         vm_id: &str,
         mac_address: &str,
     ) -> Result<(), AppError> {
-        tracing::info!("Detaching network interface with MAC {} from VM {}", mac_address, vm_id);
+        tracing::info!(
+            "Detaching network interface with MAC {} from VM {}",
+            mac_address,
+            vm_id
+        );
 
         let conn = libvirt.get_connection();
         let domain = Domain::lookup_by_uuid_string(conn, vm_id)
             .map_err(|_| AppError::VmNotFound(vm_id.to_string()))?;
 
         // Get current XML to find the interface
-        let xml = domain.get_xml_desc(0)
-            .map_err(map_libvirt_error)?;
+        let xml = domain.get_xml_desc(0).map_err(map_libvirt_error)?;
 
-        // Find interface by MAC address
-        let mac_pattern = format!("address='{}'", mac_address.to_lowercase());
-        let mut search_pos = 0;
-        let mut interface_xml = None;
-
-        while let Some(iface_pos) = xml[search_pos..].find("<interface") {
-            let abs_pos = search_pos + iface_pos;
-            if let Some(iface_end) = xml[abs_pos..].find("</interface>") {
-                let iface_section = &xml[abs_pos..abs_pos + iface_end + 12];
-
-                // Check if this interface has the MAC we're looking for
-                if iface_section.to_lowercase().contains(&mac_pattern) {
-                    interface_xml = Some(iface_section.to_string());
-                    break;
-                }
-
-                search_pos = abs_pos + iface_end + 12;
-            } else {
-                break;
-            }
-        }
-
-        let interface_xml = interface_xml.ok_or_else(|| {
+        let interface_xml = first_element_with_descendant_attribute(
+            &xml,
+            "interface",
+            "mac",
+            "address",
+            &mac_address.to_lowercase(),
+        )?
+        .ok_or_else(|| {
             AppError::InvalidConfig(format!("Interface with MAC '{}' not found", mac_address))
         })?;
 
@@ -4127,17 +4401,22 @@ impl VmService {
             sys::VIR_DOMAIN_AFFECT_CONFIG
         };
 
-        domain.detach_device_flags(&interface_xml, flags)
+        domain
+            .detach_device_flags(&interface_xml, flags)
             .map_err(map_libvirt_error)?;
 
-        tracing::info!("Successfully detached interface with MAC {} from VM {}", mac_address, vm_id);
+        tracing::info!(
+            "Successfully detached interface with MAC {} from VM {}",
+            mac_address,
+            vm_id
+        );
         Ok(())
     }
 
     /// Attach a graphics device to a VM (VNC, Spice)
     /// graphics_type: vnc, spice
     pub fn attach_graphics(
-        libvirt: &LibvirtService,
+        libvirt: &impl ConnectionProvider,
         vm_id: &str,
         graphics_type: &str,
         listen_address: Option<&str>,
@@ -4191,25 +4470,31 @@ impl VmService {
             sys::VIR_DOMAIN_AFFECT_CONFIG
         };
 
-        domain.attach_device_flags(&graphics_xml, flags)
+        domain
+            .attach_device_flags(&graphics_xml, flags)
             .map_err(|e| {
                 if is_running {
                     AppError::InvalidConfig(
-                        "Cannot add graphics device to running VM. Please stop the VM first.".to_string()
+                        "Cannot add graphics device to running VM. Please stop the VM first."
+                            .to_string(),
                     )
                 } else {
                     map_libvirt_error(e)
                 }
             })?;
 
-        tracing::info!("Successfully attached {} graphics to VM {}", graphics_type, vm_id);
+        tracing::info!(
+            "Successfully attached {} graphics to VM {}",
+            graphics_type,
+            vm_id
+        );
         Ok(())
     }
 
     /// Attach a video device to a VM
     /// model: virtio, qxl, vga, bochs, ramfb, cirrus
     pub fn attach_video(
-        libvirt: &LibvirtService,
+        libvirt: &impl ConnectionProvider,
         vm_id: &str,
         model: &str,
         vram: Option<u32>,
@@ -4239,21 +4524,29 @@ impl VmService {
 
         let video_xml = match model {
             "virtio" => {
-                let accel = if acceleration_3d { " accel3d='yes'" } else { "" };
+                let accel = if acceleration_3d {
+                    " accel3d='yes'"
+                } else {
+                    ""
+                };
                 format!(
                     r#"<video>
   <model type='virtio' heads='{}' primary='yes'{}>
     <acceleration accel3d='{}'/>
   </model>
 </video>"#,
-                    heads_count, accel, if acceleration_3d { "yes" } else { "no" }
+                    heads_count,
+                    accel,
+                    if acceleration_3d { "yes" } else { "no" }
                 )
             }
             "qxl" => format!(
                 r#"<video>
   <model type='qxl' ram='{}' vram='{}' vgamem='16384' heads='{}' primary='yes'/>
 </video>"#,
-                vram_kb * 2, vram_kb, heads_count
+                vram_kb * 2,
+                vram_kb,
+                heads_count
             ),
             "vga" | "bochs" | "cirrus" => format!(
                 r#"<video>
@@ -4261,11 +4554,10 @@ impl VmService {
 </video>"#,
                 model, vram_kb, heads_count
             ),
-            "ramfb" => format!(
-                r#"<video>
+            "ramfb" => r#"<video>
   <model type='ramfb' primary='yes'/>
 </video>"#
-            ),
+                .to_string(),
             _ => format!(
                 r#"<video>
   <model type='{}' vram='{}' heads='{}' primary='yes'/>
@@ -4280,23 +4572,30 @@ impl VmService {
             sys::VIR_DOMAIN_AFFECT_CONFIG
         };
 
-        domain.attach_device_flags(&video_xml, flags)
-            .map_err(|e| {
-                if is_running {
-                    AppError::InvalidConfig(
-                        "Cannot add video device to running VM. Please stop the VM first.".to_string()
-                    )
-                } else {
-                    map_libvirt_error(e)
-                }
-            })?;
+        domain.attach_device_flags(&video_xml, flags).map_err(|e| {
+            if is_running {
+                AppError::InvalidConfig(
+                    "Cannot add video device to running VM. Please stop the VM first.".to_string(),
+                )
+            } else {
+                map_libvirt_error(e)
+            }
+        })?;
 
-        tracing::info!("Successfully attached {} video device to VM {}", model, vm_id);
+        tracing::info!(
+            "Successfully attached {} video device to VM {}",
+            model,
+            vm_id
+        );
         Ok(())
     }
 
     /// Set the vCPU count for a VM
-    pub fn set_vcpus(libvirt: &LibvirtService, vm_id: &str, vcpus: u32) -> Result<(), AppError> {
+    pub fn set_vcpus(
+        libvirt: &impl ConnectionProvider,
+        vm_id: &str,
+        vcpus: u32,
+    ) -> Result<(), AppError> {
         let conn = libvirt.get_connection();
         let domain = Domain::lookup_by_uuid_string(conn, vm_id)
             .map_err(|_| AppError::VmNotFound(vm_id.to_string()))?;
@@ -4307,33 +4606,22 @@ impl VmService {
         if is_running {
             // For running VMs, we can only set vCPUs up to the maximum
             // First try to set current vCPUs
-            domain.set_vcpus_flags(vcpus, sys::VIR_DOMAIN_AFFECT_LIVE | sys::VIR_DOMAIN_AFFECT_CONFIG)
-                .map_err(|e| AppError::InvalidConfig(format!(
-                    "Cannot change vCPUs while VM is running: {}. Stop the VM first.", e
-                )))?;
+            domain
+                .set_vcpus_flags(
+                    vcpus,
+                    sys::VIR_DOMAIN_AFFECT_LIVE | sys::VIR_DOMAIN_AFFECT_CONFIG,
+                )
+                .map_err(|e| {
+                    AppError::InvalidConfig(format!(
+                        "Cannot change vCPUs while VM is running: {}. Stop the VM first.",
+                        e
+                    ))
+                })?;
         } else {
             // For stopped VMs, update the domain XML
             let xml = domain.get_xml_desc(0).map_err(map_libvirt_error)?;
-
-            // Update vcpu count in XML
-            let new_xml = if let Some(start) = xml.find("<vcpu") {
-                if let Some(end) = xml[start..].find("</vcpu>") {
-                    let before = &xml[..start];
-                    let after = &xml[start + end + 7..];
-                    format!("{}<vcpu placement='static'>{}</vcpu>{}", before, vcpus, after)
-                } else {
-                    // Self-closing vcpu tag
-                    if let Some(end) = xml[start..].find("/>") {
-                        let before = &xml[..start];
-                        let after = &xml[start + end + 2..];
-                        format!("{}<vcpu placement='static'>{}</vcpu>{}", before, vcpus, after)
-                    } else {
-                        return Err(AppError::InvalidConfig("Invalid VM XML format".to_string()));
-                    }
-                }
-            } else {
-                return Err(AppError::InvalidConfig("No vcpu element found in VM XML".to_string()));
-            };
+            let new_xml =
+                crate::utils::xml::rewrite_first_text_element(&xml, "vcpu", &vcpus.to_string())?;
 
             // Redefine the domain with updated XML
             Domain::define_xml(conn, &new_xml)
@@ -4345,7 +4633,11 @@ impl VmService {
     }
 
     /// Set the memory allocation for a VM (in MB)
-    pub fn set_memory(libvirt: &LibvirtService, vm_id: &str, memory_mb: u64) -> Result<(), AppError> {
+    pub fn set_memory(
+        libvirt: &impl ConnectionProvider,
+        vm_id: &str,
+        memory_mb: u64,
+    ) -> Result<(), AppError> {
         let conn = libvirt.get_connection();
         let domain = Domain::lookup_by_uuid_string(conn, vm_id)
             .map_err(|_| AppError::VmNotFound(vm_id.to_string()))?;
@@ -4365,39 +4657,37 @@ impl VmService {
             // For stopped VMs, update the domain XML
             let xml = domain.get_xml_desc(0).map_err(map_libvirt_error)?;
 
-            // Update memory elements in XML
-            let mut new_xml = xml.clone();
-
-            // Update <memory> tag
-            if let Some(start) = new_xml.find("<memory") {
-                if let Some(end) = new_xml[start..].find("</memory>") {
-                    let before = &new_xml[..start];
-                    let after = &new_xml[start + end + 9..];
-                    new_xml = format!("{}<memory unit='KiB'>{}</memory>{}", before, memory_kb, after);
+            let memory_unit =
+                crate::utils::xml::first_element_attribute(&xml, "domain", "memory", "unit")?
+                    .unwrap_or_else(|| "KiB".to_string());
+            let memory_value = match memory_unit.as_str() {
+                "KiB" => memory_kb,
+                "MiB" => memory_mb,
+                "GiB" if memory_mb.is_multiple_of(1024) => memory_mb / 1024,
+                _ => {
+                    return Err(AppError::InvalidConfig(
+                        "VM memory unit is not supported".to_string(),
+                    ))
                 }
-            }
-
-            // Update <currentMemory> tag
-            if let Some(start) = new_xml.find("<currentMemory") {
-                if let Some(end) = new_xml[start..].find("</currentMemory>") {
-                    let before = &new_xml[..start];
-                    let after = &new_xml[start + end + 16..];
-                    new_xml = format!("{}<currentMemory unit='KiB'>{}</currentMemory>{}", before, memory_kb, after);
-                }
-            }
+            };
+            let new_xml = rewrite_domain_memory(&xml, &memory_value.to_string())?;
 
             // Redefine the domain with updated XML
             Domain::define_xml(conn, &new_xml)
                 .map_err(|e| AppError::Other(format!("Failed to update VM memory: {}", e)))?;
         }
 
-        tracing::info!("Successfully set memory to {} MB for VM {}", memory_mb, vm_id);
+        tracing::info!(
+            "Successfully set memory to {} MB for VM {}",
+            memory_mb,
+            vm_id
+        );
         Ok(())
     }
 
     /// Set the CPU topology for a VM (sockets, cores, threads)
     pub fn set_cpu_topology(
-        libvirt: &LibvirtService,
+        libvirt: &impl ConnectionProvider,
         vm_id: &str,
         sockets: u32,
         cores: u32,
@@ -4412,98 +4702,49 @@ impl VmService {
 
         if is_running {
             return Err(AppError::InvalidConfig(
-                "Cannot change CPU topology while VM is running. Stop the VM first.".to_string()
+                "Cannot change CPU topology while VM is running. Stop the VM first.".to_string(),
             ));
         }
 
-        let total_vcpus = sockets * cores * threads;
+        let total_vcpus = sockets
+            .checked_mul(cores)
+            .and_then(|value| value.checked_mul(threads))
+            .ok_or_else(|| AppError::InvalidConfig("CPU topology is too large".to_string()))?;
         let xml = domain.get_xml_desc(0).map_err(map_libvirt_error)?;
-        let mut new_xml = xml.clone();
-
-        // Update vcpu count to match topology
-        if let Some(start) = new_xml.find("<vcpu") {
-            if let Some(end) = new_xml[start..].find("</vcpu>") {
-                let before = &new_xml[..start];
-                let after = &new_xml[start + end + 7..];
-                new_xml = format!("{}<vcpu placement='static'>{}</vcpu>{}", before, total_vcpus, after);
-            }
-        }
-
-        // Update or add CPU topology
-        let topology_xml = format!(
-            r#"<cpu mode='host-passthrough' check='none'>
-    <topology sockets='{}' cores='{}' threads='{}'/>
-  </cpu>"#,
-            sockets, cores, threads
-        );
-
-        if let Some(start) = new_xml.find("<cpu") {
-            // Replace existing CPU element
-            if let Some(end) = new_xml[start..].find("</cpu>") {
-                let before = &new_xml[..start];
-                let after = &new_xml[start + end + 6..];
-                new_xml = format!("{}{}{}", before, topology_xml, after);
-            }
-        } else {
-            // Insert CPU element after vcpu
-            if let Some(start) = new_xml.find("</vcpu>") {
-                let before = &new_xml[..start + 7];
-                let after = &new_xml[start + 7..];
-                new_xml = format!("{}\n  {}{}", before, topology_xml, after);
-            }
-        }
+        let new_xml = rewrite_first_text_element(&xml, "vcpu", &total_vcpus.to_string())?;
+        let new_xml = rewrite_cpu_topology(&new_xml, sockets, cores, threads)?;
 
         // Redefine the domain with updated XML
         Domain::define_xml(conn, &new_xml)
             .map_err(|e| AppError::Other(format!("Failed to update CPU topology: {}", e)))?;
 
-        tracing::info!("Successfully set CPU topology to {}s/{}c/{}t for VM {}", sockets, cores, threads, vm_id);
+        tracing::info!(
+            "Successfully set CPU topology to {}s/{}c/{}t for VM {}",
+            sockets,
+            cores,
+            threads,
+            vm_id
+        );
         Ok(())
     }
 
     /// Get the current CPU model configuration for a VM
-    pub fn get_cpu_model(libvirt: &LibvirtService, vm_id: &str) -> Result<CpuModelConfig, AppError> {
+    pub fn get_cpu_model(
+        libvirt: &impl ConnectionProvider,
+        vm_id: &str,
+    ) -> Result<CpuModelConfig, AppError> {
         let conn = libvirt.get_connection();
         let domain = Domain::lookup_by_uuid_string(conn, vm_id)
             .map_err(|_| AppError::VmNotFound(vm_id.to_string()))?;
 
         let xml = domain.get_xml_desc(0).map_err(map_libvirt_error)?;
 
-        // Extract CPU mode
-        let mode = if let Some(cpu_start) = xml.find("<cpu") {
-            let cpu_section = &xml[cpu_start..];
-            if let Some(mode_start) = cpu_section.find("mode=") {
-                let after_mode = &cpu_section[mode_start + 6..];
-                let quote_char = cpu_section.chars().nth(mode_start + 5).unwrap_or('\'');
-                if let Some(mode_end) = after_mode.find(quote_char) {
-                    after_mode[..mode_end].to_string()
-                } else {
-                    "host-passthrough".to_string()
-                }
-            } else {
-                "host-passthrough".to_string()
-            }
-        } else {
-            "host-passthrough".to_string()
-        };
+        let mode = first_element_attribute(&xml, "domain", "cpu", "mode")?
+            .unwrap_or_else(|| "host-passthrough".to_string());
 
         // Extract CPU model name (for custom mode)
         let model = if mode == "custom" {
-            if let Some(model_start) = xml.find("<model") {
-                let model_section = &xml[model_start..];
-                if let Some(content_start) = model_section.find('>') {
-                    let content = &model_section[content_start + 1..];
-                    if let Some(content_end) = content.find("</model>") {
-                        Some(content[..content_end].trim().to_string())
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                }
-            } else {
-                None
-            }
+            first_element_text(&xml, "domain", "model")?.map(|value| value.trim().to_string())
         } else {
             None
         };
@@ -4513,7 +4754,7 @@ impl VmService {
 
     /// Set the CPU model for a VM
     pub fn set_cpu_model(
-        libvirt: &LibvirtService,
+        libvirt: &impl ConnectionProvider,
         vm_id: &str,
         mode: &str,
         model: Option<&str>,
@@ -4525,84 +4766,16 @@ impl VmService {
         let info = domain.get_info().map_err(map_libvirt_error)?;
         if info.state == sys::VIR_DOMAIN_RUNNING {
             return Err(AppError::InvalidConfig(
-                "Cannot change CPU model while VM is running. Stop the VM first.".to_string()
+                "Cannot change CPU model while VM is running. Stop the VM first.".to_string(),
             ));
         }
 
         let mut xml = domain.get_xml_desc(0).map_err(map_libvirt_error)?;
 
-        // Extract existing topology if present
-        let topology_xml = if let Some(topo_start) = xml.find("<topology") {
-            let topo_section = &xml[topo_start..];
-            if let Some(topo_end) = topo_section.find("/>") {
-                Some(topo_section[..topo_end + 2].to_string())
-            } else if let Some(topo_end) = topo_section.find("</topology>") {
-                Some(topo_section[..topo_end + 11].to_string())
-            } else {
-                None
-            }
+        if first_element_fragment(&xml, "cpu")?.is_some() {
+            xml = rewrite_cpu_model(&xml, mode, model)?;
         } else {
-            None
-        };
-
-        // Build new CPU element
-        let new_cpu_xml = match mode {
-            "host-passthrough" => {
-                if let Some(topo) = topology_xml {
-                    format!(
-                        "<cpu mode='host-passthrough' check='none'>\n    {}\n  </cpu>",
-                        topo
-                    )
-                } else {
-                    "<cpu mode='host-passthrough' check='none'/>".to_string()
-                }
-            }
-            "host-model" => {
-                if let Some(topo) = topology_xml {
-                    format!(
-                        "<cpu mode='host-model' check='none'>\n    {}\n  </cpu>",
-                        topo
-                    )
-                } else {
-                    "<cpu mode='host-model' check='none'/>".to_string()
-                }
-            }
-            "custom" => {
-                let model_name = model.unwrap_or("qemu64");
-                if let Some(topo) = topology_xml {
-                    format!(
-                        "<cpu mode='custom' match='exact' check='none'>\n    <model fallback='forbid'>{}</model>\n    {}\n  </cpu>",
-                        model_name, topo
-                    )
-                } else {
-                    format!(
-                        "<cpu mode='custom' match='exact' check='none'>\n    <model fallback='forbid'>{}</model>\n  </cpu>",
-                        model_name
-                    )
-                }
-            }
-            _ => {
-                return Err(AppError::InvalidConfig(
-                    format!("Invalid CPU mode '{}'. Valid modes: host-passthrough, host-model, custom", mode)
-                ));
-            }
-        };
-
-        // Replace or insert CPU element
-        if let Some(cpu_start) = xml.find("<cpu") {
-            if let Some(cpu_end_offset) = xml[cpu_start..].find("</cpu>") {
-                let cpu_end = cpu_start + cpu_end_offset + 6;
-                xml = format!("{}{}{}", &xml[..cpu_start], new_cpu_xml, &xml[cpu_end..]);
-            } else if let Some(cpu_end_offset) = xml[cpu_start..].find("/>") {
-                let cpu_end = cpu_start + cpu_end_offset + 2;
-                xml = format!("{}{}{}", &xml[..cpu_start], new_cpu_xml, &xml[cpu_end..]);
-            }
-        } else {
-            // Insert after </vcpu>
-            if let Some(vcpu_end) = xml.find("</vcpu>") {
-                let insert_pos = vcpu_end + 7;
-                xml = format!("{}\n  {}{}", &xml[..insert_pos], new_cpu_xml, &xml[insert_pos..]);
-            }
+            xml = insert_cpu_after_vcpu(&xml, mode, model)?;
         }
 
         // Redefine the domain
@@ -4614,9 +4787,11 @@ impl VmService {
     }
 
     /// Get available CPU models from libvirt capabilities
-    pub fn get_available_cpu_models(_libvirt: &LibvirtService) -> Result<Vec<String>, AppError> {
+    pub fn get_available_cpu_models(
+        _libvirt: &impl ConnectionProvider,
+    ) -> Result<Vec<String>, AppError> {
         // Try to get CPU models from capabilities
-        let output = std::process::Command::new("virsh")
+        let output = Self::virsh_command(_libvirt.get_connection())?
             .args(["cpu-models", "x86_64"])
             .output()
             .map_err(|e| AppError::Other(format!("Failed to run virsh: {}", e)))?;
@@ -4655,7 +4830,7 @@ impl VmService {
 
     /// Get current CPU pinning configuration for a VM
     pub fn get_cpu_pinning(
-        libvirt: &LibvirtService,
+        libvirt: &impl ConnectionProvider,
         vm_id: &str,
     ) -> Result<Vec<(u32, Vec<u32>)>, AppError> {
         let conn = libvirt.get_connection();
@@ -4685,12 +4860,18 @@ impl VmService {
                         if let Some(vcpu_start) = pin_element.find("vcpu='") {
                             let vcpu_val_start = vcpu_start + 6;
                             if let Some(vcpu_end) = pin_element[vcpu_val_start..].find("'") {
-                                if let Ok(vcpu) = pin_element[vcpu_val_start..vcpu_val_start + vcpu_end].parse::<u32>() {
+                                if let Ok(vcpu) = pin_element
+                                    [vcpu_val_start..vcpu_val_start + vcpu_end]
+                                    .parse::<u32>()
+                                {
                                     // Extract cpuset
                                     if let Some(cpuset_start) = pin_element.find("cpuset='") {
                                         let cpuset_val_start = cpuset_start + 8;
-                                        if let Some(cpuset_end) = pin_element[cpuset_val_start..].find("'") {
-                                            let cpuset_str = &pin_element[cpuset_val_start..cpuset_val_start + cpuset_end];
+                                        if let Some(cpuset_end) =
+                                            pin_element[cpuset_val_start..].find("'")
+                                        {
+                                            let cpuset_str = &pin_element
+                                                [cpuset_val_start..cpuset_val_start + cpuset_end];
                                             let cpus = Self::parse_cpuset(cpuset_str);
                                             pinnings.push((vcpu, cpus));
                                         }
@@ -4718,7 +4899,9 @@ impl VmService {
                 // Range like "0-3"
                 let bounds: Vec<&str> = part.split('-').collect();
                 if bounds.len() == 2 {
-                    if let (Ok(start), Ok(end)) = (bounds[0].parse::<u32>(), bounds[1].parse::<u32>()) {
+                    if let (Ok(start), Ok(end)) =
+                        (bounds[0].parse::<u32>(), bounds[1].parse::<u32>())
+                    {
                         for i in start..=end {
                             cpus.push(i);
                         }
@@ -4773,7 +4956,7 @@ impl VmService {
 
     /// Set CPU pinning for a specific vCPU
     pub fn set_cpu_pin(
-        libvirt: &LibvirtService,
+        libvirt: &impl ConnectionProvider,
         vm_id: &str,
         vcpu: u32,
         host_cpus: Vec<u32>,
@@ -4787,71 +4970,20 @@ impl VmService {
 
         let cpuset = Self::format_cpuset(&host_cpus);
         if cpuset.is_empty() {
-            return Err(AppError::InvalidConfig("No host CPUs specified for pinning".to_string()));
+            return Err(AppError::InvalidConfig(
+                "No host CPUs specified for pinning".to_string(),
+            ));
         }
 
-        tracing::info!("Setting CPU pin: vCPU {} -> host CPUs {} for VM {}", vcpu, cpuset, vm_id);
+        tracing::info!(
+            "Setting CPU pin: vCPU {} -> host CPUs {} for VM {}",
+            vcpu,
+            cpuset,
+            vm_id
+        );
 
         let xml = domain.get_xml_desc(0).map_err(map_libvirt_error)?;
-        let mut new_xml = xml.clone();
-
-        let vcpupin_xml = format!("<vcpupin vcpu='{}' cpuset='{}'/>", vcpu, cpuset);
-
-        // Check if cputune section exists
-        if let Some(cputune_start) = new_xml.find("<cputune>") {
-            // Check if this vcpu already has a pin
-            let vcpu_pattern = format!("vcpu='{}'", vcpu);
-            if let Some(cputune_end_pos) = new_xml[cputune_start..].find("</cputune>") {
-                let cputune_section = &new_xml[cputune_start..cputune_start + cputune_end_pos];
-
-                if cputune_section.contains(&vcpu_pattern) {
-                    // Replace existing vcpupin for this vcpu
-                    let mut search_start = cputune_start;
-                    while let Some(pin_start) = new_xml[search_start..].find("<vcpupin") {
-                        let pin_abs_start = search_start + pin_start;
-                        if let Some(pin_end) = new_xml[pin_abs_start..].find("/>") {
-                            let pin_element = &new_xml[pin_abs_start..pin_abs_start + pin_end + 2];
-                            if pin_element.contains(&vcpu_pattern) {
-                                let before = &new_xml[..pin_abs_start];
-                                let after = &new_xml[pin_abs_start + pin_end + 2..];
-                                new_xml = format!("{}{}{}", before, vcpupin_xml, after);
-                                break;
-                            }
-                            search_start = pin_abs_start + pin_end + 2;
-                        } else {
-                            break;
-                        }
-                    }
-                } else {
-                    // Add new vcpupin before </cputune>
-                    let insert_pos = cputune_start + cputune_end_pos;
-                    let before = &new_xml[..insert_pos];
-                    let after = &new_xml[insert_pos..];
-                    new_xml = format!("{}    {}\n  {}", before, vcpupin_xml, after);
-                }
-            }
-        } else {
-            // Create cputune section
-            let cputune_section = format!(
-                "\n  <cputune>\n    {}\n  </cputune>",
-                vcpupin_xml
-            );
-
-            // Insert after </vcpu> or </cpu>
-            if let Some(pos) = new_xml.find("</cpu>") {
-                let insert_pos = pos + 6;
-                let before = &new_xml[..insert_pos];
-                let after = &new_xml[insert_pos..];
-                new_xml = format!("{}{}{}", before, cputune_section, after);
-            } else if let Some(pos) = new_xml.find("</vcpu>") {
-                let insert_pos = pos + 7;
-                let before = &new_xml[..insert_pos];
-                let after = &new_xml[insert_pos..];
-                new_xml = format!("{}{}{}", before, cputune_section, after);
-            } else {
-                return Err(AppError::InvalidConfig("Cannot find suitable location for cputune in VM XML".to_string()));
-            }
-        }
+        let new_xml = crate::utils::xml::rewrite_vcpu_pin(&xml, vcpu, Some(&cpuset))?;
 
         // Apply changes
         // Note: For running VMs, ideally we'd use virDomainPinVcpu for live pinning
@@ -4859,13 +4991,18 @@ impl VmService {
         Domain::define_xml(conn, &new_xml)
             .map_err(|e| AppError::Other(format!("Failed to update CPU pinning: {}", e)))?;
 
-        tracing::info!("Successfully set CPU pin for vCPU {} to {} for VM {}", vcpu, cpuset, vm_id);
+        tracing::info!(
+            "Successfully set CPU pin for vCPU {} to {} for VM {}",
+            vcpu,
+            cpuset,
+            vm_id
+        );
         Ok(())
     }
 
     /// Clear CPU pinning for a specific vCPU
     pub fn clear_cpu_pin(
-        libvirt: &LibvirtService,
+        libvirt: &impl ConnectionProvider,
         vm_id: &str,
         vcpu: u32,
     ) -> Result<(), AppError> {
@@ -4876,81 +5013,30 @@ impl VmService {
         let is_running = domain.is_active().map_err(map_libvirt_error)?;
         if is_running {
             return Err(AppError::InvalidConfig(
-                "Cannot modify CPU pinning while VM is running. Stop the VM first.".to_string()
+                "Cannot modify CPU pinning while VM is running. Stop the VM first.".to_string(),
             ));
         }
 
         tracing::info!("Clearing CPU pin for vCPU {} on VM {}", vcpu, vm_id);
 
         let xml = domain.get_xml_desc(0).map_err(map_libvirt_error)?;
-        let mut new_xml = xml.clone();
-
-        // Find and remove the vcpupin element for this vcpu
-        let vcpu_pattern = format!("vcpu='{}'", vcpu);
-
-        if let Some(cputune_start) = new_xml.find("<cputune>") {
-            let mut search_start = cputune_start;
-            while let Some(pin_start) = new_xml[search_start..].find("<vcpupin") {
-                let pin_abs_start = search_start + pin_start;
-                if let Some(pin_end) = new_xml[pin_abs_start..].find("/>") {
-                    let pin_element = &new_xml[pin_abs_start..pin_abs_start + pin_end + 2];
-                    if pin_element.contains(&vcpu_pattern) {
-                        // Remove this vcpupin element (including any preceding whitespace)
-                        let mut remove_start = pin_abs_start;
-                        // Look back for whitespace/newline
-                        while remove_start > 0 {
-                            let prev_char = new_xml.chars().nth(remove_start - 1);
-                            if prev_char == Some(' ') || prev_char == Some('\t') || prev_char == Some('\n') {
-                                remove_start -= 1;
-                            } else {
-                                break;
-                            }
-                        }
-                        let before = &new_xml[..remove_start];
-                        let after = &new_xml[pin_abs_start + pin_end + 2..];
-                        new_xml = format!("{}{}", before, after);
-                        break;
-                    }
-                    search_start = pin_abs_start + pin_end + 2;
-                } else {
-                    break;
-                }
-            }
-
-            // Check if cputune section is now empty
-            if let Some(new_cputune_start) = new_xml.find("<cputune>") {
-                if let Some(new_cputune_end) = new_xml[new_cputune_start..].find("</cputune>") {
-                    let cputune_content = &new_xml[new_cputune_start + 9..new_cputune_start + new_cputune_end];
-                    if cputune_content.trim().is_empty() {
-                        // Remove empty cputune section
-                        let mut remove_start = new_cputune_start;
-                        while remove_start > 0 {
-                            let prev_char = new_xml.chars().nth(remove_start - 1);
-                            if prev_char == Some(' ') || prev_char == Some('\t') || prev_char == Some('\n') {
-                                remove_start -= 1;
-                            } else {
-                                break;
-                            }
-                        }
-                        let before = &new_xml[..remove_start];
-                        let after = &new_xml[new_cputune_start + new_cputune_end + 10..];
-                        new_xml = format!("{}{}", before, after);
-                    }
-                }
-            }
-        }
+        let new_xml = crate::utils::xml::rewrite_vcpu_pin(&xml, vcpu, None)?;
 
         Domain::define_xml(conn, &new_xml)
             .map_err(|e| AppError::Other(format!("Failed to clear CPU pinning: {}", e)))?;
 
-        tracing::info!("Successfully cleared CPU pin for vCPU {} on VM {}", vcpu, vm_id);
+        tracing::info!(
+            "Successfully cleared CPU pin for vCPU {} on VM {}",
+            vcpu,
+            vm_id
+        );
         Ok(())
     }
 
     /// Attach a panic notifier device to a VM
     /// This allows the host to be notified when the guest kernel panics
     pub fn attach_panic_notifier(
-        libvirt: &LibvirtService,
+        libvirt: &impl ConnectionProvider,
         vm_id: &str,
         model: &str,
     ) -> Result<(), AppError> {
@@ -4965,7 +5051,7 @@ impl VmService {
         // Panic notifier can only be attached to stopped VMs
         if is_running {
             return Err(AppError::InvalidConfig(
-                "Cannot add panic notifier to running VM. Please stop the VM first.".to_string()
+                "Cannot add panic notifier to running VM. Please stop the VM first.".to_string(),
             ));
         }
 
@@ -4985,7 +5071,8 @@ impl VmService {
             model
         );
 
-        domain.attach_device_flags(&panic_xml, sys::VIR_DOMAIN_AFFECT_CONFIG)
+        domain
+            .attach_device_flags(&panic_xml, sys::VIR_DOMAIN_AFFECT_CONFIG)
             .map_err(map_libvirt_error)?;
 
         tracing::info!("Successfully attached panic notifier to VM {}", vm_id);
@@ -4995,7 +5082,7 @@ impl VmService {
     /// Attach a VirtIO VSOCK device to a VM
     /// VSOCK allows fast guest-host communication without network configuration
     pub fn attach_vsock(
-        libvirt: &LibvirtService,
+        libvirt: &impl ConnectionProvider,
         vm_id: &str,
         cid: u32,
     ) -> Result<(), AppError> {
@@ -5031,16 +5118,15 @@ impl VmService {
             sys::VIR_DOMAIN_AFFECT_CONFIG
         };
 
-        domain.attach_device_flags(&vsock_xml, flags)
-            .map_err(|e| {
-                if is_running {
-                    AppError::InvalidConfig(
-                        "Cannot add VSOCK to running VM. Please stop the VM first.".to_string()
-                    )
-                } else {
-                    map_libvirt_error(e)
-                }
-            })?;
+        domain.attach_device_flags(&vsock_xml, flags).map_err(|e| {
+            if is_running {
+                AppError::InvalidConfig(
+                    "Cannot add VSOCK to running VM. Please stop the VM first.".to_string(),
+                )
+            } else {
+                map_libvirt_error(e)
+            }
+        })?;
 
         tracing::info!("Successfully attached VSOCK (CID: {}) to VM {}", cid, vm_id);
         Ok(())
@@ -5048,7 +5134,7 @@ impl VmService {
 
     /// Attach a parallel port device to a VM
     pub fn attach_parallel(
-        libvirt: &LibvirtService,
+        libvirt: &impl ConnectionProvider,
         vm_id: &str,
         target_port: u32,
     ) -> Result<(), AppError> {
@@ -5063,7 +5149,7 @@ impl VmService {
         // Parallel ports can only be attached to stopped VMs
         if is_running {
             return Err(AppError::InvalidConfig(
-                "Cannot add parallel port to running VM. Please stop the VM first.".to_string()
+                "Cannot add parallel port to running VM. Please stop the VM first.".to_string(),
             ));
         }
 
@@ -5075,17 +5161,22 @@ impl VmService {
             target_port
         );
 
-        domain.attach_device_flags(&parallel_xml, sys::VIR_DOMAIN_AFFECT_CONFIG)
+        domain
+            .attach_device_flags(&parallel_xml, sys::VIR_DOMAIN_AFFECT_CONFIG)
             .map_err(map_libvirt_error)?;
 
-        tracing::info!("Successfully attached parallel port {} to VM {}", target_port, vm_id);
+        tracing::info!(
+            "Successfully attached parallel port {} to VM {}",
+            target_port,
+            vm_id
+        );
         Ok(())
     }
 
     /// Attach a smartcard reader device to a VM
     /// mode: passthrough (host reader) or emulated (software emulation)
     pub fn attach_smartcard(
-        libvirt: &LibvirtService,
+        libvirt: &impl ConnectionProvider,
         vm_id: &str,
         mode: &str,
     ) -> Result<(), AppError> {
@@ -5100,7 +5191,7 @@ impl VmService {
         // Smartcard can only be attached to stopped VMs
         if is_running {
             return Err(AppError::InvalidConfig(
-                "Cannot add smartcard to running VM. Please stop the VM first.".to_string()
+                "Cannot add smartcard to running VM. Please stop the VM first.".to_string(),
             ));
         }
 
@@ -5119,7 +5210,8 @@ impl VmService {
         let smartcard_xml = if mode == "passthrough" {
             r#"<smartcard mode='passthrough' type='spicevmc'>
   <address type='ccid' controller='0' slot='0'/>
-</smartcard>"#.to_string()
+</smartcard>"#
+                .to_string()
         } else {
             // Emulated mode with NSS database
             r#"<smartcard mode='host-certificates'>
@@ -5128,10 +5220,12 @@ impl VmService {
   <certificate>cert3</certificate>
   <database>/etc/pki/nssdb</database>
   <address type='ccid' controller='0' slot='0'/>
-</smartcard>"#.to_string()
+</smartcard>"#
+                .to_string()
         };
 
-        domain.attach_device_flags(&smartcard_xml, sys::VIR_DOMAIN_AFFECT_CONFIG)
+        domain
+            .attach_device_flags(&smartcard_xml, sys::VIR_DOMAIN_AFFECT_CONFIG)
             .map_err(map_libvirt_error)?;
 
         tracing::info!("Successfully attached smartcard ({}) to VM {}", mode, vm_id);
@@ -5139,11 +5233,14 @@ impl VmService {
     }
 
     /// Get host NUMA topology information
-    pub fn get_host_numa_topology(libvirt: &LibvirtService) -> Result<Vec<crate::models::vm::HostNumaNode>, AppError> {
+    pub fn get_host_numa_topology(
+        libvirt: &impl ConnectionProvider,
+    ) -> Result<Vec<crate::models::vm::HostNumaNode>, AppError> {
         let conn = libvirt.get_connection();
 
         // Use virsh capabilities to get NUMA topology
-        let caps_xml = conn.get_capabilities()
+        let caps_xml = conn
+            .get_capabilities()
             .map_err(|e| AppError::LibvirtError(format!("Failed to get capabilities: {}", e)))?;
 
         let mut nodes = Vec::new();
@@ -5157,13 +5254,14 @@ impl VmService {
                 if let Some(id_start) = trimmed.find("id='") {
                     let id_str_start = id_start + 4;
                     if let Some(id_end) = trimmed[id_str_start..].find('\'') {
-                        if let Ok(id) = trimmed[id_str_start..id_str_start + id_end].parse::<u32>() {
+                        if let Ok(id) = trimmed[id_str_start..id_str_start + id_end].parse::<u32>()
+                        {
                             // Get CPUs and memory from nested elements
                             // For now, create a basic structure
                             nodes.push(crate::models::vm::HostNumaNode {
                                 id,
                                 cpus: Vec::new(), // Would need more parsing
-                                memory_mb: 0, // Would need more parsing
+                                memory_mb: 0,     // Would need more parsing
                             });
                         }
                     }
@@ -5178,31 +5276,34 @@ impl VmService {
                 for entry in entries.filter_map(|e| e.ok()) {
                     let name = entry.file_name();
                     let name_str = name.to_string_lossy();
-                    if name_str.starts_with("node") {
-                        if let Ok(id) = name_str[4..].parse::<u32>() {
+                    if let Some(node_id) = name_str.strip_prefix("node") {
+                        if let Ok(id) = node_id.parse::<u32>() {
                             // Read CPUs
                             let cpulist_path = entry.path().join("cpulist");
                             let cpus = if let Ok(cpulist) = std::fs::read_to_string(&cpulist_path) {
-                                Self::parse_cpu_list(&cpulist.trim())
+                                Self::parse_cpu_list(cpulist.trim())
                             } else {
                                 Vec::new()
                             };
 
                             // Read memory
                             let meminfo_path = entry.path().join("meminfo");
-                            let memory_mb = if let Ok(meminfo) = std::fs::read_to_string(&meminfo_path) {
-                                // Parse MemTotal line
-                                meminfo.lines()
-                                    .find(|l| l.contains("MemTotal:"))
-                                    .and_then(|l| {
-                                        l.split_whitespace().nth(3)
-                                            .and_then(|kb| kb.parse::<u64>().ok())
-                                    })
-                                    .map(|kb| kb / 1024)
-                                    .unwrap_or(0)
-                            } else {
-                                0
-                            };
+                            let memory_mb =
+                                if let Ok(meminfo) = std::fs::read_to_string(&meminfo_path) {
+                                    // Parse MemTotal line
+                                    meminfo
+                                        .lines()
+                                        .find(|l| l.contains("MemTotal:"))
+                                        .and_then(|l| {
+                                            l.split_whitespace()
+                                                .nth(3)
+                                                .and_then(|kb| kb.parse::<u64>().ok())
+                                        })
+                                        .map(|kb| kb / 1024)
+                                        .unwrap_or(0)
+                                } else {
+                                    0
+                                };
 
                             nodes.push(crate::models::vm::HostNumaNode {
                                 id,
@@ -5230,7 +5331,8 @@ impl VmService {
             if part.contains('-') {
                 let range: Vec<&str> = part.split('-').collect();
                 if range.len() == 2 {
-                    if let (Ok(start), Ok(end)) = (range[0].parse::<u32>(), range[1].parse::<u32>()) {
+                    if let (Ok(start), Ok(end)) = (range[0].parse::<u32>(), range[1].parse::<u32>())
+                    {
                         for cpu in start..=end {
                             cpus.push(cpu);
                         }
@@ -5244,42 +5346,22 @@ impl VmService {
     }
 
     /// Get VM NUMA configuration
-    pub fn get_vm_numa_config(libvirt: &LibvirtService, vm_id: &str) -> Result<Option<crate::models::vm::VmNumaConfig>, AppError> {
+    pub fn get_vm_numa_config(
+        libvirt: &impl ConnectionProvider,
+        vm_id: &str,
+    ) -> Result<Option<crate::models::vm::VmNumaConfig>, AppError> {
         let conn = libvirt.get_connection();
         let domain = Domain::lookup_by_uuid_string(conn, vm_id)
             .map_err(|_| AppError::VmNotFound(vm_id.to_string()))?;
 
-        let xml = domain.get_xml_desc(0)
-            .map_err(map_libvirt_error)?;
+        let xml = domain.get_xml_desc(0).map_err(map_libvirt_error)?;
 
-        // Parse numatune section
-        let mut mode = "strict".to_string();
-        let mut nodeset: Option<String> = None;
-        let mut in_numatune = false;
-
-        for line in xml.lines() {
-            let trimmed = line.trim();
-            if trimmed == "<numatune>" {
-                in_numatune = true;
-            } else if trimmed == "</numatune>" {
-                in_numatune = false;
-            } else if in_numatune && trimmed.starts_with("<memory") {
-                // Parse mode
-                if let Some(mode_start) = trimmed.find("mode='") {
-                    let start = mode_start + 6;
-                    if let Some(end) = trimmed[start..].find('\'') {
-                        mode = trimmed[start..start + end].to_string();
-                    }
-                }
-                // Parse nodeset
-                if let Some(nodeset_start) = trimmed.find("nodeset='") {
-                    let start = nodeset_start + 9;
-                    if let Some(end) = trimmed[start..].find('\'') {
-                        nodeset = Some(trimmed[start..start + end].to_string());
-                    }
-                }
-            }
-        }
+        let Some(numatune_xml) = first_element_fragment(&xml, "numatune")? else {
+            return Ok(None);
+        };
+        let mode = first_element_attribute(&numatune_xml, "numatune", "memory", "mode")?
+            .unwrap_or_else(|| "strict".to_string());
+        let nodeset = first_element_attribute(&numatune_xml, "numatune", "memory", "nodeset")?;
 
         // Check if any NUMA config exists
         if nodeset.is_none() {
@@ -5294,7 +5376,11 @@ impl VmService {
     }
 
     /// Set VM NUMA configuration
-    pub fn set_vm_numa_config(libvirt: &LibvirtService, vm_id: &str, config: crate::models::vm::VmNumaConfig) -> Result<(), AppError> {
+    pub fn set_vm_numa_config(
+        libvirt: &impl ConnectionProvider,
+        vm_id: &str,
+        config: crate::models::vm::VmNumaConfig,
+    ) -> Result<(), AppError> {
         let conn = libvirt.get_connection();
         let domain = Domain::lookup_by_uuid_string(conn, vm_id)
             .map_err(|_| AppError::VmNotFound(vm_id.to_string()))?;
@@ -5302,7 +5388,8 @@ impl VmService {
         let is_running = domain.is_active().map_err(map_libvirt_error)?;
         if is_running {
             return Err(AppError::InvalidConfig(
-                "Cannot modify NUMA configuration while VM is running. Please stop the VM first.".to_string()
+                "Cannot modify NUMA configuration while VM is running. Please stop the VM first."
+                    .to_string(),
             ));
         }
 
@@ -5315,56 +5402,37 @@ impl VmService {
             )));
         }
 
-        // Get current XML
-        let xml = domain.get_xml_desc(0)
-            .map_err(map_libvirt_error)?;
-
-        // Build numatune XML
+        // Build the owned NUMA subtree. Escaping keeps user-provided topology values from
+        // becoming XML markup when the definition is redefined.
+        let xml = domain.get_xml_desc(0).map_err(map_libvirt_error)?;
         let nodeset_str = config.nodeset.as_deref().unwrap_or("0");
         let numatune_xml = format!(
-            r#"<numatune>
-    <memory mode='{}' nodeset='{}'/>
-  </numatune>"#,
-            config.mode, nodeset_str
+            "<numatune><memory mode='{}' nodeset='{}'/></numatune>",
+            escaped_attribute(&config.mode, "NUMA mode")?,
+            escaped_attribute(nodeset_str, "NUMA nodeset")?,
         );
-
-        // Replace or add numatune section
-        let new_xml = if xml.contains("<numatune>") {
-            // Replace existing numatune
-            let mut result = String::new();
-            let mut skip_until_close = false;
-            for line in xml.lines() {
-                let trimmed = line.trim();
-                if trimmed == "<numatune>" {
-                    skip_until_close = true;
-                    result.push_str("  ");
-                    result.push_str(&numatune_xml);
-                    result.push('\n');
-                } else if trimmed == "</numatune>" {
-                    skip_until_close = false;
-                } else if !skip_until_close {
-                    result.push_str(line);
-                    result.push('\n');
-                }
-            }
-            result
-        } else {
-            // Add numatune before <devices>
-            xml.replace("<devices>", &format!("{}\n  <devices>", numatune_xml))
-        };
+        let new_xml = replace_direct_child(&xml, "domain", "numatune", Some(&numatune_xml))?;
 
         // Undefine and redefine the domain with new XML
         domain.undefine().map_err(map_libvirt_error)?;
-        Domain::define_xml(conn, &new_xml)
-            .map_err(|e| AppError::LibvirtError(format!("Failed to redefine VM with NUMA config: {}", e)))?;
+        Domain::define_xml(conn, &new_xml).map_err(|e| {
+            AppError::LibvirtError(format!("Failed to redefine VM with NUMA config: {}", e))
+        })?;
 
-        tracing::info!("Successfully set NUMA config for VM {}: mode={}, nodeset={:?}",
-                      vm_id, config.mode, config.nodeset);
+        tracing::info!(
+            "Successfully set NUMA config for VM {}: mode={}, nodeset={:?}",
+            vm_id,
+            config.mode,
+            config.nodeset
+        );
         Ok(())
     }
 
     /// Clear VM NUMA configuration
-    pub fn clear_vm_numa_config(libvirt: &LibvirtService, vm_id: &str) -> Result<(), AppError> {
+    pub fn clear_vm_numa_config(
+        libvirt: &impl ConnectionProvider,
+        vm_id: &str,
+    ) -> Result<(), AppError> {
         let conn = libvirt.get_connection();
         let domain = Domain::lookup_by_uuid_string(conn, vm_id)
             .map_err(|_| AppError::VmNotFound(vm_id.to_string()))?;
@@ -5372,37 +5440,17 @@ impl VmService {
         let is_running = domain.is_active().map_err(map_libvirt_error)?;
         if is_running {
             return Err(AppError::InvalidConfig(
-                "Cannot modify NUMA configuration while VM is running. Please stop the VM first.".to_string()
+                "Cannot modify NUMA configuration while VM is running. Please stop the VM first."
+                    .to_string(),
             ));
         }
 
-        // Get current XML
-        let xml = domain.get_xml_desc(0)
-            .map_err(map_libvirt_error)?;
-
-        // Remove numatune section if it exists
-        if !xml.contains("<numatune>") {
-            return Ok(()); // Nothing to clear
-        }
-
-        // Remove numatune section
-        let mut result = String::new();
-        let mut skip_until_close = false;
-        for line in xml.lines() {
-            let trimmed = line.trim();
-            if trimmed == "<numatune>" {
-                skip_until_close = true;
-            } else if trimmed == "</numatune>" {
-                skip_until_close = false;
-            } else if !skip_until_close {
-                result.push_str(line);
-                result.push('\n');
-            }
-        }
+        let xml = domain.get_xml_desc(0).map_err(map_libvirt_error)?;
+        let new_xml = replace_direct_child(&xml, "domain", "numatune", None)?;
 
         // Undefine and redefine the domain with new XML
         domain.undefine().map_err(map_libvirt_error)?;
-        Domain::define_xml(conn, &result)
+        Domain::define_xml(conn, &new_xml)
             .map_err(|e| AppError::LibvirtError(format!("Failed to redefine VM: {}", e)))?;
 
         tracing::info!("Successfully cleared NUMA config for VM {}", vm_id);
@@ -5412,7 +5460,7 @@ impl VmService {
     /// Migrate a VM to another host
     /// Supports both live (running) and offline (stopped) migration
     pub fn migrate_vm(
-        libvirt: &LibvirtService,
+        libvirt: &impl ConnectionProvider,
         vm_id: &str,
         dest_uri: &str,
         live: bool,
@@ -5425,16 +5473,26 @@ impl VmService {
         let vm_name = domain.get_name().map_err(map_libvirt_error)?;
         let is_running = domain.is_active().map_err(map_libvirt_error)?;
 
-        tracing::info!("Starting {} migration of VM {} to {}",
-                      if live { "live" } else { "offline" }, vm_name, dest_uri);
+        tracing::info!(
+            "Starting {} migration of VM {} to {}",
+            if live { "live" } else { "offline" },
+            vm_name,
+            dest_uri
+        );
 
         // Connect to destination
-        let dest_conn = virt::connect::Connect::open(Some(dest_uri))
-            .map_err(|e| AppError::LibvirtError(format!("Failed to connect to destination {}: {}", dest_uri, e)))?;
+        let dest_conn = virt::connect::Connect::open(Some(dest_uri)).map_err(|e| {
+            AppError::LibvirtError(format!(
+                "Failed to connect to destination {}: {}",
+                dest_uri, e
+            ))
+        })?;
 
         if live && is_running {
             // Live migration for running VMs
-            let mut flags = sys::VIR_MIGRATE_LIVE | sys::VIR_MIGRATE_PERSIST_DEST | sys::VIR_MIGRATE_UNDEFINE_SOURCE;
+            let mut flags = sys::VIR_MIGRATE_LIVE
+                | sys::VIR_MIGRATE_PERSIST_DEST
+                | sys::VIR_MIGRATE_UNDEFINE_SOURCE;
 
             if unsafe_migration {
                 // Allow migration even with CPU model differences
@@ -5442,23 +5500,27 @@ impl VmService {
             }
 
             // Perform live migration
-            domain.migrate(&dest_conn, flags, None, None, 0)
+            domain
+                .migrate(&dest_conn, flags, None, None, 0)
                 .map_err(|e| AppError::LibvirtError(format!("Live migration failed: {}", e)))?;
 
             tracing::info!("Live migration of VM {} completed successfully", vm_name);
         } else {
             // Offline migration for stopped VMs
             // Get the XML definition
-            let xml = domain.get_xml_desc(sys::VIR_DOMAIN_XML_INACTIVE)
+            let xml = domain
+                .get_xml_desc(sys::VIR_DOMAIN_XML_INACTIVE)
                 .map_err(map_libvirt_error)?;
 
             // Define on destination
-            Domain::define_xml(&dest_conn, &xml)
-                .map_err(|e| AppError::LibvirtError(format!("Failed to define VM on destination: {}", e)))?;
+            Domain::define_xml(&dest_conn, &xml).map_err(|e| {
+                AppError::LibvirtError(format!("Failed to define VM on destination: {}", e))
+            })?;
 
             // Undefine on source (after successful define on destination)
-            domain.undefine()
-                .map_err(|e| AppError::LibvirtError(format!("Failed to undefine VM on source: {}", e)))?;
+            domain.undefine().map_err(|e| {
+                AppError::LibvirtError(format!("Failed to undefine VM on source: {}", e))
+            })?;
 
             tracing::info!("Offline migration of VM {} completed successfully", vm_name);
         }
@@ -5467,7 +5529,10 @@ impl VmService {
     }
 
     /// Get migration capabilities and estimated time
-    pub fn get_migration_info(libvirt: &LibvirtService, vm_id: &str) -> Result<MigrationInfo, AppError> {
+    pub fn get_migration_info(
+        libvirt: &impl ConnectionProvider,
+        vm_id: &str,
+    ) -> Result<MigrationInfo, AppError> {
         let conn = libvirt.get_connection();
         let domain = Domain::lookup_by_uuid_string(conn, vm_id)
             .map_err(|_| AppError::VmNotFound(vm_id.to_string()))?;
@@ -5503,58 +5568,22 @@ impl VmService {
     }
 
     /// Get direct kernel boot settings for a VM
-    pub fn get_kernel_boot_settings(libvirt: &LibvirtService, vm_id: &str) -> Result<KernelBootSettings, AppError> {
+    pub fn get_kernel_boot_settings(
+        libvirt: &impl ConnectionProvider,
+        vm_id: &str,
+    ) -> Result<KernelBootSettings, AppError> {
         let conn = libvirt.get_connection();
         let domain = Domain::lookup_by_uuid_string(conn, vm_id)
             .map_err(|_| AppError::VmNotFound(vm_id.to_string()))?;
 
         let xml = domain.get_xml_desc(0).map_err(map_libvirt_error)?;
 
-        // Extract kernel, initrd, cmdline, and dtb from OS section
-        let mut kernel_path: Option<String> = None;
-        let mut initrd_path: Option<String> = None;
-        let mut kernel_args: Option<String> = None;
-        let mut dtb_path: Option<String> = None;
-
-        // Find <kernel> element
-        if let Some(start) = xml.find("<kernel>") {
-            let start_pos = start + 8;
-            if let Some(end) = xml[start_pos..].find("</kernel>") {
-                kernel_path = Some(xml[start_pos..start_pos + end].to_string());
-            }
-        }
-
-        // Find <initrd> element
-        if let Some(start) = xml.find("<initrd>") {
-            let start_pos = start + 8;
-            if let Some(end) = xml[start_pos..].find("</initrd>") {
-                initrd_path = Some(xml[start_pos..start_pos + end].to_string());
-            }
-        }
-
-        // Find <cmdline> element
-        if let Some(start) = xml.find("<cmdline>") {
-            let start_pos = start + 9;
-            if let Some(end) = xml[start_pos..].find("</cmdline>") {
-                let args = xml[start_pos..start_pos + end].to_string();
-                // Unescape XML entities
-                let unescaped = args
-                    .replace("&amp;", "&")
-                    .replace("&lt;", "<")
-                    .replace("&gt;", ">")
-                    .replace("&quot;", "\"")
-                    .replace("&apos;", "'");
-                kernel_args = Some(unescaped);
-            }
-        }
-
-        // Find <dtb> element (for ARM systems)
-        if let Some(start) = xml.find("<dtb>") {
-            let start_pos = start + 5;
-            if let Some(end) = xml[start_pos..].find("</dtb>") {
-                dtb_path = Some(xml[start_pos..start_pos + end].to_string());
-            }
-        }
+        // Event-based readers decode entities and remain correct when libvirt changes
+        // indentation or attribute quote style.
+        let kernel_path = first_element_text(&xml, "domain", "kernel")?;
+        let initrd_path = first_element_text(&xml, "domain", "initrd")?;
+        let kernel_args = first_element_text(&xml, "domain", "cmdline")?;
+        let dtb_path = first_element_text(&xml, "domain", "dtb")?;
 
         let enabled = kernel_path.is_some() || initrd_path.is_some() || kernel_args.is_some();
 
@@ -5569,7 +5598,7 @@ impl VmService {
 
     /// Update direct kernel boot settings for a VM (VM must be shut off)
     pub fn set_kernel_boot_settings(
-        libvirt: &LibvirtService,
+        libvirt: &impl ConnectionProvider,
         vm_id: &str,
         settings: KernelBootSettings,
     ) -> Result<(), AppError> {
@@ -5580,7 +5609,7 @@ impl VmService {
         // Verify VM is not running
         if domain.is_active().map_err(map_libvirt_error)? {
             return Err(AppError::InvalidConfig(
-                "VM must be shut down to modify kernel boot settings".to_string()
+                "VM must be shut down to modify kernel boot settings".to_string(),
             ));
         }
 
@@ -5588,87 +5617,91 @@ impl VmService {
         if settings.enabled {
             if let Some(ref path) = settings.kernel_path {
                 if !path.is_empty() && !std::path::Path::new(path).exists() {
-                    return Err(AppError::InvalidConfig(
-                        format!("Kernel file not found: {}", path)
-                    ));
+                    return Err(AppError::InvalidConfig(format!(
+                        "Kernel file not found: {}",
+                        path
+                    )));
                 }
             }
             if let Some(ref path) = settings.initrd_path {
                 if !path.is_empty() && !std::path::Path::new(path).exists() {
-                    return Err(AppError::InvalidConfig(
-                        format!("Initrd file not found: {}", path)
-                    ));
+                    return Err(AppError::InvalidConfig(format!(
+                        "Initrd file not found: {}",
+                        path
+                    )));
                 }
             }
             if let Some(ref path) = settings.dtb_path {
                 if !path.is_empty() && !std::path::Path::new(path).exists() {
-                    return Err(AppError::InvalidConfig(
-                        format!("Device tree blob file not found: {}", path)
-                    ));
+                    return Err(AppError::InvalidConfig(format!(
+                        "Device tree blob file not found: {}",
+                        path
+                    )));
                 }
             }
         }
 
         let mut xml = domain.get_xml_desc(0).map_err(map_libvirt_error)?;
+        let kernel_element = if settings.enabled {
+            settings
+                .kernel_path
+                .as_deref()
+                .filter(|path| !path.is_empty())
+                .map(|path| {
+                    escaped_text(path, "kernel path")
+                        .map(|value| format!("<kernel>{value}</kernel>"))
+                })
+                .transpose()?
+        } else {
+            None
+        };
+        let initrd_element = if settings.enabled {
+            settings
+                .initrd_path
+                .as_deref()
+                .filter(|path| !path.is_empty())
+                .map(|path| {
+                    escaped_text(path, "initrd path")
+                        .map(|value| format!("<initrd>{value}</initrd>"))
+                })
+                .transpose()?
+        } else {
+            None
+        };
+        let cmdline_element = if settings.enabled {
+            settings
+                .kernel_args
+                .as_deref()
+                .filter(|args| !args.is_empty())
+                .map(|args| {
+                    escaped_text(args, "kernel command line")
+                        .map(|value| format!("<cmdline>{value}</cmdline>"))
+                })
+                .transpose()?
+        } else {
+            None
+        };
+        let dtb_element = if settings.enabled {
+            settings
+                .dtb_path
+                .as_deref()
+                .filter(|path| !path.is_empty())
+                .map(|path| {
+                    escaped_text(path, "device tree path")
+                        .map(|value| format!("<dtb>{value}</dtb>"))
+                })
+                .transpose()?
+        } else {
+            None
+        };
 
-        // Remove existing kernel boot elements
-        for tag in &["kernel", "initrd", "cmdline", "dtb"] {
-            let open_tag = format!("<{}>", tag);
-            let close_tag = format!("</{}>", tag);
-            while let Some(start) = xml.find(&open_tag) {
-                if let Some(end_offset) = xml[start..].find(&close_tag) {
-                    let end = start + end_offset + close_tag.len();
-                    // Remove the element and any trailing newline
-                    let remove_end = if xml[end..].starts_with('\n') { end + 1 } else { end };
-                    xml = format!("{}{}", &xml[..start], &xml[remove_end..]);
-                } else {
-                    break;
-                }
-            }
-        }
-
-        // Add new kernel boot elements if enabled
-        if settings.enabled {
-            // Find insertion point (after </type> in <os> section)
-            if let Some(type_end) = xml.find("</type>") {
-                let insert_pos = type_end + 7; // After </type>
-                let mut kernel_xml = String::new();
-
-                if let Some(ref kernel_path) = settings.kernel_path {
-                    if !kernel_path.is_empty() {
-                        kernel_xml.push_str(&format!("\n    <kernel>{}</kernel>", kernel_path));
-                    }
-                }
-
-                if let Some(ref initrd_path) = settings.initrd_path {
-                    if !initrd_path.is_empty() {
-                        kernel_xml.push_str(&format!("\n    <initrd>{}</initrd>", initrd_path));
-                    }
-                }
-
-                if let Some(ref kernel_args) = settings.kernel_args {
-                    if !kernel_args.is_empty() {
-                        // Escape XML special characters
-                        let escaped = kernel_args
-                            .replace("&", "&amp;")
-                            .replace("<", "&lt;")
-                            .replace(">", "&gt;")
-                            .replace("\"", "&quot;")
-                            .replace("'", "&apos;");
-                        kernel_xml.push_str(&format!("\n    <cmdline>{}</cmdline>", escaped));
-                    }
-                }
-
-                if let Some(ref dtb_path) = settings.dtb_path {
-                    if !dtb_path.is_empty() {
-                        kernel_xml.push_str(&format!("\n    <dtb>{}</dtb>", dtb_path));
-                    }
-                }
-
-                if !kernel_xml.is_empty() {
-                    xml = format!("{}{}{}", &xml[..insert_pos], kernel_xml, &xml[insert_pos..]);
-                }
-            }
+        for (tag, replacement) in [
+            ("kernel", kernel_element.as_deref()),
+            ("initrd", initrd_element.as_deref()),
+            ("cmdline", cmdline_element.as_deref()),
+            ("dtb", dtb_element.as_deref()),
+        ] {
+            xml = replace_direct_child(&xml, "os", tag, replacement)?;
         }
 
         // Undefine and redefine the domain with updated XML
@@ -5681,8 +5714,9 @@ impl VmService {
 
     /// Update network interface bandwidth/QoS settings
     /// Units: average/peak in KB/s, burst in KB
+    #[allow(clippy::too_many_arguments)] // Mirrors the existing Tauri command contract.
     pub fn update_interface_bandwidth(
-        libvirt: &LibvirtService,
+        libvirt: &impl ConnectionProvider,
         vm_id: &str,
         mac_address: &str,
         inbound_average: Option<u64>,
@@ -5697,110 +5731,33 @@ impl VmService {
             .map_err(|_| AppError::VmNotFound(vm_id.to_string()))?;
 
         let is_running = domain.is_active().map_err(map_libvirt_error)?;
-        let mut xml = domain.get_xml_desc(0).map_err(map_libvirt_error)?;
-
-        // Find the interface with matching MAC address
-        let mac_search = format!("<mac address='{}'", mac_address.to_lowercase());
-        let mac_search_alt = format!("<mac address=\"{}\"", mac_address.to_lowercase());
-
-        let interface_start = xml.to_lowercase()
-            .find(&mac_search.to_lowercase())
-            .or_else(|| xml.to_lowercase().find(&mac_search_alt.to_lowercase()));
-
-        if interface_start.is_none() {
-            return Err(AppError::InvalidConfig(
-                format!("Network interface with MAC {} not found", mac_address)
-            ));
-        }
-
-        let interface_start = interface_start.unwrap();
-
-        // Find the <interface> start by searching backwards
-        let interface_open = xml[..interface_start].rfind("<interface")
-            .ok_or_else(|| AppError::InvalidConfig("Malformed interface XML".to_string()))?;
-
-        // Find </interface> end
-        let interface_close = xml[interface_start..].find("</interface>")
-            .map(|pos| interface_start + pos + 12)
-            .ok_or_else(|| AppError::InvalidConfig("Malformed interface XML".to_string()))?;
-
-        let interface_xml = xml[interface_open..interface_close].to_string();
-
-        // Build new bandwidth element
-        let has_inbound = inbound_average.is_some() || inbound_peak.is_some() || inbound_burst.is_some();
-        let has_outbound = outbound_average.is_some() || outbound_peak.is_some() || outbound_burst.is_some();
-
-        let bandwidth_xml = if has_inbound || has_outbound {
-            let mut bw = String::from("      <bandwidth>\n");
-
-            if has_inbound {
-                bw.push_str("        <inbound");
-                if let Some(avg) = inbound_average {
-                    bw.push_str(&format!(" average='{}'", avg));
-                }
-                if let Some(peak) = inbound_peak {
-                    bw.push_str(&format!(" peak='{}'", peak));
-                }
-                if let Some(burst) = inbound_burst {
-                    bw.push_str(&format!(" burst='{}'", burst));
-                }
-                bw.push_str("/>\n");
-            }
-
-            if has_outbound {
-                bw.push_str("        <outbound");
-                if let Some(avg) = outbound_average {
-                    bw.push_str(&format!(" average='{}'", avg));
-                }
-                if let Some(peak) = outbound_peak {
-                    bw.push_str(&format!(" peak='{}'", peak));
-                }
-                if let Some(burst) = outbound_burst {
-                    bw.push_str(&format!(" burst='{}'", burst));
-                }
-                bw.push_str("/>\n");
-            }
-
-            bw.push_str("      </bandwidth>");
-            bw
-        } else {
-            String::new()
-        };
-
-        // Remove existing bandwidth element if present
-        let mut new_interface_xml = interface_xml.clone();
-        if let Some(bw_start) = new_interface_xml.find("<bandwidth") {
-            if let Some(bw_end_offset) = new_interface_xml[bw_start..].find("</bandwidth>") {
-                let bw_end = bw_start + bw_end_offset + 12;
-                // Remove bandwidth and trailing whitespace/newline
-                let remove_end = if new_interface_xml[bw_end..].starts_with('\n') {
-                    bw_end + 1
-                } else {
-                    bw_end
-                };
-                new_interface_xml = format!("{}{}", &new_interface_xml[..bw_start], &new_interface_xml[remove_end..]);
-            }
-        }
-
-        // Insert new bandwidth before </interface>
-        if !bandwidth_xml.is_empty() {
-            let insert_pos = new_interface_xml.rfind("</interface>")
-                .ok_or_else(|| AppError::InvalidConfig("Malformed interface XML".to_string()))?;
-            new_interface_xml = format!(
-                "{}\n{}\n    {}",
-                &new_interface_xml[..insert_pos].trim_end(),
-                bandwidth_xml,
-                &new_interface_xml[insert_pos..]
-            );
-        }
-
-        // Replace the interface in the full XML
-        xml = format!(
-            "{}{}{}",
-            &xml[..interface_open],
-            new_interface_xml,
-            &xml[interface_close..]
-        );
+        let original_xml = domain.get_xml_desc(0).map_err(map_libvirt_error)?;
+        // Resolve the target and its owned bandwidth subtree by XML events before any live
+        // operation. This handles namespace prefixes and either XML quote style safely.
+        let xml = rewrite_interface_bandwidth(
+            &original_xml,
+            mac_address,
+            inbound_average,
+            inbound_peak,
+            inbound_burst,
+            outbound_average,
+            outbound_peak,
+            outbound_burst,
+        )?;
+        let interface_xml = first_element_with_descendant_attribute(
+            &xml,
+            "interface",
+            "mac",
+            "address",
+            mac_address,
+        )?
+        .ok_or_else(|| {
+            AppError::InvalidConfig(format!(
+                "Network interface with MAC {mac_address} not found"
+            ))
+        })?;
+        let target_dev = first_element_attribute(&interface_xml, "interface", "target", "dev")?
+            .unwrap_or_else(|| mac_address.replace(':', ""));
 
         if is_running {
             // For running VMs, we need to use domiftune to apply bandwidth limits live
@@ -5808,27 +5765,13 @@ impl VmService {
             let vm_name = domain.get_name().map_err(map_libvirt_error)?;
 
             // Find target device for this interface
-            let target_dev = new_interface_xml
-                .find("<target dev=")
-                .and_then(|pos| {
-                    let start = pos + 13;
-                    let quote_char = new_interface_xml.chars().nth(start - 1)?;
-                    new_interface_xml[start..].find(quote_char).map(|end| {
-                        new_interface_xml[start..start + end].to_string()
-                    })
-                })
-                .unwrap_or_else(|| mac_address.replace(":", ""));
-
             // Apply using virsh domiftune for live changes
-            let mut args = vec![
-                "domiftune".to_string(),
-                vm_name.clone(),
-                target_dev.clone(),
-            ];
+            let mut args = vec!["domiftune".to_string(), vm_name.clone(), target_dev.clone()];
 
             if let Some(avg) = inbound_average {
                 args.push("--inbound".to_string());
-                args.push(format!("{},{},{}",
+                args.push(format!(
+                    "{},{},{}",
                     avg,
                     inbound_peak.unwrap_or(avg * 2),
                     inbound_burst.unwrap_or(avg)
@@ -5837,7 +5780,8 @@ impl VmService {
 
             if let Some(avg) = outbound_average {
                 args.push("--outbound".to_string());
-                args.push(format!("{},{},{}",
+                args.push(format!(
+                    "{},{},{}",
                     avg,
                     outbound_peak.unwrap_or(avg * 2),
                     outbound_burst.unwrap_or(avg)
@@ -5846,16 +5790,13 @@ impl VmService {
 
             if args.len() > 3 {
                 let args_ref: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-                let output = std::process::Command::new("virsh")
+                let output = Self::virsh_command(conn)?
                     .args(&args_ref)
                     .output()
                     .map_err(|e| AppError::Other(format!("Failed to run virsh: {}", e)))?;
 
                 if !output.status.success() {
-                    tracing::warn!(
-                        "Failed to apply live bandwidth limits: {}",
-                        String::from_utf8_lossy(&output.stderr)
-                    );
+                    tracing::warn!("Failed to apply live bandwidth limits");
                 } else {
                     tracing::info!("Applied live bandwidth limits to interface {}", target_dev);
                 }
@@ -5872,7 +5813,8 @@ impl VmService {
 
         tracing::info!(
             "Updated bandwidth settings for interface {} on VM {}",
-            mac_address, vm_id
+            mac_address,
+            vm_id
         );
         Ok(())
     }
@@ -5880,7 +5822,7 @@ impl VmService {
     /// Set the link state (up/down) for a network interface
     /// This simulates connecting/disconnecting the network cable
     pub fn set_interface_link_state(
-        libvirt: &LibvirtService,
+        libvirt: &impl ConnectionProvider,
         vm_id: &str,
         mac_address: &str,
         link_up: bool,
@@ -5890,102 +5832,42 @@ impl VmService {
             .map_err(|_| AppError::VmNotFound(vm_id.to_string()))?;
 
         let is_running = domain.is_active().map_err(map_libvirt_error)?;
-        let mut xml = domain.get_xml_desc(0).map_err(map_libvirt_error)?;
-
-        // Find the interface with matching MAC address
-        let mac_search = format!("<mac address='{}'", mac_address.to_lowercase());
-        let mac_search_alt = format!("<mac address=\"{}\"", mac_address.to_lowercase());
-
-        let interface_start = xml.to_lowercase()
-            .find(&mac_search.to_lowercase())
-            .or_else(|| xml.to_lowercase().find(&mac_search_alt.to_lowercase()));
-
-        if interface_start.is_none() {
-            return Err(AppError::InvalidConfig(
-                format!("Network interface with MAC {} not found", mac_address)
-            ));
-        }
-
-        let interface_start = interface_start.unwrap();
-
-        // Find the <interface> start by searching backwards
-        let interface_open = xml[..interface_start].rfind("<interface")
-            .ok_or_else(|| AppError::InvalidConfig("Malformed interface XML".to_string()))?;
-
-        // Find </interface> end
-        let interface_close = xml[interface_start..].find("</interface>")
-            .map(|pos| interface_start + pos + 12)
-            .ok_or_else(|| AppError::InvalidConfig("Malformed interface XML".to_string()))?;
-
-        let interface_xml = xml[interface_open..interface_close].to_string();
-
-        // Remove existing link element if present
-        let mut new_interface_xml = interface_xml.clone();
-        if let Some(link_start) = new_interface_xml.find("<link ") {
-            if let Some(link_end_offset) = new_interface_xml[link_start..].find("/>") {
-                let link_end = link_start + link_end_offset + 2;
-                // Remove link and any trailing whitespace/newline
-                let remove_end = if new_interface_xml[link_end..].starts_with('\n') {
-                    link_end + 1
-                } else {
-                    link_end
-                };
-                new_interface_xml = format!("{}{}", &new_interface_xml[..link_start], &new_interface_xml[remove_end..]);
-            }
-        }
-
-        // Build new link element
+        let original_xml = domain.get_xml_desc(0).map_err(map_libvirt_error)?;
         let link_state = if link_up { "up" } else { "down" };
-        let link_xml = format!("      <link state='{}'/>", link_state);
-
-        // Insert link element before </interface>
-        let insert_pos = new_interface_xml.rfind("</interface>")
-            .ok_or_else(|| AppError::InvalidConfig("Malformed interface XML".to_string()))?;
-        new_interface_xml = format!(
-            "{}\n{}\n    {}",
-            &new_interface_xml[..insert_pos].trim_end(),
-            link_xml,
-            &new_interface_xml[insert_pos..]
-        );
-
-        // Replace the interface in the full XML
-        xml = format!(
-            "{}{}{}",
-            &xml[..interface_open],
-            new_interface_xml,
-            &xml[interface_close..]
-        );
+        let xml = rewrite_interface_link_state(&original_xml, mac_address, link_state)?;
+        let new_interface_xml = first_element_with_descendant_attribute(
+            &xml,
+            "interface",
+            "mac",
+            "address",
+            mac_address,
+        )?
+        .ok_or_else(|| AppError::InvalidConfig("Network interface was not found".to_string()))?;
 
         if is_running {
             // For running VMs, use virsh domif-setlink for live change
             let vm_name = domain.get_name().map_err(map_libvirt_error)?;
 
-            // Find target device for this interface
-            let target_dev = new_interface_xml
-                .find("<target dev=")
-                .and_then(|pos| {
-                    let start = pos + 13;
-                    let quote_char = new_interface_xml.chars().nth(start - 1)?;
-                    new_interface_xml[start..].find(quote_char).map(|end| {
-                        new_interface_xml[start..start + end].to_string()
-                    })
-                })
-                .unwrap_or_else(|| mac_address.replace(":", ""));
+            let target_dev =
+                first_element_attribute(&new_interface_xml, "interface", "target", "dev")?
+                    .unwrap_or_else(|| mac_address.replace(':', ""));
 
             // Apply using virsh domif-setlink for live changes
-            let output = std::process::Command::new("virsh")
+            let output = Self::virsh_command(conn)?
                 .args(["domif-setlink", &vm_name, &target_dev, link_state, "--live"])
                 .output()
                 .map_err(|e| AppError::Other(format!("Failed to run virsh: {}", e)))?;
 
             if !output.status.success() {
-                return Err(AppError::Other(format!(
-                    "Failed to set link state: {}",
-                    String::from_utf8_lossy(&output.stderr)
-                )));
+                return Err(AppError::Other("Failed to set link state".to_string()));
             }
 
-            tracing::info!("Set live link state {} for interface {} on VM {}", link_state, target_dev, vm_id);
+            tracing::info!(
+                "Set live link state {} for interface {} on VM {}",
+                link_state,
+                target_dev,
+                vm_id
+            );
 
             // Also update persistent config
             domain.undefine().map_err(map_libvirt_error)?;
@@ -5998,14 +5880,16 @@ impl VmService {
 
         tracing::info!(
             "Set link state to {} for interface {} on VM {}",
-            link_state, mac_address, vm_id
+            link_state,
+            mac_address,
+            vm_id
         );
         Ok(())
     }
 
     /// Get the current link state of a network interface
     pub fn get_interface_link_state(
-        libvirt: &LibvirtService,
+        libvirt: &impl ConnectionProvider,
         vm_id: &str,
         mac_address: &str,
     ) -> Result<bool, AppError> {
@@ -6015,57 +5899,39 @@ impl VmService {
 
         let is_running = domain.is_active().map_err(map_libvirt_error)?;
 
+        let xml = domain.get_xml_desc(0).map_err(map_libvirt_error)?;
+        let interface_xml = first_element_with_descendant_attribute(
+            &xml,
+            "interface",
+            "mac",
+            "address",
+            mac_address,
+        )?;
+
         if is_running {
-            // For running VMs, use virsh domif-getlink
-            let vm_name = domain.get_name().map_err(map_libvirt_error)?;
-
-            // Find target device from XML
-            let xml = domain.get_xml_desc(0).map_err(map_libvirt_error)?;
-            let mac_search = format!("<mac address='{}'", mac_address.to_lowercase());
-
-            if let Some(mac_pos) = xml.to_lowercase().find(&mac_search.to_lowercase()) {
-                // Find target dev after mac
-                let search_area = &xml[mac_pos..];
-                if let Some(target_pos) = search_area.find("<target dev=") {
-                    let start = target_pos + 13;
-                    let quote_char = search_area.chars().nth(start - 1).unwrap_or('\'');
-                    if let Some(end) = search_area[start..].find(quote_char) {
-                        let target_dev = &search_area[start..start + end];
-
-                        let output = std::process::Command::new("virsh")
-                            .args(["domif-getlink", &vm_name, target_dev])
-                            .output()
-                            .map_err(|e| AppError::Other(format!("Failed to run virsh: {}", e)))?;
-
-                        if output.status.success() {
-                            let stdout = String::from_utf8_lossy(&output.stdout);
-                            return Ok(!stdout.contains("down"));
-                        }
+            if let (Some(interface_xml), vm_name) = (
+                interface_xml.as_deref(),
+                domain.get_name().map_err(map_libvirt_error)?,
+            ) {
+                if let Some(target_dev) =
+                    first_element_attribute(interface_xml, "interface", "target", "dev")?
+                {
+                    let output = Self::virsh_command(conn)?
+                        .args(["domif-getlink", &vm_name, &target_dev])
+                        .output()
+                        .map_err(|e| AppError::Other(format!("Failed to run virsh: {}", e)))?;
+                    if output.status.success() {
+                        return Ok(!String::from_utf8_lossy(&output.stdout).contains("down"));
                     }
                 }
             }
         }
 
-        // Fall back to reading from XML definition
-        let xml = domain.get_xml_desc(0).map_err(map_libvirt_error)?;
-        let mac_search = format!("<mac address='{}'", mac_address.to_lowercase());
-
-        if let Some(mac_pos) = xml.to_lowercase().find(&mac_search.to_lowercase()) {
-            // Find the interface block
-            let interface_start = xml[..mac_pos].rfind("<interface").unwrap_or(0);
-            let interface_end = xml[mac_pos..].find("</interface>").map(|p| mac_pos + p).unwrap_or(xml.len());
-            let interface_block = &xml[interface_start..interface_end];
-
-            // Look for link state
-            if let Some(link_pos) = interface_block.find("<link ") {
-                if let Some(state_pos) = interface_block[link_pos..].find("state=") {
-                    let state_start = link_pos + state_pos + 7; // skip state='
-                    let state_value = &interface_block[state_start..];
-                    if let Some(end) = state_value.find(['\'', '"']) {
-                        let state = &state_value[..end];
-                        return Ok(state != "down");
-                    }
-                }
+        if let Some(interface_xml) = interface_xml {
+            if let Some(state) =
+                first_element_attribute(&interface_xml, "interface", "link", "state")?
+            {
+                return Ok(state != "down");
             }
         }
 
@@ -6074,7 +5940,10 @@ impl VmService {
     }
 
     /// Get hugepages memory backing configuration for a VM
-    pub fn get_hugepages_settings(libvirt: &LibvirtService, vm_id: &str) -> Result<HugepagesSettings, AppError> {
+    pub fn get_hugepages_settings(
+        libvirt: &impl ConnectionProvider,
+        vm_id: &str,
+    ) -> Result<HugepagesSettings, AppError> {
         let conn = libvirt.get_connection();
         let domain = Domain::lookup_by_uuid_string(conn, vm_id)
             .map_err(|_| AppError::VmNotFound(vm_id.to_string()))?;
@@ -6110,10 +5979,10 @@ impl VmService {
 
     /// Set hugepages memory backing for a VM (requires VM to be stopped)
     pub fn set_hugepages(
-        libvirt: &LibvirtService,
+        libvirt: &impl ConnectionProvider,
         vm_id: &str,
         enabled: bool,
-        size: Option<u64>,  // Size in KiB
+        size: Option<u64>, // Size in KiB
     ) -> Result<(), AppError> {
         let conn = libvirt.get_connection();
         let domain = Domain::lookup_by_uuid_string(conn, vm_id)
@@ -6122,58 +5991,19 @@ impl VmService {
         let info = domain.get_info().map_err(map_libvirt_error)?;
         if info.state == sys::VIR_DOMAIN_RUNNING {
             return Err(AppError::InvalidConfig(
-                "Cannot change hugepages while VM is running. Stop the VM first.".to_string()
+                "Cannot change hugepages while VM is running. Stop the VM first.".to_string(),
             ));
         }
 
         let xml = domain.get_xml_desc(0).map_err(map_libvirt_error)?;
-        let mut new_xml = xml.clone();
-
-        // Remove existing memoryBacking element if present
-        if let Some(start) = new_xml.find("<memoryBacking>") {
-            if let Some(end) = new_xml.find("</memoryBacking>") {
-                let before = &new_xml[..start];
-                let after = &new_xml[end + 16..];
-                new_xml = format!("{}{}", before.trim_end(), after);
-            }
-        } else if let Some(start) = new_xml.find("<memoryBacking/>") {
-            let before = &new_xml[..start];
-            let after = &new_xml[start + 16..];
-            new_xml = format!("{}{}", before.trim_end(), after);
-        }
-
-        // Add new memoryBacking if enabled
-        if enabled {
-            let memory_backing_xml = if let Some(page_size) = size {
-                format!(
-                    r#"
-  <memoryBacking>
-    <hugepages>
-      <page size='{}' unit='KiB'/>
-    </hugepages>
-  </memoryBacking>"#,
-                    page_size
-                )
-            } else {
-                r#"
-  <memoryBacking>
-    <hugepages/>
-  </memoryBacking>"#.to_string()
-            };
-
-            // Insert after currentMemory element
-            if let Some(pos) = new_xml.find("</currentMemory>") {
-                let insert_pos = pos + 16;
-                let before = &new_xml[..insert_pos];
-                let after = &new_xml[insert_pos..];
-                new_xml = format!("{}{}{}", before, memory_backing_xml, after);
-            } else if let Some(pos) = new_xml.find("</memory>") {
-                let insert_pos = pos + 9;
-                let before = &new_xml[..insert_pos];
-                let after = &new_xml[insert_pos..];
-                new_xml = format!("{}{}{}", before, memory_backing_xml, after);
-            }
-        }
+        let memory_backing = enabled.then(|| match size {
+            Some(page_size) => format!(
+                "<memoryBacking><hugepages><page size='{page_size}' unit='KiB'/></hugepages></memoryBacking>"
+            ),
+            None => "<memoryBacking><hugepages/></memoryBacking>".to_string(),
+        });
+        let new_xml =
+            replace_direct_child(&xml, "domain", "memoryBacking", memory_backing.as_deref())?;
 
         // Redefine the domain with updated XML
         Domain::define_xml(conn, &new_xml)
@@ -6182,7 +6012,11 @@ impl VmService {
         tracing::info!(
             "Successfully {} hugepages{} for VM {}",
             if enabled { "enabled" } else { "disabled" },
-            if let Some(s) = size { format!(" ({}KB)", s) } else { String::new() },
+            if let Some(s) = size {
+                format!(" ({}KB)", s)
+            } else {
+                String::new()
+            },
             vm_id
         );
         Ok(())
@@ -6305,7 +6139,8 @@ impl VmService {
 
         // Sort by type then name
         devices.sort_by(|a, b| {
-            a.device_type.cmp(&b.device_type)
+            a.device_type
+                .cmp(&b.device_type)
                 .then_with(|| a.name.cmp(&b.name))
         });
 
@@ -6314,12 +6149,12 @@ impl VmService {
 
     /// Attach an evdev input device to a VM for low-latency passthrough
     pub fn attach_evdev(
-        libvirt: &LibvirtService,
+        libvirt: &impl ConnectionProvider,
         vm_id: &str,
         device_path: &str,
-        grab_all: bool,  // If true, grab all input from this device
+        grab_all: bool, // If true, grab all input from this device
     ) -> Result<(), AppError> {
-        tracing::info!("Attaching evdev device {} to VM {}", device_path, vm_id);
+        tracing::info!("Attaching an evdev device to a VM");
 
         // Validate device path exists
         if !std::path::Path::new(device_path).exists() {
@@ -6337,7 +6172,7 @@ impl VmService {
 
         if is_running {
             return Err(AppError::InvalidConfig(
-                "Cannot attach evdev device to running VM. Please stop the VM first.".to_string()
+                "Cannot attach evdev device to running VM. Please stop the VM first.".to_string(),
             ));
         }
 
@@ -6353,61 +6188,42 @@ impl VmService {
 
         let grab_attr = if grab_all { " grab='all'" } else { "" };
 
+        let escaped_device_path = escaped_attribute(device_path, "evdev device path")?;
         let evdev_xml = format!(
             r#"<input type='{}' bus='virtio'>
   <source dev='{}'{}/>
 </input>"#,
-            input_type, device_path, grab_attr
+            input_type, escaped_device_path, grab_attr
         );
 
-        domain.attach_device_flags(&evdev_xml, sys::VIR_DOMAIN_AFFECT_CONFIG)
+        domain
+            .attach_device_flags(&evdev_xml, sys::VIR_DOMAIN_AFFECT_CONFIG)
             .map_err(|e| AppError::Other(format!("Failed to attach evdev device: {}", e)))?;
 
-        tracing::info!("Successfully attached evdev device {} to VM {}", device_path, vm_id);
+        tracing::info!("Successfully attached an evdev device");
         Ok(())
     }
 
     /// Get list of evdev devices attached to a VM
-    pub fn get_vm_evdev_devices(libvirt: &LibvirtService, vm_id: &str) -> Result<Vec<String>, AppError> {
+    pub fn get_vm_evdev_devices(
+        libvirt: &impl ConnectionProvider,
+        vm_id: &str,
+    ) -> Result<Vec<String>, AppError> {
         let conn = libvirt.get_connection();
         let domain = Domain::lookup_by_uuid_string(conn, vm_id)
             .map_err(|_| AppError::VmNotFound(vm_id.to_string()))?;
 
         let xml = domain.get_xml_desc(0).map_err(map_libvirt_error)?;
-        let mut devices = Vec::new();
-
-        // Find all <input> elements with <source dev=.../>
-        let mut search_start = 0;
-        while let Some(input_start) = xml[search_start..].find("<input") {
-            let abs_start = search_start + input_start;
-            if let Some(input_end) = xml[abs_start..].find("</input>") {
-                let input_section = &xml[abs_start..abs_start + input_end];
-
-                // Look for source dev attribute
-                if let Some(source_start) = input_section.find("<source dev='") {
-                    let dev_start = source_start + 13;
-                    if let Some(dev_end) = input_section[dev_start..].find("'") {
-                        let device_path = &input_section[dev_start..dev_start + dev_end];
-                        devices.push(device_path.to_string());
-                    }
-                }
-
-                search_start = abs_start + input_end + 8;
-            } else {
-                break;
-            }
-        }
-
-        Ok(devices)
+        descendant_attribute_values(&xml, "input", "source", "dev")
     }
 
     /// Remove an evdev device from a VM
     pub fn detach_evdev(
-        libvirt: &LibvirtService,
+        libvirt: &impl ConnectionProvider,
         vm_id: &str,
         device_path: &str,
     ) -> Result<(), AppError> {
-        tracing::info!("Detaching evdev device {} from VM {}", device_path, vm_id);
+        tracing::info!("Detaching an evdev device from a VM");
 
         let conn = libvirt.get_connection();
         let domain = Domain::lookup_by_uuid_string(conn, vm_id)
@@ -6417,33 +6233,70 @@ impl VmService {
 
         if is_running {
             return Err(AppError::InvalidConfig(
-                "Cannot detach evdev device from running VM. Please stop the VM first.".to_string()
+                "Cannot detach evdev device from running VM. Please stop the VM first.".to_string(),
             ));
         }
 
         let xml = domain.get_xml_desc(0).map_err(map_libvirt_error)?;
-        let mut new_xml = xml.clone();
-
-        // Find and remove the input element with this device path
-        let search_pattern = format!("dev='{}'", device_path);
-        if let Some(source_pos) = new_xml.find(&search_pattern) {
-            // Find the enclosing <input> element
-            let before_source = &new_xml[..source_pos];
-            if let Some(input_start) = before_source.rfind("<input") {
-                if let Some(input_end) = new_xml[input_start..].find("</input>") {
-                    let before = &new_xml[..input_start];
-                    let after = &new_xml[input_start + input_end + 8..];
-                    new_xml = format!("{}{}", before.trim_end(), after);
-                }
-            }
-        }
+        let new_xml =
+            remove_element_with_descendant_attribute(&xml, "input", "source", "dev", device_path)?;
 
         // Redefine the domain
         Domain::define_xml(conn, &new_xml)
             .map_err(|e| AppError::Other(format!("Failed to detach evdev device: {}", e)))?;
 
-        tracing::info!("Successfully detached evdev device {} from VM {}", device_path, vm_id);
+        tracing::info!("Successfully detached an evdev device");
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{deletion_undefine_flags, LIBVIRT_TPM_UNDEFINE_MIN_VERSION};
+    use virt::sys;
+
+    #[test]
+    fn deletion_flags_remove_uefi_and_managed_save_state_on_supported_libvirt_versions() {
+        let flags = deletion_undefine_flags(LIBVIRT_TPM_UNDEFINE_MIN_VERSION - 1);
+
+        assert_ne!(flags & sys::VIR_DOMAIN_UNDEFINE_NVRAM, 0);
+        assert_ne!(flags & sys::VIR_DOMAIN_UNDEFINE_MANAGED_SAVE, 0);
+        assert_eq!(flags & sys::VIR_DOMAIN_UNDEFINE_TPM, 0);
+        assert_eq!(flags & sys::VIR_DOMAIN_UNDEFINE_SNAPSHOTS_METADATA, 0);
+    }
+
+    #[test]
+    fn deletion_flags_remove_tpm_state_when_the_daemon_supports_it() {
+        let flags = deletion_undefine_flags(LIBVIRT_TPM_UNDEFINE_MIN_VERSION);
+
+        assert_ne!(flags & sys::VIR_DOMAIN_UNDEFINE_NVRAM, 0);
+        assert_ne!(flags & sys::VIR_DOMAIN_UNDEFINE_TPM, 0);
+        assert_eq!(flags & sys::VIR_DOMAIN_UNDEFINE_SNAPSHOTS_METADATA, 0);
+    }
+
+    #[test]
+    fn deletion_disk_discovery_excludes_attached_iso_media() {
+        let xml = r#"
+            <domain type='kvm'>
+              <name>windows-test</name>
+              <devices>
+                <disk type='file' device='disk'>
+                  <source file='/var/lib/libvirt/images/windows-test.qcow2'/>
+                  <target dev='vda' bus='virtio'/>
+                </disk>
+                <disk type='file' device='cdrom'>
+                  <source file='/home/user/Downloads/windows.iso'/>
+                  <target dev='sda' bus='sata'/>
+                  <readonly/>
+                </disk>
+              </devices>
+            </domain>
+        "#;
+
+        assert_eq!(
+            super::VmService::extract_disk_paths(xml),
+            vec!["/var/lib/libvirt/images/windows-test.qcow2"]
+        );
     }
 }
 
@@ -6464,7 +6317,7 @@ pub struct EvdevDevice {
     pub id: String,
     pub path: String,
     pub name: String,
-    pub device_type: String,  // keyboard, mouse, joystick, other
+    pub device_type: String, // keyboard, mouse, joystick, other
 }
 
 /// Direct kernel boot settings for a VM
@@ -6522,7 +6375,10 @@ pub struct UsbRedirectionInfo {
 
 impl VmService {
     /// Check if a VM can be migrated (has compatible storage, etc.)
-    pub fn check_migration_compatibility(libvirt: &LibvirtService, vm_id: &str) -> Result<(bool, Vec<String>), AppError> {
+    pub fn check_migration_compatibility(
+        libvirt: &impl ConnectionProvider,
+        vm_id: &str,
+    ) -> Result<(bool, Vec<String>), AppError> {
         let conn = libvirt.get_connection();
         let mut warnings: Vec<String> = Vec::new();
         let mut can_migrate = true;
@@ -6532,7 +6388,8 @@ impl VmService {
             .map_err(|_| AppError::VmNotFound(vm_id.to_string()))?;
 
         // Get domain XML to check for migration blockers
-        let xml = domain.get_xml_desc(0)
+        let xml = domain
+            .get_xml_desc(0)
             .map_err(|e| AppError::LibvirtError(format!("Failed to get VM XML: {}", e)))?;
 
         // Simple XML parsing to check for migration blockers
@@ -6547,10 +6404,14 @@ impl VmService {
                     if let Some(end) = trimmed[path_start..].find("'") {
                         let path = &trimmed[path_start..path_start + end];
                         // Local files may need shared storage for migration
-                        if path.starts_with("/var/lib/libvirt/images/") ||
-                           path.starts_with("/home/") ||
-                           (!path.contains("://") && !path.starts_with("/dev/")) {
-                            warnings.push(format!("Local disk '{}' - may need shared storage", path));
+                        if path.starts_with("/var/lib/libvirt/images/")
+                            || path.starts_with("/home/")
+                            || (!path.contains("://") && !path.starts_with("/dev/"))
+                        {
+                            warnings.push(
+                                "A local disk may require shared storage before migration"
+                                    .to_string(),
+                            );
                         }
                     }
                 }
@@ -6559,7 +6420,8 @@ impl VmService {
             // Check for PCI host device passthrough
             if trimmed.contains("<hostdev mode='subsystem' type='pci'") {
                 can_migrate = false;
-                warnings.push("PCI passthrough device detected - prevents live migration".to_string());
+                warnings
+                    .push("PCI passthrough device detected - prevents live migration".to_string());
             }
 
             // Check for USB host device passthrough
@@ -6575,7 +6437,8 @@ impl VmService {
             // Check for MDEV passthrough
             if trimmed.contains("<hostdev mode='subsystem' type='mdev'") {
                 can_migrate = false;
-                warnings.push("MDEV passthrough device detected - prevents live migration".to_string());
+                warnings
+                    .push("MDEV passthrough device detected - prevents live migration".to_string());
             }
         }
 
@@ -6591,7 +6454,9 @@ impl VmService {
         // Filter to remote connections only (not local)
         let targets: Vec<(String, String)> = saved
             .into_iter()
-            .filter(|c| c.connection_type != crate::services::connection_service::ConnectionType::Local)
+            .filter(|c| {
+                c.connection_type != crate::services::connection_service::ConnectionType::Local
+            })
             .map(|c| (c.id.clone(), c.build_uri()))
             .collect();
 

@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/tauri'
+import { useActiveConnection } from '@/hooks/useActiveConnection'
 import type { BackupConfig, CreateBackupRequest, ScheduleFrequency, VM } from '@/lib/types'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -17,6 +18,10 @@ interface BackupManagerProps {
 
 export function BackupManager({ vmId }: BackupManagerProps) {
   const queryClient = useQueryClient()
+  const { connectionId, resourceQueryKey } = useActiveConnection()
+  const vmsQueryKey = resourceQueryKey('vms') ?? ['connection', 'pending', 'vms']
+  const backupConfigsQueryKey = resourceQueryKey('backup-configs') ?? ['connection', 'pending', 'backup-configs']
+  const schedulesQueryKey = resourceQueryKey('schedules') ?? ['connection', 'pending', 'schedules']
   const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false)
   const [backupForm, setBackupForm] = useState<CreateBackupRequest>({
     name: '',
@@ -30,22 +35,24 @@ export function BackupManager({ vmId }: BackupManagerProps) {
 
   // Query for VMs (to populate dropdown)
   const { data: vms } = useQuery<VM[]>({
-    queryKey: ['vms'],
+    queryKey: vmsQueryKey,
     queryFn: () => api.getVms(),
+    enabled: !!connectionId,
   })
 
   // Query for backup configs
   const { data: backupConfigs, isLoading } = useQuery<BackupConfig[]>({
-    queryKey: vmId ? ['backupConfigs', vmId] : ['backupConfigs'],
+    queryKey: vmId ? [...backupConfigsQueryKey, vmId] : backupConfigsQueryKey,
     queryFn: () => vmId ? api.getVmBackupConfigs(vmId) : api.listBackupConfigs(),
+    enabled: !!connectionId,
   })
 
   // Create backup config mutation
   const createMutation = useMutation({
     mutationFn: (request: CreateBackupRequest) => api.createBackupConfig(request),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['backupConfigs'] })
-      queryClient.invalidateQueries({ queryKey: ['schedules'] })
+      queryClient.invalidateQueries({ queryKey: backupConfigsQueryKey })
+      queryClient.invalidateQueries({ queryKey: schedulesQueryKey })
       toast.success('Backup schedule created successfully')
       setIsCreateDialogOpen(false)
       resetForm()
@@ -60,8 +67,8 @@ export function BackupManager({ vmId }: BackupManagerProps) {
     mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) =>
       api.updateBackupStatus(id, enabled),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['backupConfigs'] })
-      queryClient.invalidateQueries({ queryKey: ['schedules'] })
+      queryClient.invalidateQueries({ queryKey: backupConfigsQueryKey })
+      queryClient.invalidateQueries({ queryKey: schedulesQueryKey })
       toast.success('Backup status updated')
     },
     onError: (error: Error) => {
@@ -73,8 +80,8 @@ export function BackupManager({ vmId }: BackupManagerProps) {
   const deleteMutation = useMutation({
     mutationFn: (id: string) => api.deleteBackupConfig(id),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['backupConfigs'] })
-      queryClient.invalidateQueries({ queryKey: ['schedules'] })
+      queryClient.invalidateQueries({ queryKey: backupConfigsQueryKey })
+      queryClient.invalidateQueries({ queryKey: schedulesQueryKey })
       toast.success('Backup schedule deleted successfully')
     },
     onError: (error: Error) => {

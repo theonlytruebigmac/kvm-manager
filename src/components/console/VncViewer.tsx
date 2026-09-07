@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, useCallback, forwardRef, useImperativeHandle } from 'react'
 import { Loader2, WifiOff, AlertCircle } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { localConsoleWebSocketUrl } from '@/lib/consoleSecurity'
 
 // noVNC RFB class - loaded dynamically at runtime
 let RFBClass: any = null
@@ -69,13 +70,22 @@ interface VncViewerProps {
   onConnected?: () => void
   onDisconnected?: () => void
   onError?: (error: string) => void
+  onInputFocusChange?: (focused: boolean) => void
 }
 
-export interface VncViewerRef {
+export interface ConsoleViewerRef {
   reconnect: () => void
   setScaleMode: (mode: ScaleMode) => void
   getCanvas: () => HTMLCanvasElement | null
+  focus: () => void
+  blur: () => void
+  sendCtrlAltDel?: () => void
+  sendCtrlAltFn?: (fnNum: number) => void
+  sendCtrlAltBackspace?: () => void
+  sendKey?: (keysym: number, code: string) => void
 }
+
+export type VncViewerRef = ConsoleViewerRef
 
 export const VncViewer = forwardRef<VncViewerRef, VncViewerProps>(({
   host,
@@ -85,10 +95,12 @@ export const VncViewer = forwardRef<VncViewerRef, VncViewerProps>(({
   onConnected,
   onDisconnected,
   onError,
+  onInputFocusChange,
 }, ref) => {
   const canvasRef = useRef<HTMLDivElement>(null)
   const rfbRef = useRef<any>(null)
   const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  const inputCaptureRequestedRef = useRef(false)
 
   const [status, setStatus] = useState<'connecting' | 'connected' | 'disconnected' | 'error'>('connecting')
   const [errorMessage, setErrorMessage] = useState<string>('')
@@ -110,7 +122,7 @@ export const VncViewer = forwardRef<VncViewerRef, VncViewerProps>(({
     let RFB: any
     try {
       RFB = await loadNoVNC()
-    } catch (e) {
+    } catch (_error) {
       setStatus('error')
       setErrorMessage('Failed to load VNC library.')
       onError?.('Failed to load VNC library')
@@ -129,7 +141,15 @@ export const VncViewer = forwardRef<VncViewerRef, VncViewerProps>(({
 
     // Construct WebSocket URL for websockify proxy
     // Always use ws:// for local connections (websockify listens on localhost)
-    const url = `ws://${host}:${port}`
+    let url: string
+    try {
+      url = localConsoleWebSocketUrl(host, port)
+    } catch {
+      setStatus('error')
+      setErrorMessage('The local console proxy is unavailable.')
+      onError?.('The local console proxy is unavailable.')
+      return
+    }
 
     console.log('Connecting to VNC via websockify:', url, `(attempt ${reconnectAttempts + 1})`)
     setStatus('connecting')
@@ -150,6 +170,13 @@ export const VncViewer = forwardRef<VncViewerRef, VncViewerProps>(({
         setReconnectAttempts(0)
         setIsReconnecting(false)
         onConnected?.()
+        requestAnimationFrame(() => {
+          if (rfbRef.current === rfb) {
+            inputCaptureRequestedRef.current = true
+            rfb.focus({ preventScroll: true })
+            onInputFocusChange?.(true)
+          }
+        })
       })
 
       rfb.addEventListener('disconnect', (e: any) => {
@@ -198,6 +225,7 @@ export const VncViewer = forwardRef<VncViewerRef, VncViewerProps>(({
       // Enable local cursor
       rfb.showDotCursor = false
       rfb.viewOnly = false
+      rfb.focusOnClick = true
 
     } catch (error) {
       console.error('Failed to create VNC connection:', error)
@@ -206,7 +234,7 @@ export const VncViewer = forwardRef<VncViewerRef, VncViewerProps>(({
       setIsReconnecting(false)
       onError?.(error instanceof Error ? error.message : 'Connection failed')
     }
-  }, [host, port, password, scaleMode, reconnectAttempts, onConnected, onDisconnected, onError])
+  }, [host, port, password, scaleMode, reconnectAttempts, onConnected, onDisconnected, onError, onInputFocusChange])
 
   const applyScaleMode = (rfb: any, mode: ScaleMode) => {
     if (!rfb) return
@@ -246,7 +274,21 @@ export const VncViewer = forwardRef<VncViewerRef, VncViewerProps>(({
     },
     getCanvas: () => {
       return canvasRef.current?.querySelector('canvas') || null
-    }
+    },
+    focus: () => {
+      inputCaptureRequestedRef.current = true
+      rfbRef.current?.focus({ preventScroll: true })
+      onInputFocusChange?.(true)
+    },
+    blur: () => {
+      inputCaptureRequestedRef.current = false
+      rfbRef.current?.blur()
+      onInputFocusChange?.(false)
+    },
+    sendCtrlAltDel: () => rfbRef.current?.sendCtrlAltDel(),
+    sendCtrlAltFn: (fnNum: number) => sendCtrlAltFnToRfb(rfbRef.current, fnNum),
+    sendCtrlAltBackspace: () => sendCtrlAltBackspaceToRfb(rfbRef.current),
+    sendKey: (keysym: number, code: string) => rfbRef.current?.sendKey(keysym, code),
   }))
 
   // Initial connection
@@ -276,8 +318,60 @@ export const VncViewer = forwardRef<VncViewerRef, VncViewerProps>(({
     }
   }, [scaleMode, status])
 
+  // WebKitGTK can leave document focus on the webview even after canvas.focus(). When capture was
+  // explicitly requested, forward those otherwise-lost window events to noVNC's canvas handler.
+  useEffect(() => {
+    if (status !== 'connected') return
+
+    const forwardToCanvas = (event: KeyboardEvent) => {
+      if (!inputCaptureRequestedRef.current) return
+      const canvas = canvasRef.current?.querySelector('canvas')
+      if (!canvas || event.target === canvas) return
+
+      const forwarded = new KeyboardEvent(event.type, {
+        key: event.key,
+        code: event.code,
+        location: event.location,
+        repeat: event.repeat,
+        ctrlKey: event.ctrlKey,
+        shiftKey: event.shiftKey,
+        altKey: event.altKey,
+        metaKey: event.metaKey,
+        bubbles: true,
+        cancelable: true,
+        composed: true,
+      })
+      canvas.dispatchEvent(forwarded)
+      event.preventDefault()
+      event.stopImmediatePropagation()
+    }
+
+    window.addEventListener('keydown', forwardToCanvas, true)
+    window.addEventListener('keyup', forwardToCanvas, true)
+    return () => {
+      window.removeEventListener('keydown', forwardToCanvas, true)
+      window.removeEventListener('keyup', forwardToCanvas, true)
+    }
+  }, [status])
+
   return (
-    <div className="relative w-full h-full bg-gray-900">
+    <div
+      className="relative w-full h-full bg-gray-900 focus-within:ring-2 focus-within:ring-inset focus-within:ring-blue-500"
+      role="application"
+      aria-label="Interactive VM console"
+      onMouseDown={() => {
+        inputCaptureRequestedRef.current = true
+        rfbRef.current?.focus({ preventScroll: true })
+        onInputFocusChange?.(true)
+      }}
+      onFocusCapture={() => onInputFocusChange?.(true)}
+      onBlurCapture={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+          inputCaptureRequestedRef.current = false
+          onInputFocusChange?.(false)
+        }
+      }}
+    >
       {/* VNC Canvas Container */}
       <div
         ref={canvasRef}
@@ -354,15 +448,11 @@ export const VncViewer = forwardRef<VncViewerRef, VncViewerProps>(({
 VncViewer.displayName = 'VncViewer'
 
 // Export helper function to send special keys
-export function sendCtrlAltDel(vncViewerRef: React.RefObject<VncViewerRef | null>) {
-  const canvas = vncViewerRef.current?.getCanvas()
-  if (!canvas) return
-
-  // @ts-ignore - access RFB instance attached in component
-  const rfb = canvas.parentElement?._rfb
-  if (rfb) {
-    rfb.sendCtrlAltDel()
-  }
+export function sendCtrlAltDel(vncViewerRef: React.RefObject<ConsoleViewerRef | null>) {
+  if (!vncViewerRef.current?.sendCtrlAltDel) return false
+  vncViewerRef.current.sendCtrlAltDel()
+  vncViewerRef.current.focus()
+  return true
 }
 
 // Keysym constants for special keys
@@ -382,14 +472,8 @@ const KEYSYMS = {
   XK_F12: 0xffc9,
 }
 
-export function sendCtrlAltFn(vncViewerRef: React.RefObject<VncViewerRef | null>, fnNum: number) {
-  const canvas = vncViewerRef.current?.getCanvas()
-  if (!canvas || fnNum < 1 || fnNum > 12) return
-
-  // @ts-ignore
-  const rfb = canvas.parentElement?._rfb
-  if (!rfb) return
-
+function sendCtrlAltFnToRfb(rfb: any, fnNum: number) {
+  if (!rfb || fnNum < 1 || fnNum > 12) return
   const keysym = KEYSYMS[`XK_F${fnNum}` as keyof typeof KEYSYMS]
 
   // Send Ctrl+Alt+Fn combination
@@ -401,14 +485,15 @@ export function sendCtrlAltFn(vncViewerRef: React.RefObject<VncViewerRef | null>
   rfb.sendKey(0xffe3, 'ControlLeft', false)  // Ctrl up
 }
 
-export function sendCtrlAltBackspace(vncViewerRef: React.RefObject<VncViewerRef | null>) {
-  const canvas = vncViewerRef.current?.getCanvas()
-  if (!canvas) return
+export function sendCtrlAltFn(vncViewerRef: React.RefObject<ConsoleViewerRef | null>, fnNum: number) {
+  if (!vncViewerRef.current?.sendCtrlAltFn || fnNum < 1 || fnNum > 12) return false
+  vncViewerRef.current.sendCtrlAltFn(fnNum)
+  vncViewerRef.current.focus()
+  return true
+}
 
-  // @ts-ignore
-  const rfb = canvas.parentElement?._rfb
+function sendCtrlAltBackspaceToRfb(rfb: any) {
   if (!rfb) return
-
   // Send Ctrl+Alt+Backspace combination
   rfb.sendKey(0xffe3, 'ControlLeft', true)
   rfb.sendKey(0xffe9, 'AltLeft', true)
@@ -416,4 +501,22 @@ export function sendCtrlAltBackspace(vncViewerRef: React.RefObject<VncViewerRef 
   rfb.sendKey(KEYSYMS.XK_BackSpace, 'Backspace', false)
   rfb.sendKey(0xffe9, 'AltLeft', false)
   rfb.sendKey(0xffe3, 'ControlLeft', false)
+}
+
+export function sendCtrlAltBackspace(vncViewerRef: React.RefObject<ConsoleViewerRef | null>) {
+  if (!vncViewerRef.current?.sendCtrlAltBackspace) return false
+  vncViewerRef.current.sendCtrlAltBackspace()
+  vncViewerRef.current.focus()
+  return true
+}
+
+export function sendConsoleKey(
+  viewerRef: React.RefObject<ConsoleViewerRef | null>,
+  key: 'enter' | 'escape',
+) {
+  if (!viewerRef.current?.sendKey) return false
+  const [keysym, code] = key === 'enter' ? [0xff0d, 'Enter'] : [0xff1b, 'Escape']
+  viewerRef.current.sendKey(keysym, code)
+  viewerRef.current.focus()
+  return true
 }

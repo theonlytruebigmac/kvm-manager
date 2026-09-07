@@ -3,13 +3,28 @@
 //! Tauri commands for interacting with QEMU Guest Agent running inside VMs.
 //! Uses virsh qemu-agent-command functionality.
 
-use crate::state::app_state::AppState;
 use crate::services::guest_agent_service::{
-    AgentInfo, SystemInfo, NetworkInfo, DiskUsageInfo, ExecCommandResult,
-    GuestCpuStats, GuestDiskStats, GuestUser, GuestTimezone, GuestFullInfo,
+    AgentInfo, DiskUsageInfo, ExecCommandResult, GuestCpuStats, GuestDiskStats, GuestFullInfo,
+    GuestTimezone, GuestUser, NetworkInfo, SystemInfo,
 };
+use crate::state::app_state::AppState;
+use crate::utils::error::{AppError, SafeFailure};
 use serde::Serialize;
 use tauri::State;
+
+fn guest_failure(detail: impl std::fmt::Display) -> SafeFailure {
+    SafeFailure::from(AppError::Other(detail.to_string()))
+}
+
+fn guest_agent_connection_uri(state: &AppState) -> Result<String, Box<SafeFailure>> {
+    state
+        .resolve_guest_agent_operation(None)
+        .map_err(SafeFailure::from)
+        .map_err(Box::new)?
+        .connection
+        .get_uri()
+        .map_err(|error| Box::new(SafeFailure::from(AppError::LibvirtError(error.to_string()))))
+}
 
 #[derive(Debug, Serialize)]
 pub struct GuestAgentStatus {
@@ -22,10 +37,11 @@ pub struct GuestAgentStatus {
 pub async fn check_guest_agent_status(
     vm_name: String,
     state: State<'_, AppState>,
-) -> Result<GuestAgentStatus, String> {
+) -> Result<GuestAgentStatus, SafeFailure> {
+    let connection_uri = guest_agent_connection_uri(&state).map_err(|failure| *failure)?;
     let available = state
         .guest_agent
-        .is_agent_available(&vm_name)
+        .is_agent_available(&connection_uri, &vm_name)
         .await;
 
     if !available {
@@ -38,7 +54,7 @@ pub async fn check_guest_agent_status(
     // Get agent info if available
     let agent_info = state
         .guest_agent
-        .get_agent_info(&vm_name)
+        .get_agent_info(&connection_uri, &vm_name)
         .await
         .ok();
 
@@ -53,12 +69,13 @@ pub async fn check_guest_agent_status(
 pub async fn get_guest_system_info(
     vm_name: String,
     state: State<'_, AppState>,
-) -> Result<SystemInfo, String> {
+) -> Result<SystemInfo, SafeFailure> {
+    let connection_uri = guest_agent_connection_uri(&state).map_err(|failure| *failure)?;
     state
         .guest_agent
-        .get_system_info(&vm_name)
+        .get_system_info(&connection_uri, &vm_name)
         .await
-        .map_err(|e| format!("Failed to get guest system info: {}", e))
+        .map_err(guest_failure)
 }
 
 /// Get guest network information
@@ -66,12 +83,13 @@ pub async fn get_guest_system_info(
 pub async fn get_guest_network_info(
     vm_name: String,
     state: State<'_, AppState>,
-) -> Result<NetworkInfo, String> {
+) -> Result<NetworkInfo, SafeFailure> {
+    let connection_uri = guest_agent_connection_uri(&state).map_err(|failure| *failure)?;
     state
         .guest_agent
-        .get_network_info(&vm_name)
+        .get_network_info(&connection_uri, &vm_name)
         .await
-        .map_err(|e| format!("Failed to get guest network info: {}", e))
+        .map_err(guest_failure)
 }
 
 /// Get guest disk usage
@@ -79,12 +97,13 @@ pub async fn get_guest_network_info(
 pub async fn get_guest_disk_usage(
     vm_name: String,
     state: State<'_, AppState>,
-) -> Result<DiskUsageInfo, String> {
+) -> Result<DiskUsageInfo, SafeFailure> {
+    let connection_uri = guest_agent_connection_uri(&state).map_err(|failure| *failure)?;
     state
         .guest_agent
-        .get_disk_usage(&vm_name)
+        .get_disk_usage(&connection_uri, &vm_name)
         .await
-        .map_err(|e| format!("Failed to get guest disk usage: {}", e))
+        .map_err(guest_failure)
 }
 
 /// Execute a command in the guest
@@ -95,12 +114,13 @@ pub async fn execute_guest_command(
     args: Vec<String>,
     _timeout_seconds: Option<u64>,
     state: State<'_, AppState>,
-) -> Result<ExecCommandResult, String> {
+) -> Result<ExecCommandResult, SafeFailure> {
+    let connection_uri = guest_agent_connection_uri(&state).map_err(|failure| *failure)?;
     state
         .guest_agent
-        .exec_command(&vm_name, &command, args)
+        .exec_command(&connection_uri, &vm_name, &command, args)
         .await
-        .map_err(|e| format!("Failed to execute command: {}", e))
+        .map_err(guest_failure)
 }
 
 /// Read a file from the guest (using guest-exec with cat)
@@ -109,15 +129,16 @@ pub async fn read_guest_file(
     vm_name: String,
     path: String,
     state: State<'_, AppState>,
-) -> Result<String, String> {
+) -> Result<String, SafeFailure> {
+    let connection_uri = guest_agent_connection_uri(&state).map_err(|failure| *failure)?;
     let result = state
         .guest_agent
-        .exec_command(&vm_name, "cat", vec![path])
+        .exec_command(&connection_uri, &vm_name, "cat", vec![path])
         .await
-        .map_err(|e| format!("Failed to read file: {}", e))?;
+        .map_err(guest_failure)?;
 
     if result.exit_code != 0 {
-        return Err(format!("Failed to read file: {}", result.stderr));
+        return Err(guest_failure("guest file read failed"));
     }
     Ok(result.stdout)
 }
@@ -130,19 +151,25 @@ pub async fn write_guest_file(
     content: String,
     _create_dirs: Option<bool>,
     state: State<'_, AppState>,
-) -> Result<(), String> {
+) -> Result<(), SafeFailure> {
+    let connection_uri = guest_agent_connection_uri(&state).map_err(|failure| *failure)?;
     // Use echo with redirect via guest-exec
     let result = state
         .guest_agent
-        .exec_command(&vm_name, "bash", vec![
-            "-c".to_string(),
-            format!("echo '{}' > {}", content.replace("'", "'\\''"), path)
-        ])
+        .exec_command(
+            &connection_uri,
+            &vm_name,
+            "bash",
+            vec![
+                "-c".to_string(),
+                format!("echo '{}' > {}", content.replace("'", "'\\''"), path),
+            ],
+        )
         .await
-        .map_err(|e| format!("Failed to write file: {}", e))?;
+        .map_err(guest_failure)?;
 
     if result.exit_code != 0 {
-        return Err(format!("Failed to write file: {}", result.stderr));
+        return Err(guest_failure("guest file write failed"));
     }
     Ok(())
 }
@@ -153,14 +180,15 @@ pub async fn guest_agent_shutdown(
     vm_name: String,
     force: Option<bool>,
     state: State<'_, AppState>,
-) -> Result<(), String> {
+) -> Result<(), SafeFailure> {
+    let connection_uri = guest_agent_connection_uri(&state).map_err(|failure| *failure)?;
     let force_shutdown = force.unwrap_or(false);
 
     state
         .guest_agent
-        .shutdown(&vm_name, force_shutdown)
+        .shutdown(&connection_uri, &vm_name, force_shutdown)
         .await
-        .map_err(|e| format!("Failed to shutdown guest: {}", e))
+        .map_err(guest_failure)
 }
 
 /// Reboot guest via agent
@@ -169,14 +197,15 @@ pub async fn guest_agent_reboot(
     vm_name: String,
     force: Option<bool>,
     state: State<'_, AppState>,
-) -> Result<(), String> {
+) -> Result<(), SafeFailure> {
+    let connection_uri = guest_agent_connection_uri(&state).map_err(|failure| *failure)?;
     let force_reboot = force.unwrap_or(false);
 
     state
         .guest_agent
-        .reboot(&vm_name, force_reboot)
+        .reboot(&connection_uri, &vm_name, force_reboot)
         .await
-        .map_err(|e| format!("Failed to reboot guest: {}", e))
+        .map_err(guest_failure)
 }
 
 /// Get CPU statistics from guest
@@ -184,12 +213,13 @@ pub async fn guest_agent_reboot(
 pub async fn get_guest_cpu_stats(
     vm_name: String,
     state: State<'_, AppState>,
-) -> Result<GuestCpuStats, String> {
+) -> Result<GuestCpuStats, SafeFailure> {
+    let connection_uri = guest_agent_connection_uri(&state).map_err(|failure| *failure)?;
     state
         .guest_agent
-        .get_cpu_stats(&vm_name)
+        .get_cpu_stats(&connection_uri, &vm_name)
         .await
-        .map_err(|e| format!("Failed to get guest CPU stats: {}", e))
+        .map_err(guest_failure)
 }
 
 /// Get disk I/O statistics from guest
@@ -197,12 +227,13 @@ pub async fn get_guest_cpu_stats(
 pub async fn get_guest_disk_stats(
     vm_name: String,
     state: State<'_, AppState>,
-) -> Result<GuestDiskStats, String> {
+) -> Result<GuestDiskStats, SafeFailure> {
+    let connection_uri = guest_agent_connection_uri(&state).map_err(|failure| *failure)?;
     state
         .guest_agent
-        .get_disk_stats(&vm_name)
+        .get_disk_stats(&connection_uri, &vm_name)
         .await
-        .map_err(|e| format!("Failed to get guest disk stats: {}", e))
+        .map_err(guest_failure)
 }
 
 /// Get logged-in users from guest
@@ -210,12 +241,13 @@ pub async fn get_guest_disk_stats(
 pub async fn get_guest_users(
     vm_name: String,
     state: State<'_, AppState>,
-) -> Result<Vec<GuestUser>, String> {
+) -> Result<Vec<GuestUser>, SafeFailure> {
+    let connection_uri = guest_agent_connection_uri(&state).map_err(|failure| *failure)?;
     state
         .guest_agent
-        .get_users(&vm_name)
+        .get_users(&connection_uri, &vm_name)
         .await
-        .map_err(|e| format!("Failed to get guest users: {}", e))
+        .map_err(guest_failure)
 }
 
 /// Get timezone from guest
@@ -223,12 +255,13 @@ pub async fn get_guest_users(
 pub async fn get_guest_timezone(
     vm_name: String,
     state: State<'_, AppState>,
-) -> Result<GuestTimezone, String> {
+) -> Result<GuestTimezone, SafeFailure> {
+    let connection_uri = guest_agent_connection_uri(&state).map_err(|failure| *failure)?;
     state
         .guest_agent
-        .get_timezone(&vm_name)
+        .get_timezone(&connection_uri, &vm_name)
         .await
-        .map_err(|e| format!("Failed to get guest timezone: {}", e))
+        .map_err(guest_failure)
 }
 
 /// Get full guest information (combines multiple queries)
@@ -236,10 +269,11 @@ pub async fn get_guest_timezone(
 pub async fn get_guest_full_info(
     vm_name: String,
     state: State<'_, AppState>,
-) -> Result<GuestFullInfo, String> {
+) -> Result<GuestFullInfo, SafeFailure> {
+    let connection_uri = guest_agent_connection_uri(&state).map_err(|failure| *failure)?;
     state
         .guest_agent
-        .get_full_info(&vm_name)
+        .get_full_info(&connection_uri, &vm_name)
         .await
-        .map_err(|e| format!("Failed to get full guest info: {}", e))
+        .map_err(guest_failure)
 }

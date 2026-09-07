@@ -46,6 +46,7 @@ import { Switch } from '@/components/ui/switch'
 import { PortForwardingManager } from '@/components/network/PortForwardingManager'
 import { Network, Plus, Play, Square, Trash2, Wifi, Info, Users, RefreshCw } from 'lucide-react'
 import type { Network as NetworkType, NetworkConfig } from '@/lib/types'
+import { useActiveConnection } from '@/hooks/useActiveConnection'
 
 export function NetworkManager() {
   const queryClient = useQueryClient()
@@ -69,19 +70,24 @@ export function NetworkManager() {
   const [ipv6DhcpStart, setIpv6DhcpStart] = useState('fd00::100')
   const [ipv6DhcpEnd, setIpv6DhcpEnd] = useState('fd00::1ff')
   const [autostart, setAutostart] = useState(true)
+  const { data: activeConnection, connectionId, resourceQueryKey } = useActiveConnection()
+  const networksQueryKey = resourceQueryKey('networks') ?? ['connection', 'pending', 'networks']
+  const networkDetailsQueryKey = resourceQueryKey('network-details', detailsNetwork ?? '')
+    ?? ['connection', 'pending', 'network-details', detailsNetwork ?? '']
 
   // Query networks
   const { data: networks = [], isLoading, error } = useQuery({
-    queryKey: ['networks'],
+    queryKey: networksQueryKey,
     queryFn: api.getNetworks,
+    enabled: !!connectionId,
     refetchInterval: 10000,
   })
 
   // Query network details when details dialog is open
   const { data: networkDetails, isLoading: detailsLoading, refetch: refetchDetails } = useQuery({
-    queryKey: ['networkDetails', detailsNetwork],
+    queryKey: networkDetailsQueryKey,
     queryFn: () => detailsNetwork ? api.getNetworkDetails(detailsNetwork) : null,
-    enabled: !!detailsNetwork && showDetailsDialog,
+    enabled: !!connectionId && !!detailsNetwork && showDetailsDialog,
     refetchInterval: 5000,
   })
 
@@ -89,7 +95,7 @@ export function NetworkManager() {
   const createMutation = useMutation({
     mutationFn: (config: NetworkConfig) => api.createNetwork(config),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['networks'] })
+      queryClient.invalidateQueries({ queryKey: networksQueryKey })
       toast.success(`Network "${networkName}" created successfully`)
       setShowCreateDialog(false)
       resetForm()
@@ -103,7 +109,7 @@ export function NetworkManager() {
   const deleteMutation = useMutation({
     mutationFn: (networkName: string) => api.deleteNetwork(networkName),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['networks'] })
+      queryClient.invalidateQueries({ queryKey: networksQueryKey })
       toast.success('Network deleted successfully')
       setShowDeleteDialog(false)
       setSelectedNetwork(null)
@@ -117,7 +123,7 @@ export function NetworkManager() {
   const startMutation = useMutation({
     mutationFn: (networkName: string) => api.startNetwork(networkName),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['networks'] })
+      queryClient.invalidateQueries({ queryKey: networksQueryKey })
       toast.success('Network started successfully')
     },
     onError: (error) => {
@@ -129,7 +135,7 @@ export function NetworkManager() {
   const stopMutation = useMutation({
     mutationFn: (networkName: string) => api.stopNetwork(networkName),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['networks'] })
+      queryClient.invalidateQueries({ queryKey: networksQueryKey })
       toast.success('Network stopped successfully')
     },
     onError: (error) => {
@@ -142,8 +148,8 @@ export function NetworkManager() {
     mutationFn: ({ networkName, autostart }: { networkName: string; autostart: boolean }) =>
       api.setNetworkAutostart(networkName, autostart),
     onSuccess: (_, variables) => {
-      queryClient.invalidateQueries({ queryKey: ['networks'] })
-      queryClient.invalidateQueries({ queryKey: ['networkDetails', variables.networkName] })
+      queryClient.invalidateQueries({ queryKey: networksQueryKey })
+      queryClient.invalidateQueries({ queryKey: resourceQueryKey('network-details', variables.networkName) })
       toast.success(`Autostart ${variables.autostart ? 'enabled' : 'disabled'}`)
     },
     onError: (error) => {
@@ -525,12 +531,16 @@ export function NetworkManager() {
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>Delete Network</AlertDialogTitle>
-            <AlertDialogDescription>
-              Are you sure you want to delete network "{selectedNetwork?.name}"?
-              {selectedNetwork?.active && ' The network is currently active and will be stopped first.'}
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
+          <AlertDialogDescription>
+            Are you sure you want to delete network "{selectedNetwork?.name}"?
+            {selectedNetwork?.active && ' The network is currently active and will be stopped first.'}
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <div className="rounded-md border bg-muted/40 p-3 text-sm">
+          <div><span className="font-medium">Target:</span> Network “{selectedNetwork?.name}”</div>
+          <div><span className="font-medium">Connection:</span> {activeConnection?.name ?? 'No selected connection'}</div>
+        </div>
+        <AlertDialogFooter>
             <AlertDialogCancel onClick={() => setSelectedNetwork(null)}>Cancel</AlertDialogCancel>
             <AlertDialogAction
               onClick={() => selectedNetwork && deleteMutation.mutate(selectedNetwork.name)}

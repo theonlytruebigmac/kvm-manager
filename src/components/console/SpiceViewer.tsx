@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState, useCallback, forwardRef, useImperativeHandle } from 'react'
 import { Loader2, WifiOff, AlertCircle } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { localConsoleWebSocketUrl } from '@/lib/consoleSecurity'
+import type { ConsoleViewerRef } from './VncViewer'
 
 // SpiceMainConn class - loaded dynamically at runtime
 let SpiceMainConnClass: any = null
@@ -63,13 +65,10 @@ interface SpiceViewerProps {
   onConnected?: () => void
   onDisconnected?: () => void
   onError?: (error: string) => void
+  onInputFocusChange?: (focused: boolean) => void
 }
 
-export interface SpiceViewerRef {
-  reconnect: () => void
-  setScaleMode: (mode: ScaleMode) => void
-  getCanvas: () => HTMLCanvasElement | null
-}
+export type SpiceViewerRef = ConsoleViewerRef
 
 export const SpiceViewer = forwardRef<SpiceViewerRef, SpiceViewerProps>(({
   host,
@@ -79,6 +78,7 @@ export const SpiceViewer = forwardRef<SpiceViewerRef, SpiceViewerProps>(({
   onConnected,
   onDisconnected: _onDisconnected,
   onError,
+  onInputFocusChange,
 }, ref) => {
   const containerRef = useRef<HTMLDivElement>(null)
   const spiceRef = useRef<any>(null)
@@ -132,7 +132,15 @@ export const SpiceViewer = forwardRef<SpiceViewerRef, SpiceViewerProps>(({
     containerRef.current.appendChild(displayDiv)
 
     // Construct WebSocket URL
-    const uri = `ws://${host}:${port}`
+    let uri: string
+    try {
+      uri = localConsoleWebSocketUrl(host, port)
+    } catch {
+      setStatus('error')
+      setErrorMessage('The local console proxy is unavailable.')
+      onError?.('The local console proxy is unavailable.')
+      return
+    }
 
     console.log('Connecting to SPICE via websockify:', uri, `(attempt ${reconnectAttempts + 1})`)
     setStatus('connecting')
@@ -187,6 +195,8 @@ export const SpiceViewer = forwardRef<SpiceViewerRef, SpiceViewerProps>(({
           setStatus('connected')
           setReconnectAttempts(0)
           setIsReconnecting(false)
+          canvas.focus({ preventScroll: true })
+          onInputFocusChange?.(true)
           onConnected?.()
         }
       }
@@ -202,7 +212,7 @@ export const SpiceViewer = forwardRef<SpiceViewerRef, SpiceViewerProps>(({
       setErrorMessage(e?.message || 'Failed to create SPICE connection')
       onError?.(e?.message || 'Failed to create SPICE connection')
     }
-  }, [host, port, password, reconnectAttempts, onConnected, onError])
+  }, [host, port, password, reconnectAttempts, onConnected, onError, onInputFocusChange])
 
   // Initial connection
   useEffect(() => {
@@ -265,7 +275,15 @@ export const SpiceViewer = forwardRef<SpiceViewerRef, SpiceViewerProps>(({
     getCanvas: () => {
       return containerRef.current?.querySelector('canvas') || null
     },
-  }), [connectToSpice])
+    focus: () => {
+      containerRef.current?.querySelector('canvas')?.focus({ preventScroll: true })
+      onInputFocusChange?.(true)
+    },
+    blur: () => {
+      containerRef.current?.querySelector('canvas')?.blur()
+      onInputFocusChange?.(false)
+    },
+  }), [connectToSpice, onInputFocusChange])
 
   // Render error state
   if (status === 'error' && !isReconnecting) {
@@ -325,7 +343,21 @@ export const SpiceViewer = forwardRef<SpiceViewerRef, SpiceViewerProps>(({
   }
 
   return (
-    <div className="h-full w-full relative bg-black spice-container">
+    <div
+      className="h-full w-full relative bg-black spice-container focus-within:ring-2 focus-within:ring-inset focus-within:ring-blue-500"
+      role="application"
+      aria-label="Interactive VM console"
+      onMouseDown={() => {
+        containerRef.current?.querySelector('canvas')?.focus({ preventScroll: true })
+        onInputFocusChange?.(true)
+      }}
+      onFocusCapture={() => onInputFocusChange?.(true)}
+      onBlurCapture={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+          onInputFocusChange?.(false)
+        }
+      }}
+    >
       {/* SPICE Display Container */}
       <div
         ref={containerRef}

@@ -75,22 +75,22 @@ impl CloudInitConfig {
 
         // Add username if specified
         if let Some(ref username) = self.username {
-            yaml.push_str(&format!("users:\n"));
+            yaml.push_str("users:\n");
             yaml.push_str(&format!("  - name: {}\n", username));
-            yaml.push_str(&format!("    sudo: ALL=(ALL) NOPASSWD:ALL\n"));
-            yaml.push_str(&format!("    groups: users, admin, wheel, sudo\n"));
-            yaml.push_str(&format!("    shell: /bin/bash\n"));
+            yaml.push_str("    sudo: ALL=(ALL) NOPASSWD:ALL\n");
+            yaml.push_str("    groups: users, admin, wheel, sudo\n");
+            yaml.push_str("    shell: /bin/bash\n");
 
             // Add password if specified
             if let Some(ref _password) = self.password {
                 // Note: In production, password should be hashed
                 // For simplicity, we're using plain text with chpasswd
-                yaml.push_str(&format!("    lock_passwd: false\n"));
+                yaml.push_str("    lock_passwd: false\n");
             }
 
             // Add SSH keys if specified
             if !self.ssh_authorized_keys.is_empty() {
-                yaml.push_str(&format!("    ssh_authorized_keys:\n"));
+                yaml.push_str("    ssh_authorized_keys:\n");
                 for key in &self.ssh_authorized_keys {
                     yaml.push_str(&format!("      - {}\n", key));
                 }
@@ -99,10 +99,10 @@ impl CloudInitConfig {
 
         // Set password via chpasswd if username and password are provided
         if let (Some(ref username), Some(ref password)) = (&self.username, &self.password) {
-            yaml.push_str(&format!("\nchpasswd:\n"));
-            yaml.push_str(&format!("  list: |\n"));
+            yaml.push_str("\nchpasswd:\n");
+            yaml.push_str("  list: |\n");
             yaml.push_str(&format!("    {}:{}\n", username, password));
-            yaml.push_str(&format!("  expire: false\n"));
+            yaml.push_str("  expire: false\n");
         }
 
         // Set hostname
@@ -155,10 +155,7 @@ impl CloudInitConfig {
         self.network_config.as_ref().and_then(|nc| {
             nc.config_yaml.clone().or_else(|| {
                 // Default network config
-                Some(format!(
-                    "version: {}\nconfig: []\n",
-                    nc.version
-                ))
+                Some(format!("version: {}\nconfig: []\n", nc.version))
             })
         })
     }

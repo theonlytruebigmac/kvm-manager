@@ -37,8 +37,9 @@ impl TemplateService {
 
         // Create templates directory if it doesn't exist
         if !templates_dir.exists() {
-            fs::create_dir_all(&templates_dir)
-                .map_err(|e| AppError::TemplateError(format!("Failed to create templates directory: {}", e)))?;
+            fs::create_dir_all(&templates_dir).map_err(|e| {
+                AppError::TemplateError(format!("Failed to create templates directory: {}", e))
+            })?;
         }
 
         Ok(Self { templates_dir })
@@ -46,8 +47,9 @@ impl TemplateService {
 
     /// Get the templates directory path
     fn get_templates_dir() -> Result<PathBuf, AppError> {
-        let config_dir = dirs::config_dir()
-            .ok_or_else(|| AppError::TemplateError("Could not determine config directory".to_string()))?;
+        let config_dir = dirs::config_dir().ok_or_else(|| {
+            AppError::TemplateError("Could not determine config directory".to_string())
+        })?;
 
         Ok(config_dir.join("kvm-manager").join("templates"))
     }
@@ -80,11 +82,14 @@ impl TemplateService {
             return Ok(templates);
         }
 
-        let entries = fs::read_dir(&self.templates_dir)
-            .map_err(|e| AppError::TemplateError(format!("Failed to read templates directory: {}", e)))?;
+        let entries = fs::read_dir(&self.templates_dir).map_err(|e| {
+            AppError::TemplateError(format!("Failed to read templates directory: {}", e))
+        })?;
 
         for entry in entries {
-            let entry = entry.map_err(|e| AppError::TemplateError(format!("Failed to read directory entry: {}", e)))?;
+            let entry = entry.map_err(|e| {
+                AppError::TemplateError(format!("Failed to read directory entry: {}", e))
+            })?;
             let path = entry.path();
 
             if path.extension().and_then(|s| s.to_str()) == Some("json") {
@@ -108,14 +113,21 @@ impl TemplateService {
         let path = self.templates_dir.join(format!("{}.json", id));
 
         if !path.exists() {
-            return Err(AppError::TemplateError(format!("Template not found: {}", id)));
+            return Err(AppError::TemplateError(format!(
+                "Template not found: {}",
+                id
+            )));
         }
 
         self.load_template(&path)
     }
 
     /// Update a template
-    pub fn update_template(&self, id: &str, request: CreateTemplateRequest) -> Result<VmTemplate, AppError> {
+    pub fn update_template(
+        &self,
+        id: &str,
+        request: CreateTemplateRequest,
+    ) -> Result<VmTemplate, AppError> {
         let mut template = self.get_template(id)?;
 
         template.name = request.name;
@@ -133,7 +145,10 @@ impl TemplateService {
         let path = self.templates_dir.join(format!("{}.json", id));
 
         if !path.exists() {
-            return Err(AppError::TemplateError(format!("Template not found: {}", id)));
+            return Err(AppError::TemplateError(format!(
+                "Template not found: {}",
+                id
+            )));
         }
 
         fs::remove_file(&path)
@@ -149,8 +164,9 @@ impl TemplateService {
         let json = serde_json::to_string_pretty(template)
             .map_err(|e| AppError::TemplateError(format!("Failed to serialize template: {}", e)))?;
 
-        fs::write(&path, json)
-            .map_err(|e| AppError::TemplateError(format!("Failed to write template file: {}", e)))?;
+        fs::write(&path, json).map_err(|e| {
+            AppError::TemplateError(format!("Failed to write template file: {}", e))
+        })?;
 
         Ok(())
     }
@@ -160,8 +176,9 @@ impl TemplateService {
         let json = fs::read_to_string(path)
             .map_err(|e| AppError::TemplateError(format!("Failed to read template file: {}", e)))?;
 
-        let template: VmTemplate = serde_json::from_str(&json)
-            .map_err(|e| AppError::TemplateError(format!("Failed to parse template file: {}", e)))?;
+        let template: VmTemplate = serde_json::from_str(&json).map_err(|e| {
+            AppError::TemplateError(format!("Failed to parse template file: {}", e))
+        })?;
 
         Ok(template)
     }

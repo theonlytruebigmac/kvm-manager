@@ -17,7 +17,6 @@ interface WindowState {
  */
 export function useWindowState() {
   const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const windowRef = useRef<any>(null);
 
   // Save window state with debouncing to avoid excessive saves
   const saveWindowState = useCallback(async () => {
@@ -40,8 +39,8 @@ export function useWindowState() {
         width: size.width,
         height: size.height,
       });
-    } catch (error) {
-      console.error('Failed to save window state:', error);
+    } catch {
+      console.error('Window state could not be saved.');
     }
   }, []);
 
@@ -84,8 +83,8 @@ export function useWindowState() {
           );
         }
       }
-    } catch (error) {
-      console.error('Failed to restore window state:', error);
+    } catch {
+      console.error('Window state could not be restored.');
     }
   }, []);
 
@@ -95,7 +94,6 @@ export function useWindowState() {
 
     const setupListeners = async () => {
       const window = await getCurrentWindow();
-      windowRef.current = window;
 
       // Restore window state on mount
       await restoreWindowState();

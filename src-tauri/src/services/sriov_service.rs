@@ -2,10 +2,10 @@ use std::fs;
 use std::path::Path;
 use std::process::Command;
 
-use virt::domain::Domain;
 use crate::models::pci::{SriovPf, SriovVf, SriovVfConfig};
-use crate::services::libvirt::LibvirtService;
+use crate::services::libvirt::ConnectionProvider;
 use crate::utils::error::AppError;
+use virt::domain::Domain;
 
 /// SR-IOV service for managing Virtual Functions
 pub struct SriovService;
@@ -114,8 +114,11 @@ impl SriovService {
     }
 
     /// List Virtual Functions for a Physical Function
-    pub fn list_vfs(pf_address: &str, libvirt: &LibvirtService) -> Result<Vec<SriovVf>, AppError> {
-        tracing::debug!("Listing VFs for PF: {}", pf_address);
+    pub fn list_vfs(
+        pf_address: &str,
+        libvirt: &impl ConnectionProvider,
+    ) -> Result<Vec<SriovVf>, AppError> {
+        tracing::debug!("Listing VFs for PF");
 
         let mut vfs = Vec::new();
         let device_path = format!("/sys/bus/pci/devices/{}", pf_address);
@@ -133,7 +136,8 @@ impl SriovService {
             // Read VF PCI address
             let vf_link = format!("{}/virtfn{}", device_path, vf_index);
             let vf_address = match fs::read_link(&vf_link) {
-                Ok(p) => p.file_name()
+                Ok(p) => p
+                    .file_name()
                     .map(|n| n.to_string_lossy().to_string())
                     .unwrap_or_default(),
                 Err(_) => continue,
@@ -180,13 +184,17 @@ impl SriovService {
 
     /// Enable VFs on a Physical Function
     pub fn enable_vfs(pf_address: &str, num_vfs: u32) -> Result<(), AppError> {
-        tracing::info!("Enabling {} VFs on PF: {}", num_vfs, pf_address);
+        tracing::info!("Enabling VFs on PF");
 
         let sriov_numvfs_path = format!("/sys/bus/pci/devices/{}/sriov_numvfs", pf_address);
 
         // First disable existing VFs
-        fs::write(&sriov_numvfs_path, "0")
-            .map_err(|e| AppError::Other(format!("Failed to disable VFs: {}. Try running with root permissions.", e)))?;
+        fs::write(&sriov_numvfs_path, "0").map_err(|e| {
+            AppError::Other(format!(
+                "Failed to disable VFs: {}. Try running with root permissions.",
+                e
+            ))
+        })?;
 
         // Enable requested number of VFs
         if num_vfs > 0 {
@@ -194,13 +202,17 @@ impl SriovService {
                 .map_err(|e| AppError::Other(format!("Failed to enable {} VFs: {}", num_vfs, e)))?;
         }
 
-        tracing::info!("Enabled {} VFs on {}", num_vfs, pf_address);
+        tracing::info!("Enabled VFs on PF");
         Ok(())
     }
 
     /// Configure a Virtual Function
     pub fn configure_vf(config: &SriovVfConfig) -> Result<(), AppError> {
-        tracing::info!("Configuring VF {} on {}", config.vf_index, config.pf_interface);
+        tracing::info!(
+            "Configuring VF {} on {}",
+            config.vf_index,
+            config.pf_interface
+        );
 
         // Use ip link command to configure VF
         let mut args = vec![
@@ -237,8 +249,9 @@ impl SriovService {
             .map_err(|e| AppError::Other(format!("Failed to run ip command: {}", e)))?;
 
         if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(AppError::Other(format!("Failed to configure VF: {}", stderr)));
+            return Err(AppError::Other(
+                "The virtual function could not be configured".to_string(),
+            ));
         }
 
         Ok(())
@@ -246,11 +259,11 @@ impl SriovService {
 
     /// Attach a VF to a VM using libvirt
     pub fn attach_vf_to_vm(
-        libvirt: &LibvirtService,
+        libvirt: &impl ConnectionProvider,
         vm_id: &str,
         vf_address: &str,
     ) -> Result<(), AppError> {
-        tracing::info!("Attaching VF {} to VM {}", vf_address, vm_id);
+        tracing::info!("Attaching VF to VM");
 
         let conn = libvirt.get_connection();
         let domain = Domain::lookup_by_uuid_string(conn, vm_id)
@@ -259,7 +272,10 @@ impl SriovService {
         // Parse PCI address (format: 0000:01:00.0)
         let parts: Vec<&str> = vf_address.split(&[':', '.'][..]).collect();
         if parts.len() != 4 {
-            return Err(AppError::InvalidConfig(format!("Invalid PCI address format: {}", vf_address)));
+            return Err(AppError::InvalidConfig(format!(
+                "Invalid PCI address format: {}",
+                vf_address
+            )));
         }
 
         // Build hostdev XML for network VF
@@ -272,20 +288,21 @@ impl SriovService {
             parts[0], parts[1], parts[2], parts[3]
         );
 
-        domain.attach_device(&device_xml)
+        domain
+            .attach_device(&device_xml)
             .map_err(|e| AppError::LibvirtError(format!("Failed to attach VF: {}", e)))?;
 
-        tracing::info!("VF {} attached to VM {}", vf_address, vm_id);
+        tracing::info!("VF attached to VM");
         Ok(())
     }
 
     /// Detach a VF from a VM
     pub fn detach_vf_from_vm(
-        libvirt: &LibvirtService,
+        libvirt: &impl ConnectionProvider,
         vm_id: &str,
         vf_address: &str,
     ) -> Result<(), AppError> {
-        tracing::info!("Detaching VF {} from VM {}", vf_address, vm_id);
+        tracing::info!("Detaching VF from VM");
 
         let conn = libvirt.get_connection();
         let domain = Domain::lookup_by_uuid_string(conn, vm_id)
@@ -294,7 +311,10 @@ impl SriovService {
         // Parse PCI address
         let parts: Vec<&str> = vf_address.split(&[':', '.'][..]).collect();
         if parts.len() != 4 {
-            return Err(AppError::InvalidConfig(format!("Invalid PCI address format: {}", vf_address)));
+            return Err(AppError::InvalidConfig(format!(
+                "Invalid PCI address format: {}",
+                vf_address
+            )));
         }
 
         let device_xml = format!(
@@ -306,10 +326,11 @@ impl SriovService {
             parts[0], parts[1], parts[2], parts[3]
         );
 
-        domain.detach_device(&device_xml)
+        domain
+            .detach_device(&device_xml)
             .map_err(|e| AppError::LibvirtError(format!("Failed to detach VF: {}", e)))?;
 
-        tracing::info!("VF {} detached from VM {}", vf_address, vm_id);
+        tracing::info!("VF detached from VM");
         Ok(())
     }
 
@@ -330,7 +351,7 @@ impl SriovService {
                     if let Some(colon_pos) = first_line.find(": ") {
                         let description = &first_line[colon_pos + 2..];
                         // Try to split vendor and device
-                        if let Some(space_pos) = description.find(" ") {
+                        if let Some(_space_pos) = description.find(" ") {
                             // Check for common patterns
                             let parts: Vec<&str> = description.splitn(2, " ").collect();
                             if parts.len() == 2 {
@@ -350,7 +371,7 @@ impl SriovService {
         // Look in net directory for interface name
         let net_path = format!("{}/net", device_path);
         if let Ok(entries) = fs::read_dir(&net_path) {
-            for entry in entries.flatten() {
+            if let Some(entry) = entries.flatten().next() {
                 return Some(entry.file_name().to_string_lossy().to_string());
             }
         }
@@ -377,14 +398,18 @@ impl SriovService {
                         // Extract MAC
                         if let Some(mac_pos) = line.find("MAC ") {
                             let mac_part = &line[mac_pos + 4..];
-                            if let Some(end) = mac_part.find(|c: char| c == ',' || c.is_whitespace()) {
+                            if let Some(end) =
+                                mac_part.find(|c: char| c == ',' || c.is_whitespace())
+                            {
                                 mac_address = Some(mac_part[..end].to_string());
                             }
                         }
                         // Extract VLAN
                         if let Some(vlan_pos) = line.find("vlan ") {
                             let vlan_part = &line[vlan_pos + 5..];
-                            if let Some(end) = vlan_part.find(|c: char| c == ',' || c.is_whitespace()) {
+                            if let Some(end) =
+                                vlan_part.find(|c: char| c == ',' || c.is_whitespace())
+                            {
                                 if let Ok(vid) = vlan_part[..end].parse::<u16>() {
                                     vlan_id = Some(vid);
                                 }
@@ -410,7 +435,8 @@ impl SriovService {
         for vf_index in 0..num_vfs {
             let vf_link = format!("{}/virtfn{}", device_path, vf_index);
             if let Ok(vf_path) = fs::read_link(&vf_link) {
-                let vf_address = vf_path.file_name()
+                let vf_address = vf_path
+                    .file_name()
                     .map(|n| n.to_string_lossy().to_string())
                     .unwrap_or_default();
                 let vf_device_path = format!("/sys/bus/pci/devices/{}", vf_address);
@@ -424,12 +450,16 @@ impl SriovService {
         in_use
     }
 
-    fn get_vf_attachment(libvirt: &LibvirtService, vf_address: &str) -> Result<(bool, Option<String>), AppError> {
+    fn get_vf_attachment(
+        libvirt: &impl ConnectionProvider,
+        vf_address: &str,
+    ) -> Result<(bool, Option<String>), AppError> {
         let conn = libvirt.get_connection();
 
         // Check all running domains for this VF
         let flags = virt::sys::VIR_CONNECT_LIST_DOMAINS_ACTIVE;
-        let domains = conn.list_all_domains(flags)
+        let domains = conn
+            .list_all_domains(flags)
             .map_err(|e| AppError::LibvirtError(format!("Failed to list domains: {}", e)))?;
 
         for domain in domains {

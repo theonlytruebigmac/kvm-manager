@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/tauri'
+import { useActiveConnection } from '@/hooks/useActiveConnection'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -36,6 +37,8 @@ interface DiskManagerProps {
 
 export function DiskManager({ vmId, vmName, disks = [] }: DiskManagerProps) {
   const queryClient = useQueryClient()
+  const { resourceQueryKey } = useActiveConnection()
+  const vmQueryKey = resourceQueryKey('vm', vmId) ?? ['connection', 'pending', 'vm', vmId]
   const [showAttachDialog, setShowAttachDialog] = useState(false)
   const [diskPath, setDiskPath] = useState('')
   const [deviceTarget, setDeviceTarget] = useState('vdb')
@@ -47,7 +50,7 @@ export function DiskManager({ vmId, vmName, disks = [] }: DiskManagerProps) {
     mutationFn: ({ diskPath, deviceTarget, busType }: { diskPath: string; deviceTarget: string; busType: string }) =>
       api.attachDisk(vmId, diskPath, deviceTarget, busType),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['vm', vmId] })
+      queryClient.invalidateQueries({ queryKey: vmQueryKey })
       toast.success(`Disk attached to ${vmName}`)
       setShowAttachDialog(false)
       setDiskPath('')
@@ -68,7 +71,7 @@ export function DiskManager({ vmId, vmName, disks = [] }: DiskManagerProps) {
   const detachMutation = useMutation({
     mutationFn: (deviceTarget: string) => api.detachDisk(vmId, deviceTarget),
     onSuccess: (_data, deviceTarget) => {
-      queryClient.invalidateQueries({ queryKey: ['vm', vmId] })
+      queryClient.invalidateQueries({ queryKey: vmQueryKey })
       toast.success(`Disk ${deviceTarget} detached from ${vmName}`)
       setDetachTarget(null)
     },

@@ -8,6 +8,7 @@ import { Badge } from '@/components/ui/badge'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Volume2, Trash2, AlertCircle, Loader2, CheckCircle } from 'lucide-react'
 import { api } from '@/lib/tauri'
+import { useActiveConnection } from '@/hooks/useActiveConnection'
 import { useQueryClient } from '@tanstack/react-query'
 import type { VM } from '@/lib/types'
 
@@ -18,6 +19,9 @@ interface SoundEditorProps {
 
 export function SoundEditor({ vm, compact }: SoundEditorProps) {
   const queryClient = useQueryClient()
+  const { resourceQueryKey } = useActiveConnection()
+  const vmQueryKey = resourceQueryKey('vm', vm.id) ?? ['connection', 'pending', 'vm', vm.id]
+  const vmsQueryKey = resourceQueryKey('vms') ?? ['connection', 'pending', 'vms']
   const originalModel = 'ich9' // Default - would come from VM config
 
   const [soundModel, setSoundModel] = useState(originalModel)
@@ -36,8 +40,8 @@ export function SoundEditor({ vm, compact }: SoundEditorProps) {
     try {
       await api.attachSound(vm.id, soundModel)
       setSuccess(true)
-      queryClient.invalidateQueries({ queryKey: ['vm', vm.id] })
-      queryClient.invalidateQueries({ queryKey: ['vms'] })
+      queryClient.invalidateQueries({ queryKey: vmQueryKey })
+      queryClient.invalidateQueries({ queryKey: vmsQueryKey })
       setTimeout(() => setSuccess(false), 3000)
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
@@ -58,8 +62,8 @@ export function SoundEditor({ vm, compact }: SoundEditorProps) {
     try {
       await api.detachSound(vm.id)
       setSuccess(true)
-      queryClient.invalidateQueries({ queryKey: ['vm', vm.id] })
-      queryClient.invalidateQueries({ queryKey: ['vms'] })
+      queryClient.invalidateQueries({ queryKey: vmQueryKey })
+      queryClient.invalidateQueries({ queryKey: vmsQueryKey })
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
     } finally {

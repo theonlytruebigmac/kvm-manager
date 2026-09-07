@@ -1,0 +1,8 @@
+{
+  "libvirt_access": "available",
+  "qemu_emulator": "unavailable",
+  "kvm": "available",
+  "uefi": "unknown",
+  "secure_boot": "unknown",
+  "forwarding_privilege": "available"
+}

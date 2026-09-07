@@ -1,0 +1,5 @@
+<domainCapabilities>
+  <os supported='yes'><enum name='firmware'><value>bios</value><value>efi</value></enum><firmwareFeatures supported='yes'><enum name='secureBoot'><value>yes</value></enum><enum name='enrolledKeys'><value>yes</value></enum></firmwareFeatures></os>
+  <features><gic supported='no'/></features>
+  <devices><tpm supported='yes'><enum name='model'><value>tpm-tis</value></enum></tpm></devices>
+</domainCapabilities>

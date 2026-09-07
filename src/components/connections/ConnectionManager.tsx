@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { api } from '@/lib/tauri'
+import { api, isConnectionQueryKey } from '@/lib/tauri'
+import { activeConnectionQueryKey, activeOperationContextQueryKey, useActiveOperationContext } from '@/hooks/useActiveConnection'
 import { SavedConnection, ConnectionType } from '@/lib/types'
 import { toast } from 'sonner'
 import {
@@ -47,6 +48,7 @@ export function ConnectionManager({ open, onOpenChange }: ConnectionManagerProps
   const queryClient = useQueryClient()
   const [editingConnection, setEditingConnection] = useState<SavedConnection | null>(null)
   const [isAddingNew, setIsAddingNew] = useState(false)
+  const [passwordConnection, setPasswordConnection] = useState<SavedConnection | null>(null)
 
   // Fetch saved connections
   const { data: connections = [] } = useQuery({
@@ -57,22 +59,39 @@ export function ConnectionManager({ open, onOpenChange }: ConnectionManagerProps
 
   // Fetch active connection
   const { data: activeConnection } = useQuery({
-    queryKey: ['active-connection'],
+    queryKey: activeConnectionQueryKey,
     queryFn: api.getActiveConnection,
     enabled: open,
   })
+  const { data: operationContext } = useActiveOperationContext(open)
+  const unavailableCapabilities = operationContext?.capabilities.filter(
+    (capability) => capability.state === 'unavailable',
+  ) ?? []
 
-  // Connect mutation
+  const handleConnected = () => {
+    queryClient.cancelQueries({ predicate: (query) => isConnectionQueryKey(query.queryKey) || query.queryKey[0] === 'vms' || query.queryKey[0] === 'host-info' || query.queryKey[0] === 'hostInfo' })
+    queryClient.removeQueries({ predicate: (query) => isConnectionQueryKey(query.queryKey) || query.queryKey[0] === 'vms' || query.queryKey[0] === 'host-info' || query.queryKey[0] === 'hostInfo' })
+    queryClient.invalidateQueries({ queryKey: activeConnectionQueryKey })
+    queryClient.removeQueries({ queryKey: activeOperationContextQueryKey })
+    setPasswordConnection(null)
+    toast.success('Connected successfully')
+  }
+
+  // This path uses SSH agent or a configured key and cannot prompt in the desktop process.
   const connectMutation = useMutation({
     mutationFn: (connectionId: string) => api.connectTo(connectionId),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['active-connection'] })
-      queryClient.invalidateQueries({ queryKey: ['vms'] })
-      queryClient.invalidateQueries({ queryKey: ['host-info'] })
-      toast.success('Connected successfully')
-    },
+    onSuccess: handleConnected,
     onError: (error) => {
       toast.error(`Connection failed: ${error}`)
+    },
+  })
+
+  const passwordConnectMutation = useMutation({
+    mutationFn: ({ connectionId, password }: { connectionId: string; password: string }) =>
+      api.connectToWithPassword(connectionId, password),
+    onSuccess: handleConnected,
+    onError: () => {
+      toast.error('Password authentication failed. Verify the credentials and host access, then try again.')
     },
   })
 
@@ -137,6 +156,12 @@ export function ConnectionManager({ open, onOpenChange }: ConnectionManagerProps
         </DialogHeader>
 
         <div className="space-y-4">
+          {unavailableCapabilities.length > 0 && (
+            <div className="rounded-md border border-amber-500/50 bg-amber-500/10 p-3 text-sm text-amber-950 dark:text-amber-100">
+              This connection cannot use: {unavailableCapabilities.map((capability) => capability.kind).join(', ')}.
+              {' '}Select a local host to enable these features.
+            </div>
+          )}
           {/* Connection List */}
           <ScrollArea className="h-[300px] border rounded-lg p-2">
             {connections.length === 0 ? (
@@ -192,8 +217,10 @@ export function ConnectionManager({ open, onOpenChange }: ConnectionManagerProps
                           <Button
                             variant="outline"
                             size="sm"
-                            onClick={() => connectMutation.mutate(conn.id)}
-                            disabled={isConnecting}
+                            onClick={() => conn.connectionType === 'ssh'
+                              ? setPasswordConnection(conn)
+                              : connectMutation.mutate(conn.id)}
+                            disabled={isConnecting || passwordConnectMutation.isPending}
                           >
                             {isConnecting ? (
                               <Loader2 className="h-4 w-4 mr-1 animate-spin" />
@@ -270,6 +297,77 @@ export function ConnectionManager({ open, onOpenChange }: ConnectionManagerProps
           }}
         />
       )}
+      <SshPasswordDialog
+        connection={passwordConnection}
+        isConnecting={passwordConnectMutation.isPending}
+        onClose={() => setPasswordConnection(null)}
+        onConnect={(password) => {
+          if (passwordConnection) {
+            passwordConnectMutation.mutate({ connectionId: passwordConnection.id, password })
+          }
+        }}
+        onUseAgent={() => {
+          if (passwordConnection) {
+            setPasswordConnection(null)
+            connectMutation.mutate(passwordConnection.id)
+          }
+        }}
+      />
+    </Dialog>
+  )
+}
+
+interface SshPasswordDialogProps {
+  connection: SavedConnection | null
+  isConnecting: boolean
+  onClose: () => void
+  onConnect: (password: string) => void
+  onUseAgent: () => void
+}
+
+function SshPasswordDialog({ connection, isConnecting, onClose, onConnect, onUseAgent }: SshPasswordDialogProps) {
+  const [password, setPassword] = useState('')
+  const isOpen = connection !== null
+
+  return (
+    <Dialog open={isOpen} onOpenChange={(open) => {
+      if (!open) {
+        setPassword('')
+        onClose()
+      }
+    }}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Connect to {connection?.name}</DialogTitle>
+          <DialogDescription>
+            Enter the SSH password for {connection?.username || 'root'}@{connection?.host}. It is used only for this connection attempt and is never saved.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-2">
+          <Label htmlFor="ssh-password">SSH Password</Label>
+          <Input
+            id="ssh-password"
+            type="password"
+            value={password}
+            onChange={(event) => setPassword(event.target.value)}
+            autoComplete="current-password"
+            autoFocus
+            onKeyDown={(event) => {
+              if (event.key === 'Enter' && password && !isConnecting) onConnect(password)
+            }}
+          />
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={onUseAgent} disabled={isConnecting}>
+            Use SSH Agent or Key
+          </Button>
+          <Button variant="ghost" onClick={onClose} disabled={isConnecting}>Cancel</Button>
+          <Button onClick={() => onConnect(password)} disabled={!password || isConnecting}>
+            {isConnecting && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+            Connect
+          </Button>
+        </DialogFooter>
+      </DialogContent>
     </Dialog>
   )
 }

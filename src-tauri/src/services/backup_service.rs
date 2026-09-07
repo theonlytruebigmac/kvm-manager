@@ -11,7 +11,7 @@ pub struct BackupConfig {
     pub id: String,
     pub name: String,
     pub vm_id: String,
-    pub schedule_id: String, // Link to scheduler service
+    pub schedule_id: String,  // Link to scheduler service
     pub retention_count: u32, // Number of backups to keep
     pub enabled: bool,
     pub last_backup: Option<i64>,
@@ -44,8 +44,9 @@ impl BackupService {
 
         // Create backups directory if it doesn't exist
         if !backups_dir.exists() {
-            fs::create_dir_all(&backups_dir)
-                .map_err(|e| AppError::Other(format!("Failed to create backups directory: {}", e)))?;
+            fs::create_dir_all(&backups_dir).map_err(|e| {
+                AppError::Other(format!("Failed to create backups directory: {}", e))
+            })?;
         }
 
         Ok(Self { backups_dir })
@@ -60,10 +61,15 @@ impl BackupService {
     }
 
     /// Create a new backup configuration
-    pub fn create_backup_config(&self, request: CreateBackupRequest) -> Result<BackupConfig, AppError> {
+    pub fn create_backup_config(
+        &self,
+        request: CreateBackupRequest,
+    ) -> Result<BackupConfig, AppError> {
         // Validate retention count
         if request.retention_count == 0 {
-            return Err(AppError::Other("Retention count must be at least 1".to_string()));
+            return Err(AppError::Other(
+                "Retention count must be at least 1".to_string(),
+            ));
         }
 
         // Create a schedule for the backup using the scheduler service
@@ -112,15 +118,14 @@ impl BackupService {
             .map_err(|e| AppError::Other(format!("Failed to read backups directory: {}", e)))?;
 
         for entry in entries {
-            let entry = entry.map_err(|e| AppError::Other(format!("Failed to read directory entry: {}", e)))?;
+            let entry = entry
+                .map_err(|e| AppError::Other(format!("Failed to read directory entry: {}", e)))?;
             let path = entry.path();
 
             if path.extension().and_then(|s| s.to_str()) == Some("json") {
                 match self.load_backup_config(&path) {
                     Ok(config) => configs.push(config),
-                    Err(e) => {
-                        eprintln!("Warning: Failed to load backup config {:?}: {}", path, e);
-                    }
+                    Err(_) => tracing::warn!("A saved backup configuration could not be loaded"),
                 }
             }
         }

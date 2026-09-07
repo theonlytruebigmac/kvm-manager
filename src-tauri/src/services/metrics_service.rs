@@ -1,7 +1,7 @@
-use rusqlite::{Connection, params};
+use crate::utils::error::AppError;
+use rusqlite::{params, Connection};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use crate::utils::error::AppError;
 
 /// VM performance metrics for historical tracking
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -52,7 +52,7 @@ impl MetricsService {
             path
         });
 
-        tracing::info!("Initializing metrics database at: {:?}", path);
+        tracing::info!("Initializing metrics database");
 
         let conn = Connection::open(&path)
             .map_err(|e| AppError::Other(format!("Failed to open metrics database: {}", e)))?;
@@ -91,7 +91,9 @@ impl MetricsService {
 
     /// Store VM metrics
     pub fn store_metrics(&self, metrics: &VmMetrics) -> Result<(), AppError> {
-        let conn = self.conn.lock()
+        let conn = self
+            .conn
+            .lock()
             .map_err(|e| AppError::Other(format!("Failed to lock database: {}", e)))?;
 
         conn.execute(
@@ -124,7 +126,9 @@ impl MetricsService {
         end_time: i64,
         max_points: Option<usize>,
     ) -> Result<HistoricalMetrics, AppError> {
-        let conn = self.conn.lock()
+        let conn = self
+            .conn
+            .lock()
             .map_err(|e| AppError::Other(format!("Failed to lock database: {}", e)))?;
 
         // Calculate sampling interval if max_points is specified
@@ -157,15 +161,16 @@ impl MetricsService {
                     disk_read_bytes, disk_write_bytes, network_rx_bytes, network_tx_bytes
              FROM vm_metrics
              WHERE vm_id = ?1 AND timestamp >= ?2 AND timestamp <= ?3
-             ORDER BY timestamp ASC".to_string()
+             ORDER BY timestamp ASC"
+                .to_string()
         };
 
-        let mut stmt = conn.prepare(&query)
+        let mut stmt = conn
+            .prepare(&query)
             .map_err(|e| AppError::Other(format!("Failed to prepare query: {}", e)))?;
 
-        let data_points = stmt.query_map(
-            params![vm_id, start_time, end_time],
-            |row| {
+        let data_points = stmt
+            .query_map(params![vm_id, start_time, end_time], |row| {
                 Ok(MetricDataPoint {
                     timestamp: row.get(0)?,
                     cpu_usage: row.get(1)?,
@@ -176,11 +181,10 @@ impl MetricsService {
                     network_rx_bytes: row.get(6)?,
                     network_tx_bytes: row.get(7)?,
                 })
-            },
-        )
-        .map_err(|e| AppError::Other(format!("Failed to query metrics: {}", e)))?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| AppError::Other(format!("Failed to collect metrics: {}", e)))?;
+            })
+            .map_err(|e| AppError::Other(format!("Failed to query metrics: {}", e)))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| AppError::Other(format!("Failed to collect metrics: {}", e)))?;
 
         Ok(HistoricalMetrics {
             vm_id: vm_id.to_string(),
@@ -190,14 +194,17 @@ impl MetricsService {
 
     /// Delete old metrics older than the specified timestamp
     pub fn cleanup_old_metrics(&self, older_than: i64) -> Result<usize, AppError> {
-        let conn = self.conn.lock()
+        let conn = self
+            .conn
+            .lock()
             .map_err(|e| AppError::Other(format!("Failed to lock database: {}", e)))?;
 
-        let deleted = conn.execute(
-            "DELETE FROM vm_metrics WHERE timestamp < ?1",
-            params![older_than],
-        )
-        .map_err(|e| AppError::Other(format!("Failed to cleanup metrics: {}", e)))?;
+        let deleted = conn
+            .execute(
+                "DELETE FROM vm_metrics WHERE timestamp < ?1",
+                params![older_than],
+            )
+            .map_err(|e| AppError::Other(format!("Failed to cleanup metrics: {}", e)))?;
 
         tracing::info!("Deleted {} old metric records", deleted);
         Ok(deleted)
@@ -205,15 +212,14 @@ impl MetricsService {
 
     /// Get the total number of metrics stored
     pub fn get_metrics_count(&self) -> Result<i64, AppError> {
-        let conn = self.conn.lock()
+        let conn = self
+            .conn
+            .lock()
             .map_err(|e| AppError::Other(format!("Failed to lock database: {}", e)))?;
 
-        let count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM vm_metrics",
-            [],
-            |row| row.get(0),
-        )
-        .map_err(|e| AppError::Other(format!("Failed to count metrics: {}", e)))?;
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM vm_metrics", [], |row| row.get(0))
+            .map_err(|e| AppError::Other(format!("Failed to count metrics: {}", e)))?;
 
         Ok(count)
     }

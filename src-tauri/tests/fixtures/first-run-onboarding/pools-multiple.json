@@ -1,0 +1,4 @@
+[
+  {"id":"22222222-2222-2222-2222-222222222222","name":"fast","state":"active","poolType":"dir","capacityBytes":107374182400,"allocationBytes":21474836480,"availableBytes":85899345920,"path":"/fixture/fast","autostart":true},
+  {"id":"33333333-3333-3333-3333-333333333333","name":"archive","state":"active","poolType":"netfs","capacityBytes":536870912000,"allocationBytes":107374182400,"availableBytes":429496729600,"path":"/fixture/archive","autostart":true}
+]

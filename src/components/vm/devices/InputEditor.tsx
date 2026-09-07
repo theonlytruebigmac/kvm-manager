@@ -7,6 +7,11 @@ import { Label } from '@/components/ui/label'
 import { Keyboard, Mouse, Tablet, Plus, Trash2, Gamepad2, MonitorUp, RefreshCw, AlertTriangle } from 'lucide-react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/tauri'
+import {
+  hasConnectionCapability,
+  useActiveConnection,
+  useActiveOperationContext,
+} from '@/hooks/useActiveConnection'
 import { toast } from 'sonner'
 import type { VM } from '@/lib/types'
 import { useState } from 'react'
@@ -22,11 +27,14 @@ interface InputDevice {
 }
 
 export function InputEditor({ vm, compact }: InputEditorProps) {
+  const { connectionId, resourceQueryKey } = useActiveConnection()
   const queryClient = useQueryClient()
   const [grabAll, setGrabAll] = useState(true)
+  const { data: operationContext, isLoading: loadingOperationContext } = useActiveOperationContext(!compact)
+  const hostDeviceAvailable = hasConnectionCapability(operationContext, 'hostDevice')
 
-  // Default input devices (typical QEMU defaults)
-  // TODO: Parse actual input devices from VM configuration
+  // Typical QEMU defaults. This is an informational fallback until input devices
+  // are read from the VM's libvirt XML.
   const inputDevices: InputDevice[] = [
     { type: 'tablet', bus: 'usb' },
     { type: 'keyboard', bus: 'ps2' },
@@ -35,14 +43,17 @@ export function InputEditor({ vm, compact }: InputEditorProps) {
 
   // Query available evdev devices on the host
   const { data: availableEvdevDevices = [], isLoading: loadingAvailable, refetch: refetchAvailable } = useQuery({
-    queryKey: ['evdev-devices'],
+    queryKey: resourceQueryKey('evdev-devices') ?? ['connection', 'pending', 'evdev-devices'],
     queryFn: () => api.listEvdevDevices(),
+    enabled: !!connectionId && hostDeviceAvailable,
   })
 
   // Query evdev devices attached to this VM
   const { data: attachedEvdevDevices = [], isLoading: loadingAttached, refetch: refetchAttached } = useQuery({
-    queryKey: ['vm-evdev-devices', vm.id],
+    queryKey: resourceQueryKey('vm-evdev-devices', vm.id)
+      ?? ['connection', 'pending', 'vm-evdev-devices', vm.id],
     queryFn: () => api.getVmEvdevDevices(vm.id),
+    enabled: !!connectionId && hostDeviceAvailable,
   })
 
   // Attach evdev device mutation
@@ -50,7 +61,7 @@ export function InputEditor({ vm, compact }: InputEditorProps) {
     mutationFn: (devicePath: string) => api.attachEvdev(vm.id, devicePath, grabAll),
     onSuccess: () => {
       toast.success('Evdev device attached')
-      queryClient.invalidateQueries({ queryKey: ['vm-evdev-devices', vm.id] })
+      queryClient.invalidateQueries({ queryKey: resourceQueryKey('vm-evdev-devices', vm.id) })
       refetchAttached()
     },
     onError: (err) => {
@@ -63,7 +74,7 @@ export function InputEditor({ vm, compact }: InputEditorProps) {
     mutationFn: (devicePath: string) => api.detachEvdev(vm.id, devicePath),
     onSuccess: () => {
       toast.success('Evdev device detached')
-      queryClient.invalidateQueries({ queryKey: ['vm-evdev-devices', vm.id] })
+      queryClient.invalidateQueries({ queryKey: resourceQueryKey('vm-evdev-devices', vm.id) })
       refetchAttached()
     },
     onError: (err) => {
@@ -115,7 +126,7 @@ export function InputEditor({ vm, compact }: InputEditorProps) {
           </div>
           <div className="flex gap-2">
             <Badge variant="outline" className="text-xs">
-              {inputDevices.length} virtual
+              {inputDevices.length} defaults
             </Badge>
             {evdevCount > 0 && (
               <Badge variant="secondary" className="text-xs">
@@ -166,11 +177,11 @@ export function InputEditor({ vm, compact }: InputEditorProps) {
             Input Devices
           </h2>
           <p className="text-sm text-muted-foreground">
-            Configure virtual input devices for this VM
+            Review default virtual input assumptions and manage host evdev passthrough
           </p>
         </div>
         <Badge variant="outline">
-          {inputDevices.length} Devices
+          {inputDevices.length} Defaults
         </Badge>
       </div>
 
@@ -183,9 +194,9 @@ export function InputEditor({ vm, compact }: InputEditorProps) {
         <TabsContent value="details" className="space-y-6 pt-4">
           <Card>
             <CardHeader>
-              <CardTitle>Input Device List</CardTitle>
+              <CardTitle>Default Input Profile</CardTitle>
               <CardDescription>
-                Virtual input devices attached to this VM
+                Typical QEMU devices shown as defaults; this list is not yet read from the VM XML
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-2">
@@ -205,12 +216,7 @@ export function InputEditor({ vm, compact }: InputEditorProps) {
                         </p>
                       </div>
                     </div>
-                    <div className="flex items-center gap-2">
-                      <Badge variant="secondary">{device.bus.toUpperCase()}</Badge>
-                      <Button variant="ghost" size="icon" className="h-8 w-8" disabled>
-                        <Trash2 className="w-4 h-4 text-destructive" />
-                      </Button>
-                    </div>
+                    <Badge variant="secondary">{device.bus.toUpperCase()}</Badge>
                   </div>
                 )
               })}
@@ -265,15 +271,11 @@ export function InputEditor({ vm, compact }: InputEditorProps) {
           <Card>
             <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
               <div>
-                <CardTitle>Add Input Device</CardTitle>
+                <CardTitle>Virtual Input Editing</CardTitle>
                 <CardDescription>
-                  Add additional input devices
+                  Editing virtual input devices is not available yet; use the supported evdev controls below
                 </CardDescription>
               </div>
-              <Button variant="outline" size="sm" className="gap-1.5" disabled>
-                <Plus className="w-4 h-4" />
-                Add Device
-              </Button>
             </CardHeader>
           </Card>
 
@@ -297,13 +299,18 @@ export function InputEditor({ vm, compact }: InputEditorProps) {
                     refetchAvailable()
                     refetchAttached()
                   }}
-                  disabled={loadingAvailable || loadingAttached}
+                  disabled={!hostDeviceAvailable || loadingOperationContext || loadingAvailable || loadingAttached}
                 >
                   <RefreshCw className={`w-4 h-4 ${(loadingAvailable || loadingAttached) ? 'animate-spin' : ''}`} />
                 </Button>
               </div>
             </CardHeader>
             <CardContent className="space-y-4">
+              {!hostDeviceAvailable && !loadingOperationContext && (
+                <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-950 dark:text-amber-100">
+                  Evdev passthrough requires a local system connection. Select a local host to manage physical input devices.
+                </div>
+              )}
               {/* Warning banner */}
               <div className="flex items-start gap-2 p-3 bg-orange-500/10 border border-orange-500/30 rounded-lg">
                 <AlertTriangle className="w-4 h-4 text-orange-500 mt-0.5 flex-shrink-0" />
@@ -330,6 +337,7 @@ export function InputEditor({ vm, compact }: InputEditorProps) {
                   id="grab-all"
                   checked={grabAll}
                   onCheckedChange={setGrabAll}
+                  disabled={!hostDeviceAvailable}
                 />
               </div>
 
@@ -360,7 +368,7 @@ export function InputEditor({ vm, compact }: InputEditorProps) {
                             size="icon"
                             className="h-8 w-8"
                             onClick={() => detachEvdevMutation.mutate(device.path)}
-                            disabled={detachEvdevMutation.isPending || vm.state !== 'running'}
+                            disabled={!hostDeviceAvailable || detachEvdevMutation.isPending || vm.state !== 'running'}
                           >
                             <Trash2 className="w-4 h-4 text-destructive" />
                           </Button>
@@ -402,7 +410,7 @@ export function InputEditor({ vm, compact }: InputEditorProps) {
                               variant="outline"
                               size="sm"
                               onClick={() => attachEvdevMutation.mutate(device.path)}
-                              disabled={attachEvdevMutation.isPending || vm.state !== 'running'}
+                              disabled={!hostDeviceAvailable || attachEvdevMutation.isPending || vm.state !== 'running'}
                             >
                               <Plus className="w-4 h-4 mr-1" />
                               Attach
@@ -427,9 +435,9 @@ export function InputEditor({ vm, compact }: InputEditorProps) {
         <TabsContent value="xml" className="pt-4">
           <Card>
             <CardHeader>
-              <CardTitle>Input Devices XML Configuration</CardTitle>
+              <CardTitle>Input Device XML Preview</CardTitle>
               <CardDescription>
-                Raw libvirt XML for input devices
+                Preview assembled from default devices and current evdev attachments; it is not the VM XML
               </CardDescription>
             </CardHeader>
             <CardContent>
@@ -447,11 +455,6 @@ export function InputEditor({ vm, compact }: InputEditorProps) {
           </Card>
         </TabsContent>
       </Tabs>
-
-      <div className="flex justify-end gap-2">
-        <Button variant="outline" disabled>Revert</Button>
-        <Button disabled>Apply</Button>
-      </div>
     </div>
   )
 }

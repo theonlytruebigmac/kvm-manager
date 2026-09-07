@@ -1,9 +1,9 @@
+use crate::models::mdev::{MdevDevice, MdevStatus, MdevType};
+use crate::services::libvirt::ConnectionProvider;
+use crate::utils::error::{map_libvirt_error, AppError};
 use std::fs;
 use std::path::Path;
 use virt::domain::Domain;
-use crate::models::mdev::{MdevType, MdevDevice, MdevStatus};
-use crate::services::libvirt::LibvirtService;
-use crate::utils::error::{AppError, map_libvirt_error};
 
 /// MdevService provides Mediated Device (vGPU) management operations
 pub struct MdevService;
@@ -115,7 +115,8 @@ impl MdevService {
             let parent_path = entry.path();
 
             // Get parent device name
-            let parent_name = Self::get_device_name(&parent_device).unwrap_or_else(|| parent_device.clone());
+            let parent_name =
+                Self::get_device_name(&parent_device).unwrap_or_else(|| parent_device.clone());
 
             // Look for mdev_supported_types
             let types_path = parent_path.join("mdev_supported_types");
@@ -133,10 +134,11 @@ impl MdevService {
                         .ok()
                         .map(|s| s.trim().to_string());
 
-                    let available_instances = fs::read_to_string(type_path.join("available_instances"))
-                        .ok()
-                        .and_then(|s| s.trim().parse().ok())
-                        .unwrap_or(0);
+                    let available_instances =
+                        fs::read_to_string(type_path.join("available_instances"))
+                            .ok()
+                            .and_then(|s| s.trim().parse().ok())
+                            .unwrap_or(0);
 
                     let max_instances = fs::read_to_string(type_path.join("max_instances"))
                         .ok()
@@ -166,7 +168,9 @@ impl MdevService {
     }
 
     /// List all active MDEV instances
-    pub fn list_mdev_devices(libvirt: &LibvirtService) -> Result<Vec<MdevDevice>, AppError> {
+    pub fn list_mdev_devices(
+        libvirt: &impl ConnectionProvider,
+    ) -> Result<Vec<MdevDevice>, AppError> {
         tracing::debug!("Listing MDEV devices");
 
         let mut devices = Vec::new();
@@ -218,7 +222,7 @@ impl MdevService {
 
     /// Attach an MDEV device to a VM
     pub fn attach_mdev(
-        libvirt: &LibvirtService,
+        libvirt: &impl ConnectionProvider,
         vm_id: &str,
         mdev_uuid: &str,
     ) -> Result<(), AppError> {
@@ -255,16 +259,15 @@ impl MdevService {
             virt::sys::VIR_DOMAIN_AFFECT_CONFIG
         };
 
-        domain.attach_device_flags(&mdev_xml, flags)
-            .map_err(|e| {
-                if is_running {
-                    AppError::InvalidConfig(
-                        "Cannot hot-plug MDEV device. Try stopping the VM first.".to_string()
-                    )
-                } else {
-                    map_libvirt_error(e)
-                }
-            })?;
+        domain.attach_device_flags(&mdev_xml, flags).map_err(|e| {
+            if is_running {
+                AppError::InvalidConfig(
+                    "Cannot hot-plug MDEV device. Try stopping the VM first.".to_string(),
+                )
+            } else {
+                map_libvirt_error(e)
+            }
+        })?;
 
         tracing::info!("Successfully attached MDEV {} to VM {}", mdev_uuid, vm_id);
         Ok(())
@@ -272,7 +275,7 @@ impl MdevService {
 
     /// Detach an MDEV device from a VM
     pub fn detach_mdev(
-        libvirt: &LibvirtService,
+        libvirt: &impl ConnectionProvider,
         vm_id: &str,
         mdev_uuid: &str,
     ) -> Result<(), AppError> {
@@ -312,27 +315,27 @@ impl MdevService {
             virt::sys::VIR_DOMAIN_AFFECT_CONFIG
         };
 
-        domain.detach_device_flags(&mdev_xml, flags)
-            .map_err(|e| {
-                if is_running {
-                    AppError::InvalidConfig(
-                        "Cannot hot-unplug MDEV device from running VM.".to_string()
-                    )
-                } else {
-                    map_libvirt_error(e)
-                }
-            })?;
+        domain.detach_device_flags(&mdev_xml, flags).map_err(|e| {
+            if is_running {
+                AppError::InvalidConfig(
+                    "Cannot hot-unplug MDEV device from running VM.".to_string(),
+                )
+            } else {
+                map_libvirt_error(e)
+            }
+        })?;
 
         tracing::info!("Successfully detached MDEV {} from VM {}", mdev_uuid, vm_id);
         Ok(())
     }
 
     /// Create a new MDEV instance from a supported type
-    pub fn create_mdev(
-        parent_device: &str,
-        mdev_type: &str,
-    ) -> Result<String, AppError> {
-        tracing::info!("Creating MDEV of type {} on device {}", mdev_type, parent_device);
+    pub fn create_mdev(parent_device: &str, mdev_type: &str) -> Result<String, AppError> {
+        tracing::info!(
+            "Creating MDEV of type {} on device {}",
+            mdev_type,
+            parent_device
+        );
 
         // Generate a new UUID
         let uuid = uuid::Uuid::new_v4().to_string();
@@ -374,23 +377,27 @@ impl MdevService {
             )));
         }
 
-        fs::write(&remove_path, "1")
-            .map_err(|e| AppError::Other(format!(
+        fs::write(&remove_path, "1").map_err(|e| {
+            AppError::Other(format!(
                 "Failed to remove MDEV: {}. It may be in use or you lack permissions.",
                 e
-            )))?;
+            ))
+        })?;
 
         tracing::info!("Successfully removed MDEV {}", mdev_uuid);
         Ok(())
     }
 
     /// Check if an MDEV is in use by any VM
-    fn check_mdev_in_use(libvirt: &LibvirtService, mdev_uuid: &str) -> Result<(bool, Option<String>), AppError> {
+    fn check_mdev_in_use(
+        libvirt: &impl ConnectionProvider,
+        mdev_uuid: &str,
+    ) -> Result<(bool, Option<String>), AppError> {
         let conn = libvirt.get_connection();
 
-        let flags = virt::sys::VIR_CONNECT_LIST_DOMAINS_ACTIVE | virt::sys::VIR_CONNECT_LIST_DOMAINS_INACTIVE;
-        let domains = conn.list_all_domains(flags)
-            .map_err(map_libvirt_error)?;
+        let flags = virt::sys::VIR_CONNECT_LIST_DOMAINS_ACTIVE
+            | virt::sys::VIR_CONNECT_LIST_DOMAINS_INACTIVE;
+        let domains = conn.list_all_domains(flags).map_err(map_libvirt_error)?;
 
         let search_pattern = format!("uuid='{}'", mdev_uuid);
 

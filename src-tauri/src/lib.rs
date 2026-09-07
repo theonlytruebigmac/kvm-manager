@@ -1,34 +1,27 @@
 // Module declarations
 mod commands;
-mod models;
-mod services;
+pub mod models;
+pub mod services;
 mod state;
-mod utils;
+pub mod utils;
 // mod menu; // Native menu disabled - functionality available via toolbar
 mod window_state;
 
+use services::graphics_workaround_service::GraphicsWorkaroundService;
 use state::app_state::AppState;
 use tauri::Manager;
-use tracing_subscriber;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    GraphicsWorkaroundService::configure_before_webview();
+
     // Initialize logging
     tracing_subscriber::fmt::init();
 
     tracing::info!("Starting KVM Manager");
 
     // Initialize application state
-    let app_state = match AppState::new() {
-        Ok(state) => state,
-        Err(e) => {
-            tracing::error!("Failed to initialize AppState: {}", e);
-            eprintln!("Failed to connect to libvirt: {}", e);
-            eprintln!("Please ensure libvirtd is running and you have proper permissions.");
-            eprintln!("Try: sudo systemctl start libvirtd");
-            std::process::exit(1);
-        }
-    };
+    let app_state = AppState::new().expect("failed to initialize local application services");
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
@@ -44,6 +37,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            commands::confirmation::request_destructive_confirmation,
             // VM Commands
             commands::vm::get_vms,
             commands::vm::get_vm,
@@ -159,6 +153,7 @@ pub fn run() {
             commands::storage::create_storage_pool,
             commands::storage::resize_volume,
             commands::storage::upload_volume,
+            commands::storage::import_iso_to_pool,
             commands::storage::download_volume,
             commands::storage::get_volume_path,
             commands::storage::get_volume_encryption_info,
@@ -170,6 +165,10 @@ pub fn run() {
             commands::snapshot::delete_snapshot,
             commands::snapshot::revert_snapshot,
             // System Commands
+            commands::system::get_host_readiness,
+            commands::system::get_vm_creation_readiness,
+            commands::system::preflight_vm_creation,
+            commands::system::execute_readiness_repair,
             commands::system::get_host_info,
             commands::system::get_connection_status,
             commands::system::get_vnc_info,
@@ -178,7 +177,9 @@ pub fn run() {
             // Connection Commands
             commands::connection::get_saved_connections,
             commands::connection::get_active_connection,
+            commands::connection::get_active_operation_context,
             commands::connection::connect_to,
+            commands::connection::connect_to_with_password,
             commands::connection::disconnect_from,
             commands::connection::add_connection,
             commands::connection::update_connection,

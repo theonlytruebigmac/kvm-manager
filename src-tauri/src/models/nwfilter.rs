@@ -19,33 +19,25 @@ pub struct NwFilter {
 /// Filter rule direction
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[derive(Default)]
 pub enum RuleDirection {
     In,
     Out,
+    #[default]
     InOut,
-}
-
-impl Default for RuleDirection {
-    fn default() -> Self {
-        RuleDirection::InOut
-    }
 }
 
 /// Filter rule action
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[derive(Default)]
 pub enum RuleAction {
+    #[default]
     Accept,
     Drop,
     Reject,
     Return,
     Continue,
-}
-
-impl Default for RuleAction {
-    fn default() -> Self {
-        RuleAction::Accept
-    }
 }
 
 /// Network filter rule

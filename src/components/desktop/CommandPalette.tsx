@@ -12,6 +12,7 @@ import {
   CommandShortcut,
 } from '@/components/ui/command'
 import { api } from '@/lib/tauri'
+import { useActiveConnection } from '@/hooks/useActiveConnection'
 import { useToolbarStore } from '@/hooks/useToolbarActions'
 import { toast } from 'sonner'
 import {
@@ -46,6 +47,8 @@ export function CommandPalette({ open: controlledOpen, onOpenChange }: CommandPa
   const [internalOpen, setInternalOpen] = useState(false)
   const navigate = useNavigate()
   const queryClient = useQueryClient()
+  const { connectionId, resourceQueryKey } = useActiveConnection()
+  const vmsQueryKey = resourceQueryKey('vms') ?? ['connection', 'pending', 'vms']
   const { setShowCreateVm, setShowImportVm, selectedVmIds, focusedVmId } = useToolbarStore()
 
   // Support both controlled and uncontrolled modes
@@ -54,8 +57,9 @@ export function CommandPalette({ open: controlledOpen, onOpenChange }: CommandPa
 
   // Fetch VMs for VM-specific commands
   const { data: vms } = useQuery({
-    queryKey: ['vms'],
+    queryKey: vmsQueryKey,
     queryFn: api.getVms,
+    enabled: !!connectionId,
   })
 
   // Get currently selected/focused VM
@@ -66,7 +70,7 @@ export function CommandPalette({ open: controlledOpen, onOpenChange }: CommandPa
   const startMutation = useMutation({
     mutationFn: (vmId: string) => api.startVm(vmId),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['vms'] })
+      queryClient.invalidateQueries({ queryKey: vmsQueryKey })
       toast.success('VM started')
     },
     onError: (err) => toast.error(`Failed to start: ${err}`),
@@ -75,7 +79,7 @@ export function CommandPalette({ open: controlledOpen, onOpenChange }: CommandPa
   const stopMutation = useMutation({
     mutationFn: (vmId: string) => api.forceStopVm(vmId),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['vms'] })
+      queryClient.invalidateQueries({ queryKey: vmsQueryKey })
       toast.success('VM stopped')
     },
     onError: (err) => toast.error(`Failed to stop: ${err}`),
@@ -84,7 +88,7 @@ export function CommandPalette({ open: controlledOpen, onOpenChange }: CommandPa
   const pauseMutation = useMutation({
     mutationFn: (vmId: string) => api.pauseVm(vmId),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['vms'] })
+      queryClient.invalidateQueries({ queryKey: vmsQueryKey })
       toast.success('VM paused')
     },
     onError: (err) => toast.error(`Failed to pause: ${err}`),
@@ -93,7 +97,7 @@ export function CommandPalette({ open: controlledOpen, onOpenChange }: CommandPa
   const resumeMutation = useMutation({
     mutationFn: (vmId: string) => api.resumeVm(vmId),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['vms'] })
+      queryClient.invalidateQueries({ queryKey: vmsQueryKey })
       toast.success('VM resumed')
     },
     onError: (err) => toast.error(`Failed to resume: ${err}`),
@@ -102,7 +106,7 @@ export function CommandPalette({ open: controlledOpen, onOpenChange }: CommandPa
   const rebootMutation = useMutation({
     mutationFn: (vmId: string) => api.rebootVm(vmId),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['vms'] })
+      queryClient.invalidateQueries({ queryKey: vmsQueryKey })
       toast.success('VM rebooted')
     },
     onError: (err) => toast.error(`Failed to reboot: ${err}`),

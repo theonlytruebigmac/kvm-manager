@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Storage Pool State enumeration
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum PoolState {
     Active,
@@ -10,7 +10,7 @@ pub enum PoolState {
 }
 
 /// Storage Pool Type enumeration
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum PoolType {
     Dir,
@@ -77,7 +77,7 @@ pub struct VolumeConfig {
 #[serde(rename_all = "camelCase")]
 pub struct VolumeEncryptionInfo {
     pub encrypted: bool,
-    pub format: Option<String>,  // "luks", "qcow"
+    pub format: Option<String>, // "luks", "qcow"
     pub secret_uuid: Option<String>,
 }
 

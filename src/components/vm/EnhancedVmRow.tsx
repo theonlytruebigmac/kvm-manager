@@ -42,6 +42,7 @@ import {
 } from 'lucide-react'
 import { Input } from '@/components/ui/input'
 import type { VM } from '@/lib/types'
+import { useActiveConnection } from '@/hooks/useActiveConnection'
 
 interface EnhancedVmRowProps {
   vm: VM
@@ -54,6 +55,8 @@ interface EnhancedVmRowProps {
 export function EnhancedVmRow({ vm, isSelected, onToggleSelect, isFocused = false, onFocus }: EnhancedVmRowProps) {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
+  const { connectionId, resourceQueryKey } = useActiveConnection()
+  const vmsQueryKey = resourceQueryKey('vms') ?? ['connection', 'pending', 'vms']
   const [stats, setStats] = useState<{ cpu: number; memory: number } | null>(null)
   const [showDeleteDialog, setShowDeleteDialog] = useState(false)
   const [showRenameDialog, setShowRenameDialog] = useState(false)
@@ -63,9 +66,9 @@ export function EnhancedVmRow({ vm, isSelected, onToggleSelect, isFocused = fals
 
   // Poll stats for running VMs
   const { data: vmStats } = useQuery({
-    queryKey: ['vm-stats', vm.id],
+    queryKey: resourceQueryKey('vm-stats', vm.id) ?? ['connection', 'pending', 'vm-stats', vm.id],
     queryFn: () => api.getVmStats(vm.id),
-    enabled: vm.state === 'running',
+    enabled: !!connectionId && vm.state === 'running',
     refetchInterval: 2000,
   })
 
@@ -81,7 +84,7 @@ export function EnhancedVmRow({ vm, isSelected, onToggleSelect, isFocused = fals
   const startMutation = useMutation({
     mutationFn: () => api.startVm(vm.id),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['vms'] })
+      queryClient.invalidateQueries({ queryKey: vmsQueryKey })
       toast.success(`${vm.name} started`)
     },
     onError: (error) => {
@@ -97,7 +100,7 @@ export function EnhancedVmRow({ vm, isSelected, onToggleSelect, isFocused = fals
   const stopMutation = useMutation({
     mutationFn: () => api.stopVm(vm.id),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['vms'] })
+      queryClient.invalidateQueries({ queryKey: vmsQueryKey })
       toast.success(`${vm.name} stopped`)
     },
     onError: (error) => toast.error(`Failed to stop: ${error}`),
@@ -106,7 +109,7 @@ export function EnhancedVmRow({ vm, isSelected, onToggleSelect, isFocused = fals
   const pauseMutation = useMutation({
     mutationFn: () => api.pauseVm(vm.id),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['vms'] })
+      queryClient.invalidateQueries({ queryKey: vmsQueryKey })
       toast.success(`${vm.name} paused`)
     },
     onError: (error) => toast.error(`Failed to pause: ${error}`),
@@ -115,7 +118,7 @@ export function EnhancedVmRow({ vm, isSelected, onToggleSelect, isFocused = fals
   const resumeMutation = useMutation({
     mutationFn: () => api.resumeVm(vm.id),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['vms'] })
+      queryClient.invalidateQueries({ queryKey: vmsQueryKey })
       toast.success(`${vm.name} resumed`)
     },
     onError: (error) => toast.error(`Failed to resume: ${error}`),
@@ -124,7 +127,7 @@ export function EnhancedVmRow({ vm, isSelected, onToggleSelect, isFocused = fals
   const rebootMutation = useMutation({
     mutationFn: () => api.rebootVm(vm.id),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['vms'] })
+      queryClient.invalidateQueries({ queryKey: vmsQueryKey })
       toast.success(`${vm.name} rebooting`)
     },
     onError: (error) => toast.error(`Failed to reboot: ${error}`),
@@ -140,7 +143,7 @@ export function EnhancedVmRow({ vm, isSelected, onToggleSelect, isFocused = fals
     mutationFn: ({ deleteDisks, deleteSnapshots }: { deleteDisks: boolean; deleteSnapshots: boolean }) =>
       api.deleteVm(vm.id, deleteDisks, deleteSnapshots),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['vms'] })
+      queryClient.invalidateQueries({ queryKey: vmsQueryKey })
       toast.success(`${vm.name} deleted`)
       setShowDeleteDialog(false)
       setDeleteDisks(false)
@@ -152,7 +155,7 @@ export function EnhancedVmRow({ vm, isSelected, onToggleSelect, isFocused = fals
   const renameMutation = useMutation({
     mutationFn: (newName: string) => api.renameVm(vm.id, newName),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['vms'] })
+      queryClient.invalidateQueries({ queryKey: vmsQueryKey })
       toast.success(`VM renamed to ${newName}`)
       setShowRenameDialog(false)
     },

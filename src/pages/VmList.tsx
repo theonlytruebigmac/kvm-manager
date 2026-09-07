@@ -1,4 +1,4 @@
-import { useState, useMemo, useRef } from 'react'
+import { useEffect, useState, useMemo, useRef } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { api } from '@/lib/tauri'
@@ -30,10 +30,12 @@ import { SkeletonVmList } from '@/components/ui/skeleton'
 import { ErrorState } from '@/components/ui/error-state'
 import { Plus, Search, X, Monitor } from 'lucide-react'
 import { useVmEvents } from '@/hooks/useVmEvents'
+import { useActiveConnection } from '@/hooks/useActiveConnection'
 import { useKeyboardShortcuts } from '@/hooks/useKeyboardShortcuts'
 import { useMenuEvents } from '@/hooks/useMenuEvents'
 import { useToolbarStore } from '@/hooks/useToolbarActions'
 import type { VM } from '@/lib/types'
+import { HostReadinessPanel } from '@/components/system/HostReadinessPanel'
 
 export function VmList() {
   // Listen for VM state change events
@@ -41,6 +43,8 @@ export function VmList() {
 
   const navigate = useNavigate()
   const queryClient = useQueryClient()
+  const { connectionId, resourceQueryKey } = useActiveConnection()
+  const vmsQueryKey = resourceQueryKey('vms') ?? ['connection', 'pending', 'vms']
 
   // Use toolbar store for dialogs and selection
   const {
@@ -64,20 +68,32 @@ export function VmList() {
   const [renameVm, setRenameVm] = useState<VM | null>(null)
   const [deleteVm, setDeleteVm] = useState<VM | null>(null)
   const [migrateVm, setMigrateVm] = useState<VM | null>(null)
+  const [readinessDismissed, setReadinessDismissed] = useState(false)
   const searchInputRef = useRef<HTMLInputElement>(null)
 
-  const { data: vms, isLoading, error } = useQuery({
-    queryKey: ['vms'],
-    queryFn: api.getVms,
-    refetchInterval: 5000, // Poll every 5 seconds
-  })
+  useEffect(() => {
+    setReadinessDismissed(
+      !!connectionId && localStorage.getItem(`readiness-dismissed:${connectionId}`) === 'true',
+    )
+  }, [connectionId])
 
-  console.log('VmList render:', { vms, isLoading, error, vmsLength: vms?.length })
+  const dismissReadiness = () => {
+    if (connectionId) localStorage.setItem(`readiness-dismissed:${connectionId}`, 'true')
+    setReadinessDismissed(true)
+  }
+
+  const { data: vms, isLoading, error } = useQuery({
+    queryKey: vmsQueryKey,
+    queryFn: api.getVms,
+    enabled: !!connectionId,
+    // Layout owns the single inventory polling interval for main-window routes.
+    // This observer receives those shared-cache updates without starting a second poller.
+  })
 
   // Bulk operations mutations
   const startMutation = useMutation({
     mutationFn: (vmId: string) => api.startVm(vmId),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['vms'] }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: vmsQueryKey }),
     onError: (error) => {
       const errorMsg = String(error)
       if (errorMsg.includes('Permission denied') || errorMsg.includes('Could not open')) {
@@ -90,13 +106,13 @@ export function VmList() {
 
   const stopMutation = useMutation({
     mutationFn: (vmId: string) => api.forceStopVm(vmId),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['vms'] }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: vmsQueryKey }),
   })
 
   const importMutation = useMutation({
     mutationFn: (xml: string) => api.importVm(xml),
     onSuccess: (vmId) => {
-      queryClient.invalidateQueries({ queryKey: ['vms'] })
+      queryClient.invalidateQueries({ queryKey: vmsQueryKey })
       toast.success(`VM imported successfully (ID: ${vmId})`)
       setShowImportVm(false)
       setImportXml('')
@@ -215,14 +231,14 @@ export function VmList() {
         const newName = `${focusedVm.name}-clone`
         await api.cloneVm(focusedVm.id, newName)
         toast.success(`VM cloned as ${newName}`)
-        queryClient.invalidateQueries({ queryKey: ['vms'] })
+        queryClient.invalidateQueries({ queryKey: vmsQueryKey })
       } catch (error) {
         toast.error(`Failed to clone VM: ${(error as Error).message}`)
       }
     },
 
     // View menu
-    onRefresh: () => queryClient.invalidateQueries({ queryKey: ['vms'] }),
+    onRefresh: () => queryClient.invalidateQueries({ queryKey: vmsQueryKey }),
 
     // Actions menu (context-aware - operate on focused VM)
     onStartVm: () => {
@@ -344,7 +360,7 @@ export function VmList() {
             title="Cannot Load Virtual Machines"
             message={errorMsg}
             suggestion={suggestion}
-            onRetry={() => queryClient.invalidateQueries({ queryKey: ['vms'] })}
+            onRetry={() => queryClient.invalidateQueries({ queryKey: vmsQueryKey })}
           />
         </PageContent>
       </PageContainer>
@@ -354,68 +370,81 @@ export function VmList() {
   if (!vms || vms.length === 0) {
     return (
       <>
-        <div className="h-full flex items-center justify-center p-6">
-          <div className="text-center space-y-8 max-w-2xl">
-            {/* Hero section */}
-            <div className="space-y-3">
-              <div className="w-16 h-16 mx-auto rounded-full bg-primary/10 flex items-center justify-center">
-                <Monitor className="w-8 h-8 text-primary" />
-              </div>
-              <h2 className="text-2xl font-semibold">Welcome to KVM Manager</h2>
-              <p className="text-muted-foreground">
-                Create and manage virtual machines with a modern, intuitive interface
-              </p>
-            </div>
-
-            {/* Quick actions */}
-            <div className="flex flex-col sm:flex-row items-center justify-center gap-3">
-              <Button size="lg" onClick={() => setShowCreateVm(true)}>
-                <Plus className="w-4 h-4 mr-2" />
-                Create Your First VM
-              </Button>
-              <Button size="lg" variant="outline" onClick={() => setShowImportVm(true)}>
-                Import Existing VM
-              </Button>
-            </div>
-
-            {/* Quick start guide */}
-            <div className="grid sm:grid-cols-3 gap-4 pt-4">
-              <div className="p-4 rounded-lg border bg-card text-left space-y-2">
-                <div className="w-8 h-8 rounded-full bg-blue-500/10 flex items-center justify-center">
-                  <span className="text-blue-500 font-semibold text-sm">1</span>
+        <PageContainer>
+          <PageContent noPadding>
+            <div className="min-h-full flex flex-col items-center p-6">
+              <div className="my-auto w-full text-center space-y-8 max-w-2xl">
+                {/* Hero section */}
+                <div className="space-y-3">
+                  <div className="w-16 h-16 mx-auto rounded-full bg-primary/10 flex items-center justify-center">
+                    <Monitor className="w-8 h-8 text-primary" />
+                  </div>
+                  <h2 className="text-2xl font-semibold">Welcome to KVM Manager</h2>
+                  <p className="text-muted-foreground">
+                    Create and manage virtual machines with a modern, intuitive interface
+                  </p>
                 </div>
-                <h3 className="font-medium">Prepare an ISO</h3>
-                <p className="text-sm text-muted-foreground">
-                  Download an installation ISO for your preferred operating system (Linux, Windows, etc.)
-                </p>
-              </div>
-              <div className="p-4 rounded-lg border bg-card text-left space-y-2">
-                <div className="w-8 h-8 rounded-full bg-green-500/10 flex items-center justify-center">
-                  <span className="text-green-500 font-semibold text-sm">2</span>
-                </div>
-                <h3 className="font-medium">Create a VM</h3>
-                <p className="text-sm text-muted-foreground">
-                  Use the wizard to configure CPU, memory, storage, and attach your ISO
-                </p>
-              </div>
-              <div className="p-4 rounded-lg border bg-card text-left space-y-2">
-                <div className="w-8 h-8 rounded-full bg-purple-500/10 flex items-center justify-center">
-                  <span className="text-purple-500 font-semibold text-sm">3</span>
-                </div>
-                <h3 className="font-medium">Start & Connect</h3>
-                <p className="text-sm text-muted-foreground">
-                  Boot the VM and use the built-in console to complete the installation
-                </p>
-              </div>
-            </div>
 
-            {/* Tips */}
-            <div className="text-xs text-muted-foreground space-y-1 pt-2">
-              <p>💡 Tip: Press <kbd className="px-1.5 py-0.5 rounded bg-muted font-mono">Ctrl+K</kbd> to open the Command Palette</p>
-              <p>💡 Tip: Drag & drop an ISO file onto a VM card to mount it quickly</p>
+                {!readinessDismissed && (
+                  <div className="space-y-2 text-left">
+                    <HostReadinessPanel />
+                    <Button type="button" variant="ghost" size="sm" onClick={dismissReadiness}>
+                      Dismiss for this connection
+                    </Button>
+                  </div>
+                )}
+
+                {/* Quick actions */}
+                <div className="flex flex-col sm:flex-row items-center justify-center gap-3">
+                  <Button size="lg" onClick={() => setShowCreateVm(true)}>
+                    <Plus className="w-4 h-4 mr-2" />
+                    Create Your First VM
+                  </Button>
+                  <Button size="lg" variant="outline" onClick={() => setShowImportVm(true)}>
+                    Import Existing VM
+                  </Button>
+                </div>
+
+                {/* Quick start guide */}
+                <div className="grid sm:grid-cols-3 gap-4 pt-4">
+                  <div className="p-4 rounded-lg border bg-card text-left space-y-2">
+                    <div className="w-8 h-8 rounded-full bg-blue-500/10 flex items-center justify-center">
+                      <span className="text-blue-500 font-semibold text-sm">1</span>
+                    </div>
+                    <h3 className="font-medium">Prepare an ISO</h3>
+                    <p className="text-sm text-muted-foreground">
+                      Download an installation ISO for your preferred operating system (Linux, Windows, etc.)
+                    </p>
+                  </div>
+                  <div className="p-4 rounded-lg border bg-card text-left space-y-2">
+                    <div className="w-8 h-8 rounded-full bg-green-500/10 flex items-center justify-center">
+                      <span className="text-green-500 font-semibold text-sm">2</span>
+                    </div>
+                    <h3 className="font-medium">Create a VM</h3>
+                    <p className="text-sm text-muted-foreground">
+                      Use the wizard to configure CPU, memory, storage, and attach your ISO
+                    </p>
+                  </div>
+                  <div className="p-4 rounded-lg border bg-card text-left space-y-2">
+                    <div className="w-8 h-8 rounded-full bg-purple-500/10 flex items-center justify-center">
+                      <span className="text-purple-500 font-semibold text-sm">3</span>
+                    </div>
+                    <h3 className="font-medium">Start & Connect</h3>
+                    <p className="text-sm text-muted-foreground">
+                      Boot the VM and use the built-in console to complete the installation
+                    </p>
+                  </div>
+                </div>
+
+                {/* Tips */}
+                <div className="text-xs text-muted-foreground space-y-1 pt-2">
+                  <p>💡 Tip: Press <kbd className="px-1.5 py-0.5 rounded bg-muted font-mono">Ctrl+K</kbd> to open the Command Palette</p>
+                  <p>💡 Tip: Drag & drop an ISO file onto a VM card to mount it quickly</p>
+                </div>
+              </div>
             </div>
-          </div>
-        </div>
+          </PageContent>
+        </PageContainer>
         {showCreateVm && <CreateVmWizard onClose={() => setShowCreateVm(false)} />}
       </>
     )

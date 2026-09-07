@@ -11,6 +11,7 @@ import { AlertCircle, Loader2, CheckCircle, Zap } from 'lucide-react'
 import { api } from '@/lib/tauri'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import type { VM } from '@/lib/types'
+import { useActiveConnection } from '@/hooks/useActiveConnection'
 
 interface MemoryEditorProps {
   vm: VM
@@ -18,6 +19,7 @@ interface MemoryEditorProps {
 }
 
 export function MemoryEditor({ vm, compact }: MemoryEditorProps) {
+  const { connectionId, resourceQueryKey } = useActiveConnection()
   const queryClient = useQueryClient()
   const isRunning = vm.state === 'running'
 
@@ -35,15 +37,18 @@ export function MemoryEditor({ vm, compact }: MemoryEditorProps) {
 
   // Query host hugepage info
   const { data: hostHugepages = [] } = useQuery({
-    queryKey: ['hostHugepages'],
+    queryKey: resourceQueryKey('host-hugepages') ?? ['connection', 'pending', 'host-hugepages'],
     queryFn: () => api.getHostHugepageInfo(),
+    enabled: !!connectionId,
     staleTime: 30000,
   })
 
   // Query VM hugepages settings
   const { data: hugepagesSettings, refetch: refetchHugepages } = useQuery({
-    queryKey: ['hugepagesSettings', vm.id],
+    queryKey: resourceQueryKey('hugepages-settings', vm.id)
+      ?? ['connection', 'pending', 'hugepages-settings', vm.id],
     queryFn: () => api.getHugepagesSettings(vm.id),
+    enabled: !!connectionId,
     staleTime: 5000,
   })
 
@@ -71,8 +76,8 @@ export function MemoryEditor({ vm, compact }: MemoryEditorProps) {
     try {
       await api.setVmMemory(vm.id, memoryMb)
       setSuccess(true)
-      queryClient.invalidateQueries({ queryKey: ['vm', vm.id] })
-      queryClient.invalidateQueries({ queryKey: ['vms'] })
+      queryClient.invalidateQueries({ queryKey: resourceQueryKey('vm', vm.id) })
+      queryClient.invalidateQueries({ queryKey: resourceQueryKey('vms') })
       setTimeout(() => setSuccess(false), 3000)
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))

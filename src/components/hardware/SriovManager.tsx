@@ -1,6 +1,11 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/tauri'
+import {
+  hasConnectionCapability,
+  useActiveConnection,
+  useActiveOperationContext,
+} from '@/hooks/useActiveConnection'
 import type { SriovPf, SriovVf, SriovVfConfig, VM } from '@/lib/types'
 import {
   Dialog,
@@ -63,18 +68,25 @@ export function SriovManager({ vm, children }: SriovManagerProps) {
   })
 
   const queryClient = useQueryClient()
+  const { connectionId, resourceQueryKey } = useActiveConnection()
+  const pfsQueryKey = resourceQueryKey('sriov-pfs') ?? ['connection', 'pending', 'sriov-pfs']
+  const vfsQueryKey = resourceQueryKey('sriov-vfs') ?? ['connection', 'pending', 'sriov-vfs']
+  const vmsQueryKey = resourceQueryKey('vms') ?? ['connection', 'pending', 'vms']
+  const { data: operationContext, isLoading: loadingOperationContext } = useActiveOperationContext(open)
+  const hostDeviceAvailable = hasConnectionCapability(operationContext, 'hostDevice')
 
   // Fetch all SR-IOV PFs
   const { data: pfs = [], isLoading: loadingPfs } = useQuery({
-    queryKey: ['sriov-pfs'],
+    queryKey: pfsQueryKey,
     queryFn: () => api.listSriovPfs(),
-    enabled: open,
+    enabled: !!connectionId && open && hostDeviceAvailable,
     refetchInterval: open ? 5000 : false,
   })
 
   // Fetch VFs for each expanded PF
   const vfQueries = useQuery({
-    queryKey: ['sriov-vfs', Array.from(expandedPfs)],
+    queryKey: resourceQueryKey('sriov-vfs', ...Array.from(expandedPfs))
+      ?? ['connection', 'pending', 'sriov-vfs', ...Array.from(expandedPfs)],
     queryFn: async () => {
       const results: Record<string, SriovVf[]> = {}
       for (const pfAddress of expandedPfs) {
@@ -87,7 +99,7 @@ export function SriovManager({ vm, children }: SriovManagerProps) {
       }
       return results
     },
-    enabled: open && expandedPfs.size > 0,
+    enabled: !!connectionId && open && hostDeviceAvailable && expandedPfs.size > 0,
     refetchInterval: open ? 5000 : false,
   })
 
@@ -99,8 +111,8 @@ export function SriovManager({ vm, children }: SriovManagerProps) {
       api.enableSriovVfs(pfAddress, numVfs),
     onSuccess: (_, { pfAddress, numVfs }) => {
       toast.success(`Enabled ${numVfs} VFs on ${pfAddress}`)
-      queryClient.invalidateQueries({ queryKey: ['sriov-pfs'] })
-      queryClient.invalidateQueries({ queryKey: ['sriov-vfs'] })
+      queryClient.invalidateQueries({ queryKey: pfsQueryKey })
+      queryClient.invalidateQueries({ queryKey: vfsQueryKey })
     },
     onError: (err: Error) => {
       toast.error(`Failed to enable VFs: ${err.message}`)
@@ -113,7 +125,7 @@ export function SriovManager({ vm, children }: SriovManagerProps) {
     onSuccess: () => {
       toast.success('VF configured successfully')
       setConfigVf(null)
-      queryClient.invalidateQueries({ queryKey: ['sriov-vfs'] })
+      queryClient.invalidateQueries({ queryKey: vfsQueryKey })
     },
     onError: (err: Error) => {
       toast.error(`Failed to configure VF: ${err.message}`)
@@ -125,8 +137,8 @@ export function SriovManager({ vm, children }: SriovManagerProps) {
     mutationFn: (vfAddress: string) => api.attachSriovVf(vm.id, vfAddress),
     onSuccess: () => {
       toast.success('VF attached to VM')
-      queryClient.invalidateQueries({ queryKey: ['sriov-vfs'] })
-      queryClient.invalidateQueries({ queryKey: ['vms'] })
+      queryClient.invalidateQueries({ queryKey: vfsQueryKey })
+      queryClient.invalidateQueries({ queryKey: vmsQueryKey })
     },
     onError: (err: Error) => {
       toast.error(`Failed to attach VF: ${err.message}`)
@@ -138,8 +150,8 @@ export function SriovManager({ vm, children }: SriovManagerProps) {
     mutationFn: (vfAddress: string) => api.detachSriovVf(vm.id, vfAddress),
     onSuccess: () => {
       toast.success('VF detached from VM')
-      queryClient.invalidateQueries({ queryKey: ['sriov-vfs'] })
-      queryClient.invalidateQueries({ queryKey: ['vms'] })
+      queryClient.invalidateQueries({ queryKey: vfsQueryKey })
+      queryClient.invalidateQueries({ queryKey: vmsQueryKey })
     },
     onError: (err: Error) => {
       toast.error(`Failed to detach VF: ${err.message}`)
@@ -199,7 +211,11 @@ export function SriovManager({ vm, children }: SriovManagerProps) {
         </DialogHeader>
 
         <div className="space-y-4 mt-4">
-          {loadingPfs ? (
+          {!hostDeviceAvailable && !loadingOperationContext ? (
+            <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-amber-950 dark:text-amber-100">
+              SR-IOV manages physical host devices and requires a local system connection. Select a local host to continue.
+            </div>
+          ) : loadingPfs ? (
             <div className="flex items-center justify-center py-8">
               <Loader2 className="w-6 h-6 animate-spin mr-2" />
               <span>Scanning for SR-IOV devices...</span>
@@ -275,6 +291,7 @@ export function SriovManager({ vm, children }: SriovManagerProps) {
                                         }
                                       }}
                                       disabled={
+                                        !hostDeviceAvailable ||
                                         pf.numVfs >= pf.maxVfs ||
                                         enableVfsMutation.isPending
                                       }
@@ -301,7 +318,7 @@ export function SriovManager({ vm, children }: SriovManagerProps) {
                                         }
                                       }}
                                       disabled={
-                                        pf.numVfs <= 0 || enableVfsMutation.isPending
+                                        !hostDeviceAvailable || pf.numVfs <= 0 || enableVfsMutation.isPending
                                       }
                                     >
                                       <Minus className="w-4 h-4" />
@@ -365,6 +382,7 @@ export function SriovManager({ vm, children }: SriovManagerProps) {
                                             variant="ghost"
                                             size="icon"
                                             onClick={() => openVfConfig(pf, vf)}
+                                            disabled={!hostDeviceAvailable}
                                           >
                                             <Settings className="w-4 h-4" />
                                           </Button>
@@ -378,7 +396,7 @@ export function SriovManager({ vm, children }: SriovManagerProps) {
                                         size="sm"
                                         onClick={() => detachVfMutation.mutate(vf.address)}
                                         disabled={
-                                          detachVfMutation.isPending || !isVmRunning
+                                          !hostDeviceAvailable || detachVfMutation.isPending || !isVmRunning
                                         }
                                       >
                                         {detachVfMutation.isPending ? (
@@ -393,7 +411,7 @@ export function SriovManager({ vm, children }: SriovManagerProps) {
                                         size="sm"
                                         onClick={() => attachVfMutation.mutate(vf.address)}
                                         disabled={
-                                          vf.inUse ||
+                                          !hostDeviceAvailable || vf.inUse ||
                                           attachVfMutation.isPending ||
                                           !isVmRunning
                                         }
@@ -454,7 +472,7 @@ export function SriovManager({ vm, children }: SriovManagerProps) {
                             variant="outline"
                             size="sm"
                             onClick={() => detachVfMutation.mutate(vf.address)}
-                            disabled={detachVfMutation.isPending || !isVmRunning}
+                            disabled={!hostDeviceAvailable || detachVfMutation.isPending || !isVmRunning}
                           >
                             {detachVfMutation.isPending ? (
                               <Loader2 className="w-4 h-4 animate-spin mr-2" />
@@ -556,7 +574,7 @@ export function SriovManager({ vm, children }: SriovManagerProps) {
               </Button>
               <Button
                 onClick={() => configureVfMutation.mutate(vfConfig)}
-                disabled={configureVfMutation.isPending || !configVf?.pf.interfaceName}
+                disabled={!hostDeviceAvailable || configureVfMutation.isPending || !configVf?.pf.interfaceName}
               >
                 {configureVfMutation.isPending ? (
                   <Loader2 className="w-4 h-4 animate-spin mr-2" />

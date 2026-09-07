@@ -13,6 +13,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { api } from '@/lib/tauri'
 import type { VM } from '@/lib/types'
+import { useActiveConnection } from '@/hooks/useActiveConnection'
 
 interface CdromEditorProps {
   vm: VM
@@ -20,6 +21,7 @@ interface CdromEditorProps {
 }
 
 export function CdromEditor({ vm, compact }: CdromEditorProps) {
+  const { connectionId, resourceQueryKey } = useActiveConnection()
   const cdromPath = typeof vm.cdrom === 'string' ? vm.cdrom : ''
   const [showIsoBrowser, setShowIsoBrowser] = useState(false)
   const [selectedPool, setSelectedPool] = useState<string>('')
@@ -28,15 +30,17 @@ export function CdromEditor({ vm, compact }: CdromEditorProps) {
 
   // Fetch storage pools
   const { data: storagePools = [], isLoading: poolsLoading } = useQuery({
-    queryKey: ['storage-pools'],
+    queryKey: resourceQueryKey('storage-pools') ?? ['connection', 'pending', 'storage-pools'],
     queryFn: () => api.getStoragePools(),
+    enabled: !!connectionId,
   })
 
   // Fetch volumes for selected pool
   const { data: volumes = [], isLoading: volumesLoading } = useQuery({
-    queryKey: ['volumes', selectedPool],
+    queryKey: resourceQueryKey('volumes', selectedPool ?? '')
+      ?? ['connection', 'pending', 'volumes', selectedPool ?? ''],
     queryFn: () => api.getVolumes(selectedPool),
-    enabled: !!selectedPool,
+    enabled: !!connectionId && !!selectedPool,
   })
 
   // Filter ISO files
@@ -56,8 +60,8 @@ export function CdromEditor({ vm, compact }: CdromEditorProps) {
   const mountMutation = useMutation({
     mutationFn: (isoPath: string) => api.mountIso(vm.id, isoPath),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['vms'] })
-      queryClient.invalidateQueries({ queryKey: ['vm', vm.id] })
+      queryClient.invalidateQueries({ queryKey: resourceQueryKey('vms') })
+      queryClient.invalidateQueries({ queryKey: resourceQueryKey('vm', vm.id) })
       toast.success('ISO mounted successfully')
       setShowIsoBrowser(false)
       setSelectedIso('')
@@ -71,8 +75,8 @@ export function CdromEditor({ vm, compact }: CdromEditorProps) {
   const ejectMutation = useMutation({
     mutationFn: () => api.ejectCdrom(vm.id),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['vms'] })
-      queryClient.invalidateQueries({ queryKey: ['vm', vm.id] })
+      queryClient.invalidateQueries({ queryKey: resourceQueryKey('vms') })
+      queryClient.invalidateQueries({ queryKey: resourceQueryKey('vm', vm.id) })
       toast.success('CD-ROM ejected')
     },
     onError: (error) => {

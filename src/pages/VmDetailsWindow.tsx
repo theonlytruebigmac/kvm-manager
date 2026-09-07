@@ -37,6 +37,7 @@ import { toast } from 'sonner'
 import { useWindowState } from '@/hooks/useWindowState'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { cn } from '@/lib/utils'
+import { useActiveConnection } from '@/hooks/useActiveConnection'
 
 // Import components
 import { ResourceGraphs } from '@/components/vm/ResourceGraphs'
@@ -74,6 +75,8 @@ export function VmDetailsWindow() {
   const [activeTab, setActiveTab] = useState('overview')
   const [showAddHardware, setShowAddHardware] = useState(false)
   const [hardwareFilter, setHardwareFilter] = useState<'all' | 'storage' | 'cdrom' | 'network' | 'graphics' | 'additional'>('all')
+  const { connectionId, resourceQueryKey, isLoading: loadingConnection } = useActiveConnection()
+  const vmQueryKey = resourceQueryKey('vm', vmId ?? '') ?? ['connection', 'pending', 'vm', vmId ?? '']
 
   // Debug logging
   console.log('VmDetailsWindow rendering, vmId:', vmId)
@@ -81,9 +84,9 @@ export function VmDetailsWindow() {
   useWindowState()
 
   const { data: vm, isLoading, error } = useQuery({
-    queryKey: ['vm', vmId],
+    queryKey: vmQueryKey,
     queryFn: () => api.getVm(vmId!),
-    enabled: !!vmId,
+    enabled: !!vmId && !!connectionId,
     refetchInterval: 2000,
   })
 
@@ -95,7 +98,7 @@ export function VmDetailsWindow() {
     mutationFn: () => api.startVm(vmId!),
     onSuccess: () => {
       toast.success('VM started')
-      queryClient.invalidateQueries({ queryKey: ['vm', vmId] })
+      queryClient.invalidateQueries({ queryKey: vmQueryKey })
     },
     onError: (error: Error) => toast.error(`Failed to start: ${error.message}`),
   })
@@ -104,7 +107,7 @@ export function VmDetailsWindow() {
     mutationFn: () => api.stopVm(vmId!),
     onSuccess: () => {
       toast.success('VM stopped')
-      queryClient.invalidateQueries({ queryKey: ['vm', vmId] })
+      queryClient.invalidateQueries({ queryKey: vmQueryKey })
     },
     onError: (error: Error) => toast.error(`Failed to stop: ${error.message}`),
   })
@@ -113,7 +116,7 @@ export function VmDetailsWindow() {
     mutationFn: () => api.pauseVm(vmId!),
     onSuccess: () => {
       toast.success('VM paused')
-      queryClient.invalidateQueries({ queryKey: ['vm', vmId] })
+      queryClient.invalidateQueries({ queryKey: vmQueryKey })
     },
     onError: (error: Error) => toast.error(`Failed to pause: ${error.message}`),
   })
@@ -122,7 +125,7 @@ export function VmDetailsWindow() {
     mutationFn: () => api.resumeVm(vmId!),
     onSuccess: () => {
       toast.success('VM resumed')
-      queryClient.invalidateQueries({ queryKey: ['vm', vmId] })
+      queryClient.invalidateQueries({ queryKey: vmQueryKey })
     },
     onError: (error: Error) => toast.error(`Failed to resume: ${error.message}`),
   })
@@ -131,7 +134,7 @@ export function VmDetailsWindow() {
     mutationFn: () => api.rebootVm(vmId!),
     onSuccess: () => {
       toast.success('VM rebooted')
-      queryClient.invalidateQueries({ queryKey: ['vm', vmId] })
+      queryClient.invalidateQueries({ queryKey: vmQueryKey })
     },
     onError: (error: Error) => toast.error(`Failed to reboot: ${error.message}`),
   })
@@ -171,7 +174,7 @@ export function VmDetailsWindow() {
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [])
 
-  if (isLoading) {
+  if (isLoading || loadingConnection) {
     return (
       <div className="h-screen w-screen flex items-center justify-center bg-background">
         <Loader2 className="w-8 h-8 animate-spin text-primary" />

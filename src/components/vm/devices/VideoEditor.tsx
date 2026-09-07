@@ -9,6 +9,7 @@ import { Switch } from '@/components/ui/switch'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Video, Trash2, AlertCircle, Loader2, CheckCircle } from 'lucide-react'
 import { api } from '@/lib/tauri'
+import { useActiveConnection } from '@/hooks/useActiveConnection'
 import { useQueryClient } from '@tanstack/react-query'
 import type { VM } from '@/lib/types'
 
@@ -19,6 +20,9 @@ interface VideoEditorProps {
 
 export function VideoEditor({ vm, compact }: VideoEditorProps) {
   const queryClient = useQueryClient()
+  const { resourceQueryKey } = useActiveConnection()
+  const vmQueryKey = resourceQueryKey('vm', vm.id) ?? ['connection', 'pending', 'vm', vm.id]
+  const vmsQueryKey = resourceQueryKey('vms') ?? ['connection', 'pending', 'vms']
   const originalModel = vm.video?.model || 'virtio'
 
   const [videoModel, setVideoModel] = useState(originalModel)
@@ -45,8 +49,8 @@ export function VideoEditor({ vm, compact }: VideoEditorProps) {
     try {
       await api.attachVideo(vm.id, videoModel, vram, heads, accel3d)
       setSuccess(true)
-      queryClient.invalidateQueries({ queryKey: ['vm', vm.id] })
-      queryClient.invalidateQueries({ queryKey: ['vms'] })
+      queryClient.invalidateQueries({ queryKey: vmQueryKey })
+      queryClient.invalidateQueries({ queryKey: vmsQueryKey })
       setTimeout(() => setSuccess(false), 3000)
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))

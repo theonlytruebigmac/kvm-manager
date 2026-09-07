@@ -1,6 +1,7 @@
 import { useState, useCallback } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/tauri'
+import { useActiveConnection } from '@/hooks/useActiveConnection'
 import { toast } from 'sonner'
 import { cn } from '@/lib/utils'
 import { Disc, Upload } from 'lucide-react'
@@ -16,12 +17,14 @@ interface DropZoneProps {
 export function IsoDropZone({ vmId, vmName, vmState, children, className }: DropZoneProps) {
   const [isDragging, setIsDragging] = useState(false)
   const queryClient = useQueryClient()
+  const { resourceQueryKey } = useActiveConnection()
+  const vmQueryKey = resourceQueryKey('vm', vmId) ?? ['connection', 'pending', 'vm', vmId]
 
   const mountMutation = useMutation({
     mutationFn: (isoPath: string) => api.mountIso(vmId, isoPath),
     onSuccess: () => {
       toast.success(`ISO mounted to ${vmName}`)
-      queryClient.invalidateQueries({ queryKey: ['vm', vmId] })
+      queryClient.invalidateQueries({ queryKey: vmQueryKey })
     },
     onError: (error) => {
       toast.error(`Failed to mount ISO: ${error}`)
@@ -71,7 +74,7 @@ export function IsoDropZone({ vmId, vmName, vmState, children, className }: Drop
     const isoFile = isoFiles[0]
 
     // Get the file path - in Tauri, dropped files have a path property
-    // @ts-ignore - Tauri adds path to dropped files
+    // @ts-expect-error - Tauri adds path to dropped files
     const filePath = isoFile.path || isoFile.name
 
     if (vmState !== 'running') {

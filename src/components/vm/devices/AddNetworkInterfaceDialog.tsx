@@ -11,6 +11,7 @@ import {
   DialogTrigger,
 } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
+import { useActiveConnection } from '@/hooks/useActiveConnection'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import {
@@ -50,6 +51,7 @@ const NIC_MODELS = [
 ]
 
 export function AddNetworkInterfaceDialog({ vm, children }: AddNetworkInterfaceDialogProps) {
+  const { connectionId, resourceQueryKey } = useActiveConnection()
   const [open, setOpen] = useState(false)
   const [interfaceType, setInterfaceType] = useState<InterfaceType>('network')
   const [source, setSource] = useState('default')
@@ -64,16 +66,16 @@ export function AddNetworkInterfaceDialog({ vm, children }: AddNetworkInterfaceD
 
   // Fetch networks for 'network' type
   const { data: networks = [] } = useQuery({
-    queryKey: ['networks'],
+    queryKey: resourceQueryKey('networks') ?? ['connection', 'pending', 'networks'],
     queryFn: () => api.getNetworks(),
-    enabled: open && interfaceType === 'network',
+    enabled: !!connectionId && open && interfaceType === 'network',
   })
 
   // Fetch host interfaces for 'direct' type
   const { data: hostInterfaces = [], isLoading: loadingInterfaces } = useQuery({
-    queryKey: ['host-interfaces'],
+    queryKey: resourceQueryKey('host-interfaces') ?? ['connection', 'pending', 'host-interfaces'],
     queryFn: () => api.listHostInterfaces(),
-    enabled: open && (interfaceType === 'direct' || interfaceType === 'bridge'),
+    enabled: !!connectionId && open && (interfaceType === 'direct' || interfaceType === 'bridge'),
   })
 
   const attachMutation = useMutation({
@@ -90,8 +92,8 @@ export function AddNetworkInterfaceDialog({ vm, children }: AddNetworkInterfaceD
     },
     onSuccess: (mac) => {
       toast.success(`Network interface attached with MAC ${mac}`)
-      queryClient.invalidateQueries({ queryKey: ['vms'] })
-      queryClient.invalidateQueries({ queryKey: ['vm', vm.id] })
+      queryClient.invalidateQueries({ queryKey: resourceQueryKey('vms') })
+      queryClient.invalidateQueries({ queryKey: resourceQueryKey('vm', vm.id) })
       setOpen(false)
       resetForm()
     },

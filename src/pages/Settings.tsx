@@ -10,6 +10,7 @@ import { Badge } from '@/components/ui/badge'
 import { toast } from 'sonner'
 import { Database, Play, Settings as SettingsIcon, RotateCcw } from 'lucide-react'
 import { clearAllWindowStates } from '@/hooks/useWindowState'
+import { HostReadinessPanel } from '@/components/system/HostReadinessPanel'
 
 export default function Settings() {
   const queryClient = useQueryClient()
@@ -66,7 +67,7 @@ export default function Settings() {
     try {
       await clearAllWindowStates()
       toast.success('All window positions have been reset')
-    } catch (error) {
+    } catch {
       toast.error('Failed to reset window positions')
     }
   }
@@ -98,6 +99,8 @@ export default function Settings() {
           <p className="text-muted-foreground">Configure KVM Manager settings and policies</p>
         </div>
       </div>
+
+      <HostReadinessPanel />
 
       {/* Metrics Retention Policy */}
       <Card>
@@ -244,7 +247,7 @@ export default function Settings() {
         </CardContent>
       </Card>
 
-      {/* Additional Settings Placeholder */}
+      {/* Window state controls */}
       <Card>
         <CardHeader>
           <CardTitle>Window Management</CardTitle>
@@ -275,11 +278,11 @@ export default function Settings() {
         </CardContent>
       </Card>
 
-      {/* Additional Settings Placeholder */}
+      {/* Informational roadmap; this card contains no settings controls. */}
       <Card>
         <CardHeader>
-          <CardTitle>Application Settings</CardTitle>
-          <CardDescription>Additional configuration options (coming soon)</CardDescription>
+          <CardTitle>Planned Application Settings</CardTitle>
+          <CardDescription>No additional application preferences are available in this release</CardDescription>
         </CardHeader>
         <CardContent>
           <div className="text-muted-foreground text-sm">

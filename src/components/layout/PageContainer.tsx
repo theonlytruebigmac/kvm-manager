@@ -12,7 +12,7 @@ interface PageContainerProps {
  */
 export function PageContainer({ children }: PageContainerProps) {
   return (
-    <div className="h-full w-full flex flex-col overflow-hidden">
+    <div className="h-full min-h-0 w-full flex flex-col overflow-hidden">
       {children}
     </div>
   )
@@ -81,7 +81,7 @@ interface PageContentProps {
  */
 export function PageContent({ children, noPadding = false }: PageContentProps) {
   return (
-    <div className={`flex-1 overflow-y-auto scrollbar-thin ${noPadding ? '' : 'px-6 py-6'}`}>
+    <div className={`min-h-0 flex-1 overflow-y-auto scrollbar-thin ${noPadding ? '' : 'px-6 py-6'}`}>
       {children}
     </div>
   )

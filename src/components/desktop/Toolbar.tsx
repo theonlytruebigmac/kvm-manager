@@ -99,7 +99,7 @@ ToolbarButton.displayName = "ToolbarButton"
  * A vertical line to visually separate groups of toolbar buttons.
  */
 
-interface ToolbarSeparatorProps extends React.HTMLAttributes<HTMLDivElement> {}
+type ToolbarSeparatorProps = React.HTMLAttributes<HTMLDivElement>
 
 export const ToolbarSeparator = React.forwardRef<HTMLDivElement, ToolbarSeparatorProps>(
   ({ className, ...props }, ref) => {
@@ -124,7 +124,7 @@ ToolbarSeparator.displayName = "ToolbarSeparator"
  * Useful for creating left-aligned and right-aligned groups.
  */
 
-interface ToolbarSpacerProps extends React.HTMLAttributes<HTMLDivElement> {}
+type ToolbarSpacerProps = React.HTMLAttributes<HTMLDivElement>
 
 export const ToolbarSpacer = React.forwardRef<HTMLDivElement, ToolbarSpacerProps>(
   ({ className, ...props }, ref) => {

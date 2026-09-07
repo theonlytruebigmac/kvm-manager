@@ -20,21 +20,26 @@ import {
   CheckCircle,
   ArrowRight
 } from 'lucide-react'
+import { useActiveConnection } from '@/hooks/useActiveConnection'
 
 export default function Insights() {
   const navigate = useNavigate()
   const [timeRange, setTimeRange] = useState<number>(24)
+  const { connectionId, resourceQueryKey } = useActiveConnection()
 
   // Query for all VMs
   const { data: vms } = useQuery<VM[]>({
-    queryKey: ['vms'],
+    queryKey: resourceQueryKey('vms') ?? ['connection', 'pending', 'vms'],
     queryFn: () => api.getVms(),
+    enabled: !!connectionId,
   })
 
   // Query for system-wide suggestions
   const { data: suggestions, isLoading, refetch } = useQuery<OptimizationSuggestion[]>({
-    queryKey: ['systemOptimizationSuggestions', timeRange],
+    queryKey: resourceQueryKey('optimization-suggestions', String(timeRange))
+      ?? ['connection', 'pending', 'optimization-suggestions', String(timeRange)],
     queryFn: () => api.analyzeAllVms(timeRange),
+    enabled: !!connectionId,
     refetchInterval: 5 * 60 * 1000, // Refetch every 5 minutes
   })
 

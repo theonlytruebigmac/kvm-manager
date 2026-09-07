@@ -42,6 +42,11 @@ import {
 } from 'lucide-react'
 import { toast } from 'sonner'
 import type { VM } from '@/lib/types'
+import {
+  hasConnectionCapability,
+  useActiveConnection,
+  useActiveOperationContext,
+} from '@/hooks/useActiveConnection'
 
 // Filter types for context-specific hardware dialogs
 export type HardwareFilter = 'all' | 'storage' | 'cdrom' | 'network' | 'graphics' | 'additional'
@@ -295,6 +300,11 @@ const hardwareCategories: HardwareCategory[] = [
 ]
 
 export function AddHardwareDialog({ vm, open, onOpenChange, filter = 'all' }: AddHardwareDialogProps) {
+  const { connectionId, resourceQueryKey } = useActiveConnection()
+  const { data: operationContext } = useActiveOperationContext(open)
+  const hostDeviceAvailable = hasConnectionCapability(operationContext, 'hostDevice')
+  const vmsQueryKey = resourceQueryKey('vms') ?? ['connection', 'pending', 'vms']
+  const vmQueryKey = resourceQueryKey('vm', vm.id) ?? ['connection', 'pending', 'vm', vm.id]
   const [selectedDevice, setSelectedDevice] = useState<string | null>(null)
 
   // Filter categories based on the filter prop
@@ -424,51 +434,56 @@ export function AddHardwareDialog({ vm, open, onOpenChange, filter = 'all' }: Ad
   })
 
   const queryClient = useQueryClient()
+  const invalidateVmResources = () => {
+    queryClient.invalidateQueries({ queryKey: vmsQueryKey })
+    queryClient.invalidateQueries({ queryKey: vmQueryKey })
+  }
 
   // Fetch available networks
   const { data: networks = [] } = useQuery({
-    queryKey: ['networks'],
+    queryKey: resourceQueryKey('networks') ?? ['connection', 'pending', 'networks'],
     queryFn: () => api.getNetworks(),
+    enabled: !!connectionId,
   })
 
   // Fetch PCI devices when the PCI option is selected
   const { data: pciDevices = [], isLoading: pciLoading } = useQuery({
-    queryKey: ['pciDevices'],
+    queryKey: resourceQueryKey('pci-devices') ?? ['connection', 'pending', 'pci-devices'],
     queryFn: () => api.listPciDevices(),
-    enabled: selectedDevice === 'pci',
+    enabled: !!connectionId && hostDeviceAvailable && selectedDevice === 'pci',
   })
 
   // Fetch IOMMU status
   const { data: iommuStatus } = useQuery({
-    queryKey: ['iommuStatus'],
+    queryKey: resourceQueryKey('iommu-status') ?? ['connection', 'pending', 'iommu-status'],
     queryFn: () => api.checkIommuStatus(),
-    enabled: selectedDevice === 'pci',
+    enabled: !!connectionId && hostDeviceAvailable && selectedDevice === 'pci',
   })
 
   // Fetch USB devices when USB option is selected
   const { data: usbDevices = [], isLoading: usbLoading } = useQuery({
-    queryKey: ['usbDevices'],
+    queryKey: resourceQueryKey('usb-devices') ?? ['connection', 'pending', 'usb-devices'],
     queryFn: () => api.listUsbDevices(),
-    enabled: selectedDevice === 'usb-host',
+    enabled: !!connectionId && hostDeviceAvailable && selectedDevice === 'usb-host',
   })
 
   // Fetch MDEV status and devices when MDEV option is selected
   const { data: mdevStatus } = useQuery({
-    queryKey: ['mdevStatus'],
+    queryKey: resourceQueryKey('mdev-status') ?? ['connection', 'pending', 'mdev-status'],
     queryFn: () => api.checkMdevStatus(),
-    enabled: selectedDevice === 'mdev',
+    enabled: !!connectionId && hostDeviceAvailable && selectedDevice === 'mdev',
   })
 
   const { data: mdevDevices = [], isLoading: mdevLoading } = useQuery({
-    queryKey: ['mdevDevices'],
+    queryKey: resourceQueryKey('mdev-devices') ?? ['connection', 'pending', 'mdev-devices'],
     queryFn: () => api.listMdevDevices(),
-    enabled: selectedDevice === 'mdev',
+    enabled: !!connectionId && hostDeviceAvailable && selectedDevice === 'mdev',
   })
 
   const { data: mdevTypes = [] } = useQuery({
-    queryKey: ['mdevTypes'],
+    queryKey: resourceQueryKey('mdev-types') ?? ['connection', 'pending', 'mdev-types'],
     queryFn: () => api.listMdevTypes(),
-    enabled: selectedDevice === 'mdev',
+    enabled: !!connectionId && hostDeviceAvailable && selectedDevice === 'mdev',
   })
 
   // Mutation for attaching network interface
@@ -480,8 +495,7 @@ export function AddHardwareDialog({ vm, open, onOpenChange, filter = 'all' }: Ad
       networkConfig.macAddress || undefined
     ),
     onSuccess: (mac) => {
-      queryClient.invalidateQueries({ queryKey: ['vms'] })
-      queryClient.invalidateQueries({ queryKey: ['vm', vm.id] })
+      invalidateVmResources()
       toast.success(`Network interface added with MAC ${mac}`)
       onOpenChange(false)
       resetState()
@@ -500,8 +514,7 @@ export function AddHardwareDialog({ vm, open, onOpenChange, filter = 'all' }: Ad
       diskConfig.busType
     ),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['vms'] })
-      queryClient.invalidateQueries({ queryKey: ['vm', vm.id] })
+      invalidateVmResources()
       toast.success(`Disk attached as ${diskConfig.deviceTarget}`)
       onOpenChange(false)
       resetState()
@@ -515,8 +528,7 @@ export function AddHardwareDialog({ vm, open, onOpenChange, filter = 'all' }: Ad
   const mountIsoMutation = useMutation({
     mutationFn: () => api.mountIso(vm.id, cdromConfig.isoPath),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['vms'] })
-      queryClient.invalidateQueries({ queryKey: ['vm', vm.id] })
+      invalidateVmResources()
       toast.success('ISO mounted successfully')
       onOpenChange(false)
       resetState()
@@ -530,8 +542,7 @@ export function AddHardwareDialog({ vm, open, onOpenChange, filter = 'all' }: Ad
   const attachSoundMutation = useMutation({
     mutationFn: () => api.attachSound(vm.id, soundConfig.model),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['vms'] })
-      queryClient.invalidateQueries({ queryKey: ['vm', vm.id] })
+      invalidateVmResources()
       toast.success(`Sound device (${soundConfig.model}) added successfully`)
       onOpenChange(false)
       resetState()
@@ -545,8 +556,7 @@ export function AddHardwareDialog({ vm, open, onOpenChange, filter = 'all' }: Ad
   const attachInputMutation = useMutation({
     mutationFn: () => api.attachInput(vm.id, inputConfig.deviceType, inputConfig.bus),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['vms'] })
-      queryClient.invalidateQueries({ queryKey: ['vm', vm.id] })
+      invalidateVmResources()
       toast.success(`Input device (${inputConfig.deviceType}) added successfully`)
       onOpenChange(false)
       resetState()
@@ -560,9 +570,8 @@ export function AddHardwareDialog({ vm, open, onOpenChange, filter = 'all' }: Ad
   const attachPciMutation = useMutation({
     mutationFn: () => api.attachPciDevice(vm.id, pciConfig.selectedDevice, pciConfig.managed),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['vms'] })
-      queryClient.invalidateQueries({ queryKey: ['vm', vm.id] })
-      queryClient.invalidateQueries({ queryKey: ['pciDevices'] })
+      invalidateVmResources()
+      queryClient.invalidateQueries({ queryKey: resourceQueryKey('pci-devices') })
       toast.success(`PCI device ${pciConfig.selectedDevice} attached successfully`)
       onOpenChange(false)
       resetState()
@@ -576,7 +585,7 @@ export function AddHardwareDialog({ vm, open, onOpenChange, filter = 'all' }: Ad
   const bindToVfioMutation = useMutation({
     mutationFn: (pciAddress: string) => api.bindToVfio(pciAddress),
     onSuccess: (_, pciAddress) => {
-      queryClient.invalidateQueries({ queryKey: ['pciDevices'] })
+      queryClient.invalidateQueries({ queryKey: resourceQueryKey('pci-devices') })
       queryClient.invalidateQueries({ queryKey: ['vfioStatus', pciAddress] })
       toast.success(`Device ${pciAddress} bound to vfio-pci driver`)
     },
@@ -589,7 +598,7 @@ export function AddHardwareDialog({ vm, open, onOpenChange, filter = 'all' }: Ad
   const unbindFromVfioMutation = useMutation({
     mutationFn: (pciAddress: string) => api.unbindFromVfio(pciAddress),
     onSuccess: (_, pciAddress) => {
-      queryClient.invalidateQueries({ queryKey: ['pciDevices'] })
+      queryClient.invalidateQueries({ queryKey: resourceQueryKey('pci-devices') })
       queryClient.invalidateQueries({ queryKey: ['vfioStatus', pciAddress] })
       toast.success(`Device ${pciAddress} unbound from vfio-pci driver`)
     },
@@ -602,8 +611,7 @@ export function AddHardwareDialog({ vm, open, onOpenChange, filter = 'all' }: Ad
   const attachRngMutation = useMutation({
     mutationFn: () => api.attachRng(vm.id, rngConfig.backend),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['vms'] })
-      queryClient.invalidateQueries({ queryKey: ['vm', vm.id] })
+      invalidateVmResources()
       toast.success('RNG device attached successfully')
       onOpenChange(false)
       resetState()
@@ -617,8 +625,7 @@ export function AddHardwareDialog({ vm, open, onOpenChange, filter = 'all' }: Ad
   const attachWatchdogMutation = useMutation({
     mutationFn: () => api.attachWatchdog(vm.id, watchdogConfig.model, watchdogConfig.action),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['vms'] })
-      queryClient.invalidateQueries({ queryKey: ['vm', vm.id] })
+      invalidateVmResources()
       toast.success(`Watchdog device (${watchdogConfig.model}) attached successfully`)
       onOpenChange(false)
       resetState()
@@ -632,9 +639,8 @@ export function AddHardwareDialog({ vm, open, onOpenChange, filter = 'all' }: Ad
   const attachUsbMutation = useMutation({
     mutationFn: () => api.attachUsbDevice(vm.id, usbConfig.vendorId, usbConfig.productId),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['vms'] })
-      queryClient.invalidateQueries({ queryKey: ['vm', vm.id] })
-      queryClient.invalidateQueries({ queryKey: ['usbDevices'] })
+      invalidateVmResources()
+      queryClient.invalidateQueries({ queryKey: resourceQueryKey('usb-devices') })
       toast.success(`USB device attached successfully`)
       onOpenChange(false)
       resetState()
@@ -648,8 +654,7 @@ export function AddHardwareDialog({ vm, open, onOpenChange, filter = 'all' }: Ad
   const attachChannelMutation = useMutation({
     mutationFn: () => api.attachChannel(vm.id, channelConfig.channelType),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['vms'] })
-      queryClient.invalidateQueries({ queryKey: ['vm', vm.id] })
+      invalidateVmResources()
       const channelName = channelConfig.channelType === 'qemu-ga' ? 'QEMU Guest Agent' : 'Spice'
       toast.success(`${channelName} channel attached successfully`)
       onOpenChange(false)
@@ -670,8 +675,7 @@ export function AddHardwareDialog({ vm, open, onOpenChange, filter = 'all' }: Ad
       filesystemConfig.readonly
     ),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['vms'] })
-      queryClient.invalidateQueries({ queryKey: ['vm', vm.id] })
+      invalidateVmResources()
       toast.success(`Shared folder mounted as ${filesystemConfig.targetMount}`)
       onOpenChange(false)
       resetState()
@@ -690,8 +694,7 @@ export function AddHardwareDialog({ vm, open, onOpenChange, filter = 'all' }: Ad
       graphicsConfig.port === -1 ? undefined : graphicsConfig.port
     ),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['vms'] })
-      queryClient.invalidateQueries({ queryKey: ['vm', vm.id] })
+      invalidateVmResources()
       toast.success(`${graphicsConfig.type.toUpperCase()} graphics device added`)
       onOpenChange(false)
       resetState()
@@ -711,8 +714,7 @@ export function AddHardwareDialog({ vm, open, onOpenChange, filter = 'all' }: Ad
       videoConfig.acceleration3d
     ),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['vms'] })
-      queryClient.invalidateQueries({ queryKey: ['vm', vm.id] })
+      invalidateVmResources()
       toast.success(`${videoConfig.model} video device added`)
       onOpenChange(false)
       resetState()
@@ -726,9 +728,8 @@ export function AddHardwareDialog({ vm, open, onOpenChange, filter = 'all' }: Ad
   const attachMdevMutation = useMutation({
     mutationFn: () => api.attachMdev(vm.id, mdevConfig.mdevUuid),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['vms'] })
-      queryClient.invalidateQueries({ queryKey: ['vm', vm.id] })
-      queryClient.invalidateQueries({ queryKey: ['mdevDevices'] })
+      invalidateVmResources()
+      queryClient.invalidateQueries({ queryKey: resourceQueryKey('mdev-devices') })
       toast.success('MDEV (vGPU) device attached')
       onOpenChange(false)
       resetState()
@@ -742,8 +743,7 @@ export function AddHardwareDialog({ vm, open, onOpenChange, filter = 'all' }: Ad
   const attachSerialMutation = useMutation({
     mutationFn: () => api.attachSerial(vm.id, serialConfig.portType, serialConfig.targetPort),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['vms'] })
-      queryClient.invalidateQueries({ queryKey: ['vm', vm.id] })
+      invalidateVmResources()
       toast.success(`Serial port added (${serialConfig.portType})`)
       onOpenChange(false)
       resetState()
@@ -757,8 +757,7 @@ export function AddHardwareDialog({ vm, open, onOpenChange, filter = 'all' }: Ad
   const attachConsoleMutation = useMutation({
     mutationFn: () => api.attachConsole(vm.id, consoleConfig.targetPort, consoleConfig.targetType),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['vms'] })
-      queryClient.invalidateQueries({ queryKey: ['vm', vm.id] })
+      invalidateVmResources()
       toast.success(`${consoleConfig.targetType} console added`)
       onOpenChange(false)
       resetState()
@@ -772,8 +771,7 @@ export function AddHardwareDialog({ vm, open, onOpenChange, filter = 'all' }: Ad
   const attachTpmMutation = useMutation({
     mutationFn: () => api.attachTpm(vm.id, tpmConfig.model, tpmConfig.version),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['vms'] })
-      queryClient.invalidateQueries({ queryKey: ['vm', vm.id] })
+      invalidateVmResources()
       toast.success(`TPM ${tpmConfig.version} device added`)
       onOpenChange(false)
       resetState()
@@ -787,8 +785,7 @@ export function AddHardwareDialog({ vm, open, onOpenChange, filter = 'all' }: Ad
   const attachUsbControllerMutation = useMutation({
     mutationFn: () => api.attachUsbController(vm.id, usbControllerConfig.model),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['vms'] })
-      queryClient.invalidateQueries({ queryKey: ['vm', vm.id] })
+      invalidateVmResources()
       toast.success(`USB controller (${usbControllerConfig.model}) added`)
       onOpenChange(false)
       resetState()
@@ -802,8 +799,7 @@ export function AddHardwareDialog({ vm, open, onOpenChange, filter = 'all' }: Ad
   const attachScsiControllerMutation = useMutation({
     mutationFn: () => api.attachScsiController(vm.id, scsiControllerConfig.model),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['vms'] })
-      queryClient.invalidateQueries({ queryKey: ['vm', vm.id] })
+      invalidateVmResources()
       toast.success(`SCSI controller (${scsiControllerConfig.model}) added`)
       onOpenChange(false)
       resetState()
@@ -817,8 +813,7 @@ export function AddHardwareDialog({ vm, open, onOpenChange, filter = 'all' }: Ad
   const attachPanicMutation = useMutation({
     mutationFn: () => api.attachPanicNotifier(vm.id, panicConfig.model),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['vms'] })
-      queryClient.invalidateQueries({ queryKey: ['vm', vm.id] })
+      invalidateVmResources()
       toast.success(`Panic notifier (${panicConfig.model}) added`)
       onOpenChange(false)
       resetState()
@@ -832,8 +827,7 @@ export function AddHardwareDialog({ vm, open, onOpenChange, filter = 'all' }: Ad
   const attachVsockMutation = useMutation({
     mutationFn: () => api.attachVsock(vm.id, vsockConfig.cid),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['vms'] })
-      queryClient.invalidateQueries({ queryKey: ['vm', vm.id] })
+      invalidateVmResources()
       toast.success(`VirtIO VSOCK (CID: ${vsockConfig.cid}) added`)
       onOpenChange(false)
       resetState()
@@ -847,8 +841,7 @@ export function AddHardwareDialog({ vm, open, onOpenChange, filter = 'all' }: Ad
   const attachParallelMutation = useMutation({
     mutationFn: () => api.attachParallel(vm.id, parallelConfig.targetPort),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['vms'] })
-      queryClient.invalidateQueries({ queryKey: ['vm', vm.id] })
+      invalidateVmResources()
       toast.success(`Parallel port ${parallelConfig.targetPort} added`)
       onOpenChange(false)
       resetState()
@@ -862,8 +855,7 @@ export function AddHardwareDialog({ vm, open, onOpenChange, filter = 'all' }: Ad
   const attachSmartcardMutation = useMutation({
     mutationFn: () => api.attachSmartcard(vm.id, smartcardConfig.mode),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['vms'] })
-      queryClient.invalidateQueries({ queryKey: ['vm', vm.id] })
+      invalidateVmResources()
       toast.success(`Smartcard reader (${smartcardConfig.mode}) added`)
       onOpenChange(false)
       resetState()
@@ -968,6 +960,16 @@ export function AddHardwareDialog({ vm, open, onOpenChange, filter = 'all' }: Ad
   const handleAdd = () => {
     if (!selectedDevice) return
 
+    if (['pci', 'usb-host', 'mdev'].includes(effectiveSelectedDevice ?? '') && !hostDeviceAvailable) {
+      toast.error('Host-device passthrough requires a local system connection.')
+      return
+    }
+
+    if (!selectedDeviceInfo || selectedDeviceInfo.comingSoon) {
+      toast.error('This hardware type is not available for dynamic addition.')
+      return
+    }
+
     if (effectiveSelectedDevice === 'network') {
       attachInterfaceMutation.mutate()
     } else if (effectiveSelectedDevice === 'disk') {
@@ -1039,9 +1041,7 @@ export function AddHardwareDialog({ vm, open, onOpenChange, filter = 'all' }: Ad
     } else if (effectiveSelectedDevice === 'smartcard') {
       attachSmartcardMutation.mutate()
     } else {
-      toast.info(`Adding ${selectedDevice} device - Coming soon!`)
-      onOpenChange(false)
-      resetState()
+      toast.error('This hardware type is not available for dynamic addition.')
     }
   }
 
@@ -1127,6 +1127,11 @@ export function AddHardwareDialog({ vm, open, onOpenChange, filter = 'all' }: Ad
           <div className={showDeviceList ? "w-64 border rounded-lg p-4" : "space-y-4"}>
             {selectedDeviceInfo ? (
               <div className="space-y-4">
+                {['pci', 'usb-host', 'mdev'].includes(effectiveSelectedDevice ?? '') && !hostDeviceAvailable && (
+                  <div className="rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-muted-foreground">
+                    Host-device passthrough is unavailable on this connection. Select a local system connection to use it.
+                  </div>
+                )}
                 {showDeviceList && (
                 <div className="flex items-center gap-3">
                   <div className="p-2 rounded-lg bg-muted">
@@ -2363,7 +2368,8 @@ export function AddHardwareDialog({ vm, open, onOpenChange, filter = 'all' }: Ad
           </Button>
           <Button
             onClick={handleAdd}
-            disabled={!selectedDevice || selectedDeviceInfo?.comingSoon || isPending}
+            disabled={!selectedDevice || selectedDeviceInfo?.comingSoon || isPending
+              || (['pci', 'usb-host', 'mdev'].includes(effectiveSelectedDevice ?? '') && !hostDeviceAvailable)}
           >
             {isPending ? 'Adding...' : 'Add Hardware'}
           </Button>

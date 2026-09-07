@@ -1,10 +1,10 @@
+use crate::services::metrics_service::MetricsService;
+use crate::utils::error::AppError;
+use chrono::{Datelike, Timelike};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
-use chrono::{Datelike, Timelike};
-use crate::services::metrics_service::MetricsService;
-use crate::utils::error::AppError;
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
@@ -35,7 +35,9 @@ impl RetentionService {
     /// Create a new retention service
     pub fn new(metrics_service: Arc<MetricsService>) -> Result<Self, AppError> {
         let config_dir = dirs::config_dir()
-            .ok_or_else(|| AppError::InvalidConfig("Could not determine config directory".to_string()))?
+            .ok_or_else(|| {
+                AppError::InvalidConfig("Could not determine config directory".to_string())
+            })?
             .join("kvm-manager");
 
         fs::create_dir_all(&config_dir)?;
@@ -56,8 +58,9 @@ impl RetentionService {
 
         let contents = fs::read_to_string(&self.config_path)?;
 
-        serde_json::from_str(&contents)
-            .map_err(|e| AppError::InvalidConfig(format!("Failed to parse retention policy: {}", e)))
+        serde_json::from_str(&contents).map_err(|e| {
+            AppError::InvalidConfig(format!("Failed to parse retention policy: {}", e))
+        })
     }
 
     /// Save retention policy to disk
@@ -100,7 +103,10 @@ impl RetentionService {
         updated_policy.last_cleanup = Some(chrono::Utc::now().timestamp());
         self.save_policy(&updated_policy)?;
 
-        tracing::info!("Retention policy cleanup completed: deleted {} records", deleted_count);
+        tracing::info!(
+            "Retention policy cleanup completed: deleted {} records",
+            deleted_count
+        );
 
         Ok(deleted_count)
     }
@@ -128,8 +134,10 @@ impl RetentionService {
 
         // Check if we already ran today
         if let Some(last_cleanup) = policy.last_cleanup {
-            let last_cleanup_date = chrono::DateTime::from_timestamp(last_cleanup, 0)
-                .ok_or_else(|| AppError::InvalidConfig("Invalid last_cleanup timestamp".to_string()))?;
+            let last_cleanup_date =
+                chrono::DateTime::from_timestamp(last_cleanup, 0).ok_or_else(|| {
+                    AppError::InvalidConfig("Invalid last_cleanup timestamp".to_string())
+                })?;
 
             let last_cleanup_day = last_cleanup_date.ordinal();
             let current_day = now.ordinal();
@@ -157,18 +165,21 @@ impl RetentionService {
                         tracing::info!("Scheduled cleanup time reached, executing cleanup");
                         match self.execute_cleanup() {
                             Ok(count) => {
-                                tracing::info!("Scheduled cleanup completed: deleted {} records", count);
+                                tracing::info!(
+                                    "Scheduled cleanup completed: deleted {} records",
+                                    count
+                                );
                             }
-                            Err(e) => {
-                                tracing::error!("Scheduled cleanup failed: {}", e);
+                            Err(_) => {
+                                tracing::error!("Scheduled cleanup failed");
                             }
                         }
                     }
                     Ok(false) => {
                         // Not time to run yet
                     }
-                    Err(e) => {
-                        tracing::error!("Failed to check cleanup schedule: {}", e);
+                    Err(_) => {
+                        tracing::error!("Cleanup schedule check failed");
                     }
                 }
             }

@@ -17,6 +17,7 @@ import { Switch } from '@/components/ui/switch'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { AlertCircle, Loader2, CheckCircle, ChevronUp, ChevronDown, HardDrive, Disc, Network, Terminal, FolderOpen } from 'lucide-react'
 import { api } from '@/lib/tauri'
+import { useActiveConnection } from '@/hooks/useActiveConnection'
 import { useQueryClient } from '@tanstack/react-query'
 import type { VM, KernelBootSettings } from '@/lib/types'
 import { open } from '@tauri-apps/plugin-dialog'
@@ -36,6 +37,9 @@ const BOOT_DEVICE_INFO: Record<BootDevice, { label: string; icon: React.Componen
 
 export function BootEditor({ vm, compact }: BootEditorProps) {
   const queryClient = useQueryClient()
+  const { resourceQueryKey } = useActiveConnection()
+  const vmQueryKey = resourceQueryKey('vm', vm.id) ?? ['connection', 'pending', 'vm', vm.id]
+  const vmsQueryKey = resourceQueryKey('vms') ?? ['connection', 'pending', 'vms']
   const [autostart, setAutostart] = useState<boolean>(false)
   const [autostartLoading, setAutostartLoading] = useState<boolean>(true)
 
@@ -173,7 +177,7 @@ export function BootEditor({ vm, compact }: BootEditorProps) {
       await api.setKernelBootSettings(vm.id, kernelBoot)
       setOriginalKernelBoot(kernelBoot)
       setKernelBootSuccess(true)
-      queryClient.invalidateQueries({ queryKey: ['vm', vm.id] })
+      queryClient.invalidateQueries({ queryKey: vmQueryKey })
       setTimeout(() => setKernelBootSuccess(false), 3000)
     } catch (err) {
       setKernelBootError(err instanceof Error ? err.message : String(err))
@@ -205,8 +209,8 @@ export function BootEditor({ vm, compact }: BootEditorProps) {
     try {
       await api.updateVmBootOrder(vm.id, bootOrder)
       setBootOrderSuccess(true)
-      queryClient.invalidateQueries({ queryKey: ['vm', vm.id] })
-      queryClient.invalidateQueries({ queryKey: ['vms'] })
+      queryClient.invalidateQueries({ queryKey: vmQueryKey })
+      queryClient.invalidateQueries({ queryKey: vmsQueryKey })
       setTimeout(() => setBootOrderSuccess(false), 3000)
     } catch (err) {
       setBootOrderError(err instanceof Error ? err.message : String(err))

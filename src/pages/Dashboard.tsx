@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { api } from '@/lib/tauri'
 import { PageContainer, PageHeader, PageContent } from '@/components/layout/PageContainer'
@@ -7,15 +8,26 @@ import { Progress } from '@/components/ui/progress'
 import { Skeleton } from '@/components/ui/skeleton'
 import { ErrorState, EmptyState } from '@/components/ui/error-state'
 import { AlertCircle, Server, Cpu, HardDrive, Activity, Box } from 'lucide-react'
+import { useActiveConnection } from '@/hooks/useActiveConnection'
+import { HostReadinessPanel } from '@/components/system/HostReadinessPanel'
+import { Button } from '@/components/ui/button'
 
 export function Dashboard() {
+  const { connectionId, resourceQueryKey, isLoading: loadingConnection } = useActiveConnection()
+  const [readinessDismissed, setReadinessDismissed] = useState(false)
+  useEffect(() => {
+    setReadinessDismissed(
+      !!connectionId && localStorage.getItem(`readiness-dismissed:${connectionId}`) === 'true',
+    )
+  }, [connectionId])
   const { data: hostInfo, isLoading, error, refetch } = useQuery({
-    queryKey: ['hostInfo'],
+    queryKey: resourceQueryKey('host-info') ?? ['connection', 'pending', 'host-info'],
     queryFn: api.getHostInfo,
+    enabled: !!connectionId,
     refetchInterval: 10000, // Poll every 10 seconds
   })
 
-  if (isLoading) {
+  if (isLoading || loadingConnection) {
     return (
       <PageContainer>
         <PageHeader
@@ -136,6 +148,21 @@ export function Dashboard() {
       />
       <PageContent>
         <div className="space-y-6">
+          {!readinessDismissed && (
+            <div className="space-y-2">
+              <HostReadinessPanel />
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  if (connectionId) localStorage.setItem(`readiness-dismissed:${connectionId}`, 'true')
+                  setReadinessDismissed(true)
+                }}
+              >
+                Dismiss for this connection
+              </Button>
+            </div>
+          )}
           {/* System Overview Card */}
           <Card className="border-[var(--panel-border)] shadow-sm bg-[var(--panel-bg)]">
         <CardHeader className="py-3 px-4">

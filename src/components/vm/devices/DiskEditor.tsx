@@ -20,6 +20,7 @@ import {
 import { HardDrive, Trash2, FolderOpen, Info } from 'lucide-react'
 import { toast } from 'sonner'
 import { api } from '@/lib/tauri'
+import { useActiveConnection } from '@/hooks/useActiveConnection'
 import type { VM } from '@/lib/types'
 
 interface DiskEditorProps {
@@ -31,6 +32,9 @@ interface DiskEditorProps {
 export function DiskEditor({ vm, diskIndex, compact }: DiskEditorProps) {
   const [showDeleteDialog, setShowDeleteDialog] = useState(false)
   const queryClient = useQueryClient()
+  const { resourceQueryKey } = useActiveConnection()
+  const vmQueryKey = resourceQueryKey('vm', vm.id) ?? ['connection', 'pending', 'vm', vm.id]
+  const vmsQueryKey = resourceQueryKey('vms') ?? ['connection', 'pending', 'vms']
   const disk = vm.disks?.[diskIndex]
 
   // I/O tuning state
@@ -66,8 +70,8 @@ export function DiskEditor({ vm, diskIndex, compact }: DiskEditorProps) {
   const detachMutation = useMutation({
     mutationFn: () => api.detachDisk(vm.id, disk?.device || ''),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['vms'] })
-      queryClient.invalidateQueries({ queryKey: ['vm', vm.id] })
+      queryClient.invalidateQueries({ queryKey: vmsQueryKey })
+      queryClient.invalidateQueries({ queryKey: vmQueryKey })
       toast.success('Disk detached successfully')
       setShowDeleteDialog(false)
     },
@@ -88,8 +92,8 @@ export function DiskEditor({ vm, diskIndex, compact }: DiskEditorProps) {
       writeBytesSec: writeBytesSec ? parseInt(writeBytesSec) : undefined,
     }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['vms'] })
-      queryClient.invalidateQueries({ queryKey: ['vm', vm.id] })
+      queryClient.invalidateQueries({ queryKey: vmsQueryKey })
+      queryClient.invalidateQueries({ queryKey: vmQueryKey })
       toast.success('Disk settings updated successfully')
       setHasChanges(false)
     },

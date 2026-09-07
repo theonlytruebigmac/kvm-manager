@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/tauri'
+import { useActiveConnection } from '@/hooks/useActiveConnection'
 import type { ScheduledOperation, CreateScheduleRequest, OperationType, ScheduleFrequency, VM } from '@/lib/types'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -17,6 +18,9 @@ interface ScheduleManagerProps {
 
 export function ScheduleManager({ vmId }: ScheduleManagerProps) {
   const queryClient = useQueryClient()
+  const { connectionId, resourceQueryKey } = useActiveConnection()
+  const vmsQueryKey = resourceQueryKey('vms') ?? ['connection', 'pending', 'vms']
+  const schedulesQueryKey = resourceQueryKey('schedules') ?? ['connection', 'pending', 'schedules']
   const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false)
   const [scheduleForm, setScheduleForm] = useState<CreateScheduleRequest>({
     name: '',
@@ -30,21 +34,23 @@ export function ScheduleManager({ vmId }: ScheduleManagerProps) {
 
   // Query for VMs (to populate dropdown)
   const { data: vms } = useQuery<VM[]>({
-    queryKey: ['vms'],
+    queryKey: vmsQueryKey,
     queryFn: () => api.getVms(),
+    enabled: !!connectionId,
   })
 
   // Query for schedules
   const { data: schedules, isLoading } = useQuery<ScheduledOperation[]>({
-    queryKey: vmId ? ['schedules', vmId] : ['schedules'],
+    queryKey: vmId ? [...schedulesQueryKey, vmId] : schedulesQueryKey,
     queryFn: () => vmId ? api.getVmSchedules(vmId) : api.listSchedules(),
+    enabled: !!connectionId,
   })
 
   // Create schedule mutation
   const createMutation = useMutation({
     mutationFn: (request: CreateScheduleRequest) => api.createSchedule(request),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['schedules'] })
+      queryClient.invalidateQueries({ queryKey: schedulesQueryKey })
       toast.success('Schedule created successfully')
       setIsCreateDialogOpen(false)
       resetForm()
@@ -59,7 +65,7 @@ export function ScheduleManager({ vmId }: ScheduleManagerProps) {
     mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) =>
       api.updateScheduleStatus(id, enabled),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['schedules'] })
+      queryClient.invalidateQueries({ queryKey: schedulesQueryKey })
       toast.success('Schedule status updated')
     },
     onError: (error: Error) => {
@@ -71,7 +77,7 @@ export function ScheduleManager({ vmId }: ScheduleManagerProps) {
   const deleteMutation = useMutation({
     mutationFn: (id: string) => api.deleteSchedule(id),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['schedules'] })
+      queryClient.invalidateQueries({ queryKey: schedulesQueryKey })
       toast.success('Schedule deleted successfully')
     },
     onError: (error: Error) => {

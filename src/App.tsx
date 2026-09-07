@@ -14,44 +14,10 @@ import Settings from './pages/Settings'
 import Insights from './pages/Insights'
 import { PerformanceMonitor } from './pages/PerformanceMonitor'
 import { Toaster } from './components/ui/sonner'
-import React from 'react'
-
-// Error boundary component
-class ErrorBoundary extends React.Component<
-  { children: React.ReactNode },
-  { hasError: boolean; error: Error | null }
-> {
-  constructor(props: { children: React.ReactNode }) {
-    super(props)
-    this.state = { hasError: false, error: null }
-  }
-
-  static getDerivedStateFromError(error: Error) {
-    return { hasError: true, error }
-  }
-
-  componentDidCatch(error: Error, info: React.ErrorInfo) {
-    console.error('React error:', error, info)
-  }
-
-  render() {
-    if (this.state.hasError) {
-      return (
-        <div className="p-8 bg-red-50 text-red-900">
-          <h1 className="text-xl font-bold">Something went wrong</h1>
-          <pre className="mt-4 text-sm overflow-auto">{this.state.error?.message}</pre>
-          <pre className="mt-2 text-xs overflow-auto">{this.state.error?.stack}</pre>
-        </div>
-      )
-    }
-    return this.props.children
-  }
-}
+import { ErrorBoundary } from './components/ErrorBoundary'
+import { HostReadinessPanel } from './components/system/HostReadinessPanel'
 
 function App() {
-  // Debug - log current location
-  console.log('App rendering, current location:', window.location.pathname)
-
   return (
     <ErrorBoundary>
       <BrowserRouter>
@@ -68,6 +34,7 @@ function App() {
           <Route path="/alerts" element={<Layout><Alerts /></Layout>} />
           <Route path="/backups" element={<Layout><Backups /></Layout>} />
           <Route path="/settings" element={<Layout><Settings /></Layout>} />
+          <Route path="/onboarding" element={<Layout><div className="p-4"><HostReadinessPanel /></div></Layout>} />
 
           {/* Separate window routes (without Layout) */}
           <Route path="/vms/:vmId" element={<VmDetailsWindow />} />

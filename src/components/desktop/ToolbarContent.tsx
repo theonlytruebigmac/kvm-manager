@@ -4,6 +4,7 @@ import { useToolbarStore } from '@/hooks/useToolbarActions'
 import type { VmSortField } from '@/hooks/useToolbarActions'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/tauri'
+import { useActiveConnection } from '@/hooks/useActiveConnection'
 import { toast } from 'sonner'
 import { useNavigate } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
@@ -149,10 +150,8 @@ export function ToolbarContent({ onOpenCommandPalette }: ToolbarContentProps) {
   const [showConnectionManager, setShowConnectionManager] = useState(false)
 
   // Get active connection
-  const { data: activeConnection } = useQuery({
-    queryKey: ['active-connection'],
-    queryFn: api.getActiveConnection,
-  })
+  const { data: activeConnection, connectionId, resourceQueryKey } = useActiveConnection()
+  const vmsQueryKey = resourceQueryKey('vms') ?? ['connection', 'pending', 'vms']
 
   // Check if we have any selection
   const hasSelection = selectedVmIds.length > 0
@@ -160,8 +159,9 @@ export function ToolbarContent({ onOpenCommandPalette }: ToolbarContentProps) {
 
   // Get VMs data to check focused VM state
   const { data: vms } = useQuery({
-    queryKey: ['vms'],
+    queryKey: vmsQueryKey,
     queryFn: api.getVms,
+    enabled: !!connectionId,
   })
 
   // Get selected VMs
@@ -186,7 +186,7 @@ export function ToolbarContent({ onOpenCommandPalette }: ToolbarContentProps) {
   const startMutation = useMutation({
     mutationFn: (vmId: string) => api.startVm(vmId),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['vms'] })
+      queryClient.invalidateQueries({ queryKey: vmsQueryKey })
       toast.success('VM started successfully')
     },
     onError: (error) => toast.error(`Failed to start VM: ${error}`)
@@ -195,7 +195,7 @@ export function ToolbarContent({ onOpenCommandPalette }: ToolbarContentProps) {
   const stopMutation = useMutation({
     mutationFn: (vmId: string) => api.forceStopVm(vmId),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['vms'] })
+      queryClient.invalidateQueries({ queryKey: vmsQueryKey })
       toast.success('VM stopped successfully')
     },
     onError: (error) => toast.error(`Failed to stop VM: ${error}`)
@@ -204,7 +204,7 @@ export function ToolbarContent({ onOpenCommandPalette }: ToolbarContentProps) {
   const pauseMutation = useMutation({
     mutationFn: (vmId: string) => api.pauseVm(vmId),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['vms'] })
+      queryClient.invalidateQueries({ queryKey: vmsQueryKey })
       toast.success('VM paused successfully')
     },
     onError: (error) => toast.error(`Failed to pause VM: ${error}`)
@@ -214,7 +214,7 @@ export function ToolbarContent({ onOpenCommandPalette }: ToolbarContentProps) {
   const batchStartMutation = useMutation({
     mutationFn: (vmIds: string[]) => api.batchStartVms(vmIds),
     onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: ['vms'] })
+      queryClient.invalidateQueries({ queryKey: vmsQueryKey })
       const successCount = data.filter(r => r.success).length
       toast.success(`Started ${successCount} of ${data.length} VMs`)
     },
@@ -224,7 +224,7 @@ export function ToolbarContent({ onOpenCommandPalette }: ToolbarContentProps) {
   const batchStopMutation = useMutation({
     mutationFn: (vmIds: string[]) => api.batchStopVms(vmIds, true),
     onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: ['vms'] })
+      queryClient.invalidateQueries({ queryKey: vmsQueryKey })
       const successCount = data.filter(r => r.success).length
       toast.success(`Stopped ${successCount} of ${data.length} VMs`)
     },

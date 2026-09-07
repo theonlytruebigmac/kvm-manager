@@ -1,6 +1,7 @@
 import { useState } from 'react'
-import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/tauri'
+import { useActiveConnection } from '@/hooks/useActiveConnection'
 import { toast } from 'sonner'
 import {
   AlertDialog,
@@ -26,11 +27,21 @@ export function DeleteVmDialog({ vm, open, onOpenChange }: DeleteVmDialogProps) 
   const [deleteDisks, setDeleteDisks] = useState(false)
   const [deleteSnapshots, setDeleteSnapshots] = useState(false)
   const queryClient = useQueryClient()
+  const { resourceQueryKey } = useActiveConnection()
+  const vmsQueryKey = resourceQueryKey('vms') ?? ['connection', 'pending', 'vms']
+  const { data: activeConnection } = useQuery({
+    queryKey: ['active-connection'],
+    queryFn: api.getActiveConnection,
+  })
 
   const deleteMutation = useMutation({
-    mutationFn: () => api.deleteVm(vm!.id, deleteDisks, deleteSnapshots),
+    mutationFn: ({ vmId, deleteDisks, deleteSnapshots }: {
+      vmId: string
+      deleteDisks: boolean
+      deleteSnapshots: boolean
+    }) => api.deleteVm(vmId, deleteDisks, deleteSnapshots),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['vms'] })
+      queryClient.invalidateQueries({ queryKey: vmsQueryKey })
       toast.success(`${vm?.name} deleted`)
       onOpenChange(false)
       // Reset options
@@ -42,7 +53,12 @@ export function DeleteVmDialog({ vm, open, onOpenChange }: DeleteVmDialogProps) 
 
   const handleDelete = () => {
     if (vm) {
-      deleteMutation.mutate()
+      // Capture the target at click time. The dialog can unmount while the request is queued.
+      deleteMutation.mutate({
+        vmId: vm.id,
+        deleteDisks,
+        deleteSnapshots,
+      })
     }
   }
 
@@ -57,6 +73,11 @@ export function DeleteVmDialog({ vm, open, onOpenChange }: DeleteVmDialogProps) 
             Are you sure you want to delete "{vm.name}"? This action cannot be undone.
           </AlertDialogDescription>
         </AlertDialogHeader>
+
+        <div className="rounded-md border bg-muted/40 p-3 text-sm">
+          <div><span className="font-medium">Target:</span> Virtual machine “{vm.name}”</div>
+          <div><span className="font-medium">Connection:</span> {activeConnection?.name ?? 'No selected connection'}</div>
+        </div>
 
         <div className="space-y-3 py-4">
           <div className="flex items-center space-x-2">

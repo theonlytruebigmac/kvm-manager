@@ -9,6 +9,7 @@ import {
 import { Badge } from '@/components/ui/badge'
 import { Cpu, MemoryStick, HardDrive, Network, Tag, Server, Disc } from 'lucide-react'
 import type { VM } from '@/lib/types'
+import { useActiveConnection } from '@/hooks/useActiveConnection'
 
 interface VmInfoTooltipProps {
   vm: VM
@@ -16,11 +17,12 @@ interface VmInfoTooltipProps {
 }
 
 export function VmInfoTooltip({ vm, children }: VmInfoTooltipProps) {
+  const { connectionId, resourceQueryKey } = useActiveConnection()
   // Fetch live stats for running VMs
   const { data: vmStats } = useQuery({
-    queryKey: ['vm-stats', vm.id],
+    queryKey: resourceQueryKey('vm-stats', vm.id) ?? ['connection', 'pending', 'vm-stats', vm.id],
     queryFn: () => api.getVmStats(vm.id),
-    enabled: vm.state === 'running',
+    enabled: !!connectionId && vm.state === 'running',
     staleTime: 2000,
   })
 

@@ -1,0 +1,5 @@
+[
+  {"name":"active-net","active":true,"requiredResult":"available"},
+  {"name":"inactive-net","active":false,"requiredResult":"unavailable"},
+  {"name":"missing-net","active":false,"requiredResult":"unavailable"}
+]

@@ -4,7 +4,7 @@ import { cn } from "@/lib/utils"
 /**
  * StatusBar - Desktop-style status bar component
  *
- * A fixed bottom status bar with small text and subtle styling,
+ * A bottom status bar with small text and subtle styling,
  * designed to look like a native desktop application status bar.
  * Items are automatically separated by vertical dividers.
  *
@@ -30,7 +30,7 @@ export const StatusBar = React.forwardRef<HTMLDivElement, StatusBarProps>(
       <div
         ref={ref}
         className={cn(
-          "fixed bottom-0 left-0 right-0 z-40",
+          "relative z-40 shrink-0 w-full",
           "flex items-center gap-0",
           "h-6 px-3",
           "text-desktop-xs leading-none",
@@ -99,7 +99,7 @@ StatusItem.displayName = "StatusItem"
  * Useful for creating left-aligned and right-aligned groups.
  */
 
-interface StatusSpacerProps extends React.HTMLAttributes<HTMLDivElement> {}
+type StatusSpacerProps = React.HTMLAttributes<HTMLDivElement>
 
 export const StatusSpacer = React.forwardRef<HTMLDivElement, StatusSpacerProps>(
   ({ className, ...props }, ref) => {

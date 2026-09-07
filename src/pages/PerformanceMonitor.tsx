@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { api } from '@/lib/tauri'
+import { useActiveConnection } from '@/hooks/useActiveConnection'
 import type { VM, VmStats } from '@/lib/types'
 import { PageContainer, PageHeader, PageContent } from '@/components/layout/PageContainer'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -61,6 +62,7 @@ const DEFAULT_THRESHOLDS: AlertThresholds = {
 const MAX_HISTORY_POINTS = 60
 
 export function PerformanceMonitor() {
+  const { connectionId, resourceQueryKey } = useActiveConnection()
   const [thresholds, setThresholds] = useState<AlertThresholds>(DEFAULT_THRESHOLDS)
   const [showSettings, setShowSettings] = useState(false)
   const [autoRefresh, setAutoRefresh] = useState(true)
@@ -68,9 +70,9 @@ export function PerformanceMonitor() {
 
   // Fetch all VMs
   const { data: vms, isLoading: vmsLoading } = useQuery({
-    queryKey: ['vms'],
+    queryKey: resourceQueryKey('vms') ?? ['connection', 'pending', 'vms'],
     queryFn: api.getVms,
-    refetchInterval: autoRefresh ? 5000 : false,
+    enabled: !!connectionId,
   })
 
   // Get running VMs
@@ -81,7 +83,7 @@ export function PerformanceMonitor() {
 
   // Fetch stats for all running VMs
   const { data: allVmStats } = useQuery({
-    queryKey: ['all-vm-stats', runningVms.map((vm: VM) => vm.id)],
+    queryKey: resourceQueryKey('all-vm-stats', ...runningVms.map((vm: VM) => vm.id)) ?? ['connection', 'pending', 'all-vm-stats'],
     queryFn: async () => {
       const stats: Record<string, VmStats | null> = {}
       await Promise.all(
@@ -96,7 +98,7 @@ export function PerformanceMonitor() {
       return stats
     },
     refetchInterval: autoRefresh ? 1000 : false,
-    enabled: runningVms.length > 0,
+    enabled: !!connectionId && runningVms.length > 0,
   })
 
   // Calculate per-VM data with alerts

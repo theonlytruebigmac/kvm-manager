@@ -30,6 +30,7 @@ import {
 import { Badge } from '@/components/ui/badge'
 import { Database, HardDrive, Plus, FolderOpen, Trash2, Maximize2, Upload, Download, Lock, Eye, EyeOff, FileArchive } from 'lucide-react'
 import type { StoragePool, VolumeConfig } from '@/lib/types'
+import { useActiveConnection } from '@/hooks/useActiveConnection'
 
 export function StorageManager() {
   const queryClient = useQueryClient()
@@ -47,19 +48,24 @@ export function StorageManager() {
   const [deleteConfirmVolume, setDeleteConfirmVolume] = useState<string | null>(null)
   const [resizeVolume, setResizeVolume] = useState<{ name: string; currentGb: number } | null>(null)
   const [newVolumeSize, setNewVolumeSize] = useState('')
+  const { data: activeConnection, connectionId, resourceQueryKey } = useActiveConnection()
+  const poolsQueryKey = resourceQueryKey('storage-pools') ?? ['connection', 'pending', 'storage-pools']
+  const volumesQueryKey = resourceQueryKey('volumes', selectedPool ?? '')
+    ?? ['connection', 'pending', 'volumes', selectedPool ?? '']
 
   // Query storage pools
   const { data: pools = [], isLoading: poolsLoading, error: poolsError } = useQuery({
-    queryKey: ['storage-pools'],
+    queryKey: poolsQueryKey,
     queryFn: api.getStoragePools,
+    enabled: !!connectionId,
     refetchInterval: 10000,
   })
 
   // Query volumes for selected pool
   const { data: volumes = [], isLoading: volumesLoading } = useQuery({
-    queryKey: ['volumes', selectedPool],
+    queryKey: volumesQueryKey,
     queryFn: () => api.getVolumes(selectedPool!),
-    enabled: !!selectedPool,
+    enabled: !!connectionId && !!selectedPool,
     refetchInterval: 10000,
   })
 
@@ -67,8 +73,8 @@ export function StorageManager() {
   const createVolumeMutation = useMutation({
     mutationFn: (config: VolumeConfig) => api.createVolume(selectedPool!, config),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['volumes', selectedPool] })
-      queryClient.invalidateQueries({ queryKey: ['storage-pools'] })
+      queryClient.invalidateQueries({ queryKey: volumesQueryKey })
+      queryClient.invalidateQueries({ queryKey: poolsQueryKey })
       toast.success(`Volume "${volumeName}" created successfully${volumeEncrypted ? ' (encrypted)' : ''}`)
       setShowCreateDialog(false)
       setVolumeName('')
@@ -87,8 +93,8 @@ export function StorageManager() {
   const deleteVolumeMutation = useMutation({
     mutationFn: (volumeName: string) => api.deleteVolume(selectedPool!, volumeName),
     onSuccess: (_data, volumeName) => {
-      queryClient.invalidateQueries({ queryKey: ['volumes', selectedPool] })
-      queryClient.invalidateQueries({ queryKey: ['storage-pools'] })
+      queryClient.invalidateQueries({ queryKey: volumesQueryKey })
+      queryClient.invalidateQueries({ queryKey: poolsQueryKey })
       toast.success(`Volume "${volumeName}" deleted successfully`)
       setDeleteConfirmVolume(null)
     },
@@ -103,8 +109,8 @@ export function StorageManager() {
     mutationFn: ({ volumeName, newCapacityGb }: { volumeName: string; newCapacityGb: number }) =>
       api.resizeVolume(selectedPool!, volumeName, newCapacityGb),
     onSuccess: (_data, { volumeName }) => {
-      queryClient.invalidateQueries({ queryKey: ['volumes', selectedPool] })
-      queryClient.invalidateQueries({ queryKey: ['storage-pools'] })
+      queryClient.invalidateQueries({ queryKey: volumesQueryKey })
+      queryClient.invalidateQueries({ queryKey: poolsQueryKey })
       toast.success(`Volume "${volumeName}" resized successfully`)
       setResizeVolume(null)
       setNewVolumeSize('')
@@ -119,8 +125,8 @@ export function StorageManager() {
     mutationFn: ({ volumeName, sourcePath, format }: { volumeName: string; sourcePath: string; format?: string }) =>
       api.uploadVolume(selectedPool!, volumeName, sourcePath, format),
     onSuccess: (_data, { volumeName }) => {
-      queryClient.invalidateQueries({ queryKey: ['volumes', selectedPool] })
-      queryClient.invalidateQueries({ queryKey: ['storage-pools'] })
+      queryClient.invalidateQueries({ queryKey: volumesQueryKey })
+      queryClient.invalidateQueries({ queryKey: poolsQueryKey })
       toast.success(`Volume "${volumeName}" uploaded successfully`)
     },
     onError: (error, { volumeName }) => {
@@ -573,6 +579,10 @@ export function StorageManager() {
                               Any VMs using this volume will lose access to it.
                             </AlertDialogDescription>
                           </AlertDialogHeader>
+                          <div className="rounded-md border bg-muted/40 p-3 text-sm">
+                            <div><span className="font-medium">Target:</span> Volume “{volume.name}”</div>
+                            <div><span className="font-medium">Connection:</span> {activeConnection?.name ?? 'No selected connection'}</div>
+                          </div>
                           <AlertDialogFooter>
                             <AlertDialogCancel>Cancel</AlertDialogCancel>
                             <AlertDialogAction

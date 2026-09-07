@@ -1,0 +1,6 @@
+guest</name><uuid>unexpected
+" onload="unexpected
+$(unexpected)
+line\u0000break
+../../outside-target
+<script>alert(1)</script>

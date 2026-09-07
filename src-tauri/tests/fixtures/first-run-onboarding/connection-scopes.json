@@ -1,0 +1,6 @@
+[
+  {"scope":"local_system","localGuidance":true},
+  {"scope":"local_session","localGuidance":false},
+  {"scope":"remote","localGuidance":false},
+  {"scope":"test","localGuidance":false}
+]

@@ -29,6 +29,11 @@ import {
 import { Usb, Plus, Minus, RefreshCw, Check, AlertCircle } from 'lucide-react'
 import { toast } from 'sonner'
 import type { UsbDevice, VM } from '@/lib/types'
+import {
+  hasConnectionCapability,
+  useActiveConnection,
+  useActiveOperationContext,
+} from '@/hooks/useActiveConnection'
 
 interface UsbDeviceManagerProps {
   vm: VM
@@ -38,21 +43,27 @@ interface UsbDeviceManagerProps {
 export function UsbDeviceManager({ vm, trigger }: UsbDeviceManagerProps) {
   const [open, setOpen] = useState(false)
   const queryClient = useQueryClient()
+  const { connectionId, resourceQueryKey } = useActiveConnection()
+  const { data: operationContext } = useActiveOperationContext(open)
+  const hostDeviceAvailable = hasConnectionCapability(operationContext, 'hostDevice')
+  const hostDevicesQueryKey = resourceQueryKey('usb-devices') ?? ['connection', 'pending', 'usb-devices']
+  const vmDevicesQueryKey = resourceQueryKey('vm-usb-devices', vm.id)
+    ?? ['connection', 'pending', 'vm-usb-devices', vm.id]
   const isRunning = vm.state === 'running'
 
   // Fetch all host USB devices
   const { data: hostDevices = [], isLoading: hostLoading, refetch: refetchHost } = useQuery<UsbDevice[]>({
-    queryKey: ['usb-devices'],
+    queryKey: hostDevicesQueryKey,
     queryFn: () => api.listUsbDevices(),
-    enabled: open,
+    enabled: !!connectionId && open && hostDeviceAvailable,
     refetchInterval: open ? 5000 : false,
   })
 
   // Fetch USB devices attached to this VM
   const { data: vmDevices = [], isLoading: vmLoading, refetch: refetchVm } = useQuery<UsbDevice[]>({
-    queryKey: ['vm-usb-devices', vm.id],
+    queryKey: vmDevicesQueryKey,
     queryFn: () => api.getVmUsbDevices(vm.id),
-    enabled: open,
+    enabled: !!connectionId && open && hostDeviceAvailable,
     refetchInterval: open ? 5000 : false,
   })
 
@@ -61,8 +72,8 @@ export function UsbDeviceManager({ vm, trigger }: UsbDeviceManagerProps) {
     mutationFn: ({ vendorId, productId }: { vendorId: string; productId: string }) =>
       api.attachUsbDevice(vm.id, vendorId, productId),
     onSuccess: (_, variables) => {
-      queryClient.invalidateQueries({ queryKey: ['usb-devices'] })
-      queryClient.invalidateQueries({ queryKey: ['vm-usb-devices', vm.id] })
+      queryClient.invalidateQueries({ queryKey: hostDevicesQueryKey })
+      queryClient.invalidateQueries({ queryKey: vmDevicesQueryKey })
       toast.success('USB Device Attached', {
         description: `Device ${variables.vendorId}:${variables.productId} attached to ${vm.name}`,
       })
@@ -79,8 +90,8 @@ export function UsbDeviceManager({ vm, trigger }: UsbDeviceManagerProps) {
     mutationFn: ({ vendorId, productId }: { vendorId: string; productId: string }) =>
       api.detachUsbDevice(vm.id, vendorId, productId),
     onSuccess: (_, variables) => {
-      queryClient.invalidateQueries({ queryKey: ['usb-devices'] })
-      queryClient.invalidateQueries({ queryKey: ['vm-usb-devices', vm.id] })
+      queryClient.invalidateQueries({ queryKey: hostDevicesQueryKey })
+      queryClient.invalidateQueries({ queryKey: vmDevicesQueryKey })
       toast.success('USB Device Detached', {
         description: `Device ${variables.vendorId}:${variables.productId} detached from ${vm.name}`,
       })
@@ -130,7 +141,12 @@ export function UsbDeviceManager({ vm, trigger }: UsbDeviceManagerProps) {
           </DialogDescription>
         </DialogHeader>
 
-        {!isRunning ? (
+        {!hostDeviceAvailable ? (
+          <div className="flex flex-col items-center justify-center py-8 text-muted-foreground">
+            <AlertCircle className="h-12 w-12 mb-4" />
+            <p>USB passthrough requires a local system connection</p>
+          </div>
+        ) : !isRunning ? (
           <div className="flex flex-col items-center justify-center py-8 text-muted-foreground">
             <AlertCircle className="h-12 w-12 mb-4" />
             <p>Start the VM to manage USB devices</p>

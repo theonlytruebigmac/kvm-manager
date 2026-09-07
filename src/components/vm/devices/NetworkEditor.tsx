@@ -2,6 +2,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Label } from '@/components/ui/label'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
+import { useActiveConnection } from '@/hooks/useActiveConnection'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Badge } from '@/components/ui/badge'
@@ -37,6 +38,7 @@ function generateMacAddress(): string {
 }
 
 export function NetworkEditor({ vm, nicIndex, compact }: NetworkEditorProps) {
+  const { connectionId, resourceQueryKey } = useActiveConnection()
   const [copied, setCopied] = useState(false)
   const [showDeleteDialog, setShowDeleteDialog] = useState(false)
   const queryClient = useQueryClient()
@@ -59,22 +61,24 @@ export function NetworkEditor({ vm, nicIndex, compact }: NetworkEditorProps) {
 
   // Fetch available networks
   const { data: networks = [] } = useQuery({
-    queryKey: ['networks'],
+    queryKey: resourceQueryKey('networks') ?? ['connection', 'pending', 'networks'],
     queryFn: () => api.getNetworks(),
+    enabled: !!connectionId,
   })
 
   // Fetch link state for this interface
   const { data: linkUp = true, refetch: refetchLinkState } = useQuery({
-    queryKey: ['interface-link-state', vm.id, nic?.mac],
+    queryKey: resourceQueryKey('interface-link-state', vm.id, nic?.mac ?? '')
+      ?? ['connection', 'pending', 'interface-link-state', vm.id, nic?.mac ?? ''],
     queryFn: () => api.getInterfaceLinkState(vm.id, nic?.mac || ''),
-    enabled: !!nic?.mac,
+    enabled: !!connectionId && !!nic?.mac,
   })
 
   // Link state mutation
   const linkStateMutation = useMutation({
     mutationFn: (newLinkUp: boolean) => api.setInterfaceLinkState(vm.id, nic?.mac || '', newLinkUp),
     onSuccess: (_, newLinkUp) => {
-      queryClient.invalidateQueries({ queryKey: ['interface-link-state', vm.id, nic?.mac] })
+      queryClient.invalidateQueries({ queryKey: resourceQueryKey('interface-link-state', vm.id, nic?.mac ?? '') })
       refetchLinkState()
       toast.success(newLinkUp ? 'Network cable connected' : 'Network cable disconnected')
     },
@@ -125,8 +129,8 @@ export function NetworkEditor({ vm, nicIndex, compact }: NetworkEditorProps) {
         outboundPeak: outboundPeak ? parseInt(outboundPeak) : undefined,
         outboundBurst: outboundBurst ? parseInt(outboundBurst) : undefined,
       })
-      queryClient.invalidateQueries({ queryKey: ['vms'] })
-      queryClient.invalidateQueries({ queryKey: ['vm', vm.id] })
+      queryClient.invalidateQueries({ queryKey: resourceQueryKey('vms') })
+      queryClient.invalidateQueries({ queryKey: resourceQueryKey('vm', vm.id) })
       toast.success('Bandwidth limits updated')
       setHasBandwidthChanges(false)
     } catch (error) {
@@ -149,8 +153,8 @@ export function NetworkEditor({ vm, nicIndex, compact }: NetworkEditorProps) {
   const detachMutation = useMutation({
     mutationFn: () => api.detachInterface(vm.id, nic?.mac || ''),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['vms'] })
-      queryClient.invalidateQueries({ queryKey: ['vm', vm.id] })
+      queryClient.invalidateQueries({ queryKey: resourceQueryKey('vms') })
+      queryClient.invalidateQueries({ queryKey: resourceQueryKey('vm', vm.id) })
       toast.success('Network interface removed')
       setShowDeleteDialog(false)
     },
@@ -168,8 +172,8 @@ export function NetworkEditor({ vm, nicIndex, compact }: NetworkEditorProps) {
       await api.attachInterface(vm.id, selectedNetwork, selectedModel, nic?.mac)
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['vms'] })
-      queryClient.invalidateQueries({ queryKey: ['vm', vm.id] })
+      queryClient.invalidateQueries({ queryKey: resourceQueryKey('vms') })
+      queryClient.invalidateQueries({ queryKey: resourceQueryKey('vm', vm.id) })
       toast.success('Network interface updated')
       setHasChanges(false)
     },
@@ -186,8 +190,8 @@ export function NetworkEditor({ vm, nicIndex, compact }: NetworkEditorProps) {
       await api.attachInterface(vm.id, selectedNetwork, selectedModel, newMac)
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['vms'] })
-      queryClient.invalidateQueries({ queryKey: ['vm', vm.id] })
+      queryClient.invalidateQueries({ queryKey: resourceQueryKey('vms') })
+      queryClient.invalidateQueries({ queryKey: resourceQueryKey('vm', vm.id) })
       toast.success('MAC address regenerated')
     },
     onError: (error) => {

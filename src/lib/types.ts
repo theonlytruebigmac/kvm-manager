@@ -3,6 +3,214 @@
 
 export type VmState = 'running' | 'stopped' | 'paused' | 'suspended' | 'crashed'
 
+export type DistributionFamily = 'arch_cachyos' | 'debian_ubuntu' | 'fedora_rhel' | 'opensuse' | 'best_effort'
+export type CapabilityState = 'available' | 'unavailable' | 'warning' | 'unknown'
+export type ConnectionCapabilityState = 'available' | 'unavailable' | 'degraded' | 'unknown'
+export type MutationOutcome = 'rejected' | 'applied' | 'rolled_back' | 'partial' | 'unknown'
+export type SafeFailureCode =
+  | 'unavailable'
+  | 'invalid_input'
+  | 'conflict'
+  | 'unauthorized'
+  | 'integration'
+  | 'unsupported'
+  | 'partial'
+  | 'internal'
+
+export interface TargetIdentity {
+  resourceKind: string
+  stableId: string
+  displayName?: string
+}
+
+export interface RecoveryAction {
+  kind: 'retry' | 'reconnect' | 'reselect' | 'inspect' | 'reconcile' | 'open_settings' | 'none'
+  label: string
+  requiresConfirmation: boolean
+  expectedConnectionId?: string
+}
+
+export interface ConnectionCapability {
+  kind: string
+  state: ConnectionCapabilityState
+  reasonCode?: string
+  recoveryAction?: RecoveryAction
+  checkedAt: string
+}
+
+export interface OperationContext {
+  operationId: string
+  operationKind: string
+  connectionId: string
+  connectionLabel: string
+  connectionScope: 'local_system' | 'local_session' | 'remote' | 'test'
+  capabilities: ConnectionCapability[]
+  target?: TargetIdentity
+  capturedAt: string
+}
+
+export interface SafeFailure {
+  code: SafeFailureCode
+  summary: string
+  operationId?: string
+  connectionId?: string
+  target?: TargetIdentity
+  outcome: MutationOutcome
+  retryable: boolean
+  recoveryAction?: RecoveryAction
+}
+
+export function isSafeFailure(value: unknown): value is SafeFailure {
+  if (typeof value !== 'object' || value === null) return false
+  const candidate = value as Partial<SafeFailure>
+  return typeof candidate.code === 'string'
+    && typeof candidate.summary === 'string'
+    && typeof candidate.outcome === 'string'
+    && typeof candidate.retryable === 'boolean'
+}
+
+/** Converts legacy or malformed rejection payloads into a safe UI contract. */
+export function normalizeInvokeFailure(value: unknown): SafeFailure {
+  if (isSafeFailure(value)) return value
+  return {
+    code: 'internal',
+    summary: 'The operation could not be completed safely.',
+    outcome: 'unknown',
+    retryable: false,
+  }
+}
+
+/** Error form used by UI callers so toast and page handlers never receive raw IPC text. */
+export class SafeFailureError extends Error {
+  readonly failure: SafeFailure
+
+  constructor(failure: SafeFailure) {
+    super(failure.recoveryAction ? `${failure.summary} ${failure.recoveryAction.label}` : failure.summary)
+    this.name = 'SafeFailureError'
+    this.failure = failure
+  }
+}
+
+export interface MutationResult {
+  operationId: string
+  connectionId: string
+  target: TargetIdentity
+  outcome: MutationOutcome
+}
+
+export interface DistributionProfile {
+  family: DistributionFamily
+  displayName: string
+  packageManager: string
+  supported: boolean
+  packages: string[]
+  service: string
+  permissionGuidance: string
+  firmwareGuidance: string
+  limitations: string[]
+}
+
+export interface CapabilityResult {
+  kind: string
+  state: CapabilityState
+  summary: string
+  remediation?: string
+  details?: string
+  repairAction?: ReadinessRepairAction
+}
+
+export interface ReadinessRepairAction {
+  id: string
+  mode: 'automated' | 'manual' | 'navigate'
+  title: string
+  effect: string
+  requiresPrivilege: boolean
+  requiresConfirmation: boolean
+  expectedConnectionId: string
+  steps: string[]
+}
+
+export interface ReadinessRepairResult {
+  actionId: string
+  connectionId: string
+  outcome: 'applied' | 'rejected' | 'cancelled' | 'failed' | 'inspection_required'
+  summary: string
+}
+
+export interface HostReadinessReport {
+  checkedAt: string
+  connectionUri: string
+  distribution: DistributionProfile
+  overallState: 'ready' | 'degraded' | 'unavailable'
+  capabilities: CapabilityResult[]
+}
+
+export type StorageReadinessState = 'ready' | 'selection_required' | 'unavailable' | 'insufficient_capacity'
+
+export interface StorageChoice {
+  id: string
+  name: string
+  state: PoolState
+  poolType: PoolType
+  capacityBytes: number
+  allocationBytes: number
+  availableBytes: number
+  autostart: boolean
+  eligible: boolean
+  reason?: string
+}
+
+export interface StorageReadiness {
+  connectionId: string
+  requiredBytes?: number
+  selectedPoolId?: string
+  pools: StorageChoice[]
+  state: StorageReadinessState
+  recoveryAction?: RecoveryAction
+}
+
+export interface GuestRequirements {
+  firmware: 'bios' | 'uefi' | 'uefi-secure'
+  tpmEnabled: boolean
+  network?: string
+}
+
+export interface VmCreationReadiness {
+  checkedAt: string
+  connectionId: string
+  connectionLabel: string
+  connectionScope: OperationContext['connectionScope']
+  distribution: DistributionProfile
+  overallState: 'ready' | 'degraded' | 'unavailable'
+  capabilities: CapabilityResult[]
+  storage: StorageReadiness
+}
+
+export interface GuestCapabilityReview {
+  checkedAt: string
+  connectionId: string
+  requirements: GuestRequirements
+  capabilities: CapabilityResult[]
+  storage: StorageReadiness
+  canCreate: boolean
+}
+
+export interface FirmwareCandidate {
+  bootMode: 'uefi' | 'secure_boot'
+  codePath: string
+  varsTemplatePath?: string
+  source: 'libvirt' | 'fallback'
+}
+
+export interface PortForwardRule {
+  networkId: string
+  protocol: 'tcp' | 'udp'
+  hostPort: number
+  guestAddress: string
+  guestPort: number
+  state: 'requested' | 'present' | 'absent' | 'failed' | 'insufficient_privilege' | 'unavailable'
+}
+
 // Interface connection types
 export type InterfaceType = 'network' | 'bridge' | 'direct' | 'ovs'
 
@@ -159,6 +367,7 @@ export interface VmConfig {
   cpuCount: number
   memoryMb: number
   diskSizeGb: number
+  storagePoolId?: string
   osType: 'linux' | 'windows' | 'other'
   osVariant?: string
   isoPath?: string
@@ -654,7 +863,7 @@ export interface BatchOperationResult {
   vmId: string
   vmName: string
   success: boolean
-  error?: string
+  error?: SafeFailure
 }
 
 // Optimization types

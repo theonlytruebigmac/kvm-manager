@@ -77,8 +77,9 @@ impl AlertService {
 
         // Create alerts directory if it doesn't exist
         if !alerts_dir.exists() {
-            fs::create_dir_all(&alerts_dir)
-                .map_err(|e| AppError::AlertError(format!("Failed to create alerts directory: {}", e)))?;
+            fs::create_dir_all(&alerts_dir).map_err(|e| {
+                AppError::AlertError(format!("Failed to create alerts directory: {}", e))
+            })?;
         }
 
         Ok(Self { alerts_dir })
@@ -86,8 +87,9 @@ impl AlertService {
 
     /// Get the alerts directory path
     fn get_alerts_dir() -> Result<PathBuf, AppError> {
-        let config_dir = dirs::config_dir()
-            .ok_or_else(|| AppError::AlertError("Could not determine config directory".to_string()))?;
+        let config_dir = dirs::config_dir().ok_or_else(|| {
+            AppError::AlertError("Could not determine config directory".to_string())
+        })?;
 
         Ok(config_dir.join("kvm-manager").join("alerts"))
     }
@@ -136,7 +138,9 @@ impl AlertService {
             .map_err(|e| AppError::AlertError(format!("Failed to read alerts directory: {}", e)))?;
 
         for entry in entries {
-            let entry = entry.map_err(|e| AppError::AlertError(format!("Failed to read directory entry: {}", e)))?;
+            let entry = entry.map_err(|e| {
+                AppError::AlertError(format!("Failed to read directory entry: {}", e))
+            })?;
             let path = entry.path();
 
             if path.extension().and_then(|s| s.to_str()) == Some("json") {

@@ -11,6 +11,11 @@ import { SerialConsole } from '@/components/console/SerialConsole'
 import { ConsoleToolbar } from '@/components/console/ConsoleToolbar'
 import { toast } from 'sonner'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import {
+  hasConnectionCapability,
+  useActiveConnection,
+  useActiveOperationContext,
+} from '@/hooks/useActiveConnection'
 
 type ConsoleType = 'graphical' | 'serial'
 
@@ -29,24 +34,35 @@ export function ConsoleWindow() {
   const [isConnected, setIsConnected] = useState(false)
   const [scaleMode, setScaleMode] = useState<ScaleMode>('scale')
   const [consoleType, setConsoleType] = useState<ConsoleType>('graphical')
+  const [inputFocused, setInputFocused] = useState(false)
+  const {
+    connectionId,
+    resourceQueryKey,
+    isLoading: loadingConnection,
+  } = useActiveConnection()
+  const {
+    data: operationContext,
+    isLoading: loadingOperationContext,
+  } = useActiveOperationContext()
+  const consoleAvailable = hasConnectionCapability(operationContext, 'console')
 
   // Enable window state persistence
   useWindowState()
 
   const { data: vm, isLoading: vmLoading } = useQuery({
-    queryKey: ['vm', vmId],
+    queryKey: resourceQueryKey('vm', vmId ?? '') ?? ['connection', 'pending', 'vm', vmId ?? ''],
     queryFn: () => api.getVm(vmId!),
-    enabled: !!vmId,
+    enabled: !!vmId && !!connectionId,
   })
 
   const { data: vncInfo, isLoading: vncLoading } = useQuery({
-    queryKey: ['vnc-info', vmId],
+    queryKey: resourceQueryKey('vnc-info', vmId ?? '') ?? ['connection', 'pending', 'vnc-info', vmId ?? ''],
     queryFn: () => api.getVncInfo(vmId!),
-    enabled: !!vmId,
+    enabled: !!vmId && !!connectionId && consoleAvailable,
     refetchInterval: false, // Don't auto-refresh - websockify proxy stays active
   })
 
-  const isLoading = vmLoading || vncLoading
+  const isLoading = vmLoading || vncLoading || loadingConnection || loadingOperationContext
 
   // Cleanup websockify proxy when window closes - ONLY on actual window close
   useEffect(() => {
@@ -148,6 +164,7 @@ export function ConsoleWindow() {
 
   const handleDisconnected = () => {
     setIsConnected(false)
+    setInputFocused(false)
     toast.error('Console disconnected')
   }
 
@@ -164,8 +181,11 @@ export function ConsoleWindow() {
   // Keyboard shortcuts for window management and fullscreen
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
-      // Escape or Ctrl+W to close window (only if not in fullscreen)
-      if (!isFullscreen && (event.key === 'Escape' || (event.ctrlKey && event.key === 'w'))) {
+      // Guest input owns the keyboard while its display is focused.
+      if (inputFocused || event.defaultPrevented) return
+
+      // Ctrl+W closes the window only while console input is released.
+      if (!isFullscreen && event.ctrlKey && event.key === 'w') {
         event.preventDefault()
         getCurrentWindow().close()
       }
@@ -191,7 +211,7 @@ export function ConsoleWindow() {
 
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [isFullscreen])
+  }, [isFullscreen, inputFocused])
 
   if (isLoading) {
     return (
@@ -199,6 +219,19 @@ export function ConsoleWindow() {
         <div className="flex flex-col items-center gap-4">
           <Loader2 className="w-8 h-8 animate-spin text-primary" />
           <p className="text-sm text-muted-foreground">Connecting to console...</p>
+        </div>
+      </div>
+    )
+  }
+
+  if (!consoleAvailable) {
+    return (
+      <div className="h-screen w-screen flex items-center justify-center bg-background p-6">
+        <div className="max-w-md text-center">
+          <p className="text-lg font-medium text-foreground">Console unavailable for this connection</p>
+          <p className="text-sm text-muted-foreground mt-2">
+            Graphical and serial consoles require a local system connection. Select a local host to use this window.
+          </p>
         </div>
       </div>
     )
@@ -222,9 +255,17 @@ export function ConsoleWindow() {
   return (
     <div className="h-screen w-screen flex flex-col bg-black">
       {/* Console Type Tabs & Toolbar */}
-      <div className="flex items-center gap-4 border-b border-gray-700 bg-gray-900 px-4">
-        <Tabs value={consoleType} onValueChange={(v) => setConsoleType(v as ConsoleType)}>
-          <TabsList className="h-8 bg-gray-800">
+      <div
+        className="flex min-h-12 items-center gap-4 border-b border-slate-700/80 bg-slate-900 px-4 shadow-lg shadow-black/20"
+        onMouseDown={() => {
+          if (inputFocused) getActiveViewer()?.blur()
+        }}
+      >
+        <Tabs value={consoleType} onValueChange={(v) => {
+          setConsoleType(v as ConsoleType)
+          setInputFocused(false)
+        }}>
+          <TabsList className="h-8 bg-slate-800/80">
             <TabsTrigger value="graphical" className="text-xs gap-1.5 data-[state=active]:bg-gray-700">
               <Monitor className="h-3 w-3" />
               Graphical
@@ -245,6 +286,11 @@ export function ConsoleWindow() {
             vmName={vm.name}
             scaleMode={scaleMode}
             onScaleModeChange={handleScaleModeChange}
+            inputFocused={inputFocused}
+            onFocusInput={() => getActiveViewer()?.focus()}
+            onReconnect={() => getActiveViewer()?.reconnect()}
+            supportsSpecialKeys={graphicsType === 'vnc'}
+            isConnected={isConnected}
           />
         )}
       </div>
@@ -264,6 +310,7 @@ export function ConsoleWindow() {
                 onConnected={handleConnected}
                 onDisconnected={handleDisconnected}
                 onError={handleError}
+                onInputFocusChange={setInputFocused}
               />
             ) : (
               <VncViewer
@@ -275,6 +322,7 @@ export function ConsoleWindow() {
                 onConnected={handleConnected}
                 onDisconnected={handleDisconnected}
                 onError={handleError}
+                onInputFocusChange={setInputFocused}
               />
             )
           ) : (
@@ -292,7 +340,7 @@ export function ConsoleWindow() {
       </div>
 
       {/* Status Bar */}
-      <div className="h-6 border-t border-gray-700 bg-gray-800 flex items-center px-4 text-xs text-gray-400">
+      <div className="min-h-8 border-t border-slate-700/80 bg-slate-900 flex items-center px-4 text-xs text-slate-400">
         <div className={`w-2 h-2 rounded-full mr-2 ${isConnected ? 'bg-green-500' : 'bg-gray-600'}`} />
         <span>{isConnected ? 'Connected' : 'Disconnected'}</span>
         <span className="mx-2">•</span>
@@ -306,7 +354,10 @@ export function ConsoleWindow() {
         {isConnected && consoleType === 'graphical' && (
           <>
             <span className="mx-2">•</span>
-            <span>F11: Fullscreen, F10: Screenshot</span>
+            <span className={inputFocused ? 'text-emerald-400' : 'text-amber-300'}>
+              {inputFocused ? 'Keyboard captured by guest' : 'Click the display or Capture keyboard to type'}
+            </span>
+            <span className="ml-auto text-slate-500">Use the toolbar for local console controls</span>
           </>
         )}
       </div>

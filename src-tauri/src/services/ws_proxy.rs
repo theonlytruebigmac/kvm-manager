@@ -1,11 +1,11 @@
+use crate::utils::error::AppError;
+use futures_util::{SinkExt, StreamExt};
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, RwLock};
 use tokio_tungstenite::{accept_async, tungstenite::Message};
-use futures_util::{SinkExt, StreamExt};
-use crate::utils::error::AppError;
 
 /// Native Rust WebSocket-to-TCP proxy for VNC/SPICE connections
 /// This replaces the external websockify dependency
@@ -20,6 +20,12 @@ struct ProxyHandle {
     ws_port: u16,
     vnc_port: u16,
     shutdown_tx: mpsc::Sender<()>,
+}
+
+impl Default for WsProxyService {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl WsProxyService {
@@ -38,7 +44,11 @@ impl WsProxyService {
             let proxies = self.proxies.read().await;
             if let Some(handle) = proxies.get(vm_id) {
                 if handle.vnc_port == vnc_port {
-                    tracing::debug!("Reusing existing proxy for VM {} on port {}", vm_id, handle.ws_port);
+                    tracing::debug!(
+                        "Reusing existing proxy for VM {} on port {}",
+                        vm_id,
+                        handle.ws_port
+                    );
                     return Ok(handle.ws_port);
                 }
             }
@@ -56,9 +66,9 @@ impl WsProxyService {
         // Start the proxy server
         let listener = TcpListener::bind(format!("127.0.0.1:{}", ws_port))
             .await
-            .map_err(|e| AppError::Other(format!("Failed to bind to port {}: {}", ws_port, e)))?;
+            .map_err(|_| AppError::Other("Failed to bind the local console proxy".to_string()))?;
 
-        tracing::info!("Starting WebSocket proxy for VM {} on port {} -> VNC {}", vm_id, ws_port, vnc_port);
+        tracing::info!("Starting local WebSocket console proxy");
 
         // Spawn the proxy task
         let vm_id_clone = vm_id.to_string();
@@ -69,11 +79,14 @@ impl WsProxyService {
         // Store the handle
         {
             let mut proxies = self.proxies.write().await;
-            proxies.insert(vm_id.to_string(), ProxyHandle {
-                ws_port,
-                vnc_port,
-                shutdown_tx,
-            });
+            proxies.insert(
+                vm_id.to_string(),
+                ProxyHandle {
+                    ws_port,
+                    vnc_port,
+                    shutdown_tx,
+                },
+            );
         }
 
         Ok(ws_port)
@@ -108,13 +121,18 @@ impl WsProxyService {
         for port in self.base_port..self.base_port + 100 {
             if !used_ports.contains(&port) {
                 // Try to bind to verify it's available
-                if TcpListener::bind(format!("127.0.0.1:{}", port)).await.is_ok() {
+                if TcpListener::bind(format!("127.0.0.1:{}", port))
+                    .await
+                    .is_ok()
+                {
                     return Ok(port);
                 }
             }
         }
 
-        Err(AppError::Other("No available ports for WebSocket proxy".to_string()))
+        Err(AppError::Other(
+            "No available ports for WebSocket proxy".to_string(),
+        ))
     }
 
     /// Get proxy port for a VM if running
@@ -138,16 +156,16 @@ async fn run_proxy_server(
             accept_result = listener.accept() => {
                 match accept_result {
                     Ok((stream, addr)) => {
-                        tracing::debug!("New WebSocket connection from {} for VM {}", addr, vm_id);
+                        tracing::debug!("New WebSocket console connection");
                         let vm_id_clone = vm_id.clone();
                         tokio::spawn(async move {
-                            if let Err(e) = handle_ws_connection(stream, vnc_port, addr, vm_id_clone).await {
-                                tracing::warn!("WebSocket connection error: {}", e);
+                            if let Err(_error) = handle_ws_connection(stream, vnc_port, addr, vm_id_clone).await {
+                                tracing::warn!("WebSocket console connection failed");
                             }
                         });
                     }
-                    Err(e) => {
-                        tracing::error!("Failed to accept connection: {}", e);
+                    Err(_error) => {
+                        tracing::error!("Failed to accept a local console connection");
                     }
                 }
             }
@@ -177,7 +195,12 @@ async fn handle_ws_connection(
     let vnc_stream = TcpStream::connect(format!("127.0.0.1:{}", vnc_port)).await?;
     let (mut vnc_read, mut vnc_write) = vnc_stream.into_split();
 
-    tracing::info!("Bridging WebSocket {} <-> VNC {} for VM {}", addr, vnc_port, vm_id);
+    tracing::info!(
+        "Bridging WebSocket {} <-> VNC {} for VM {}",
+        addr,
+        vnc_port,
+        vm_id
+    );
 
     // Use a channel for sending messages to WebSocket
     let (ws_tx, mut ws_rx) = mpsc::channel::<Message>(256);
@@ -214,8 +237,8 @@ async fn handle_ws_connection(
                 Ok(_) => {
                     // Ignore text and other messages
                 }
-                Err(e) => {
-                    tracing::debug!("WebSocket read error: {}", e);
+                Err(_) => {
+                    tracing::debug!("WebSocket read failed");
                     break;
                 }
             }
@@ -232,12 +255,16 @@ async fn handle_ws_connection(
                     break;
                 }
                 Ok(n) => {
-                    if ws_tx.send(Message::Binary(buffer[..n].to_vec())).await.is_err() {
+                    if ws_tx
+                        .send(Message::Binary(buffer[..n].to_vec()))
+                        .await
+                        .is_err()
+                    {
                         break;
                     }
                 }
-                Err(e) => {
-                    tracing::debug!("VNC read error: {}", e);
+                Err(_) => {
+                    tracing::debug!("VNC read failed");
                     break;
                 }
             }

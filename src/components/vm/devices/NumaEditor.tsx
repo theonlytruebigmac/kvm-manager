@@ -16,25 +16,30 @@ import { api } from '@/lib/tauri'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import type { VM, VmNumaConfig } from '@/lib/types'
+import { useActiveConnection } from '@/hooks/useActiveConnection'
 
 interface NumaEditorProps {
   vm: VM
 }
 
 export function NumaEditor({ vm }: NumaEditorProps) {
+  const { connectionId, resourceQueryKey } = useActiveConnection()
   const queryClient = useQueryClient()
   const isRunning = vm.state === 'running'
 
   // Get host NUMA topology
   const { data: hostNodes = [], isLoading: loadingHost } = useQuery({
-    queryKey: ['hostNumaTopology'],
+    queryKey: resourceQueryKey('host-numa-topology') ?? ['connection', 'pending', 'host-numa-topology'],
     queryFn: () => api.getHostNumaTopology(),
+    enabled: !!connectionId,
   })
 
   // Get VM NUMA configuration
   const { data: numaConfig, isLoading: loadingConfig, refetch: refetchConfig } = useQuery({
-    queryKey: ['vmNumaConfig', vm.id],
+    queryKey: resourceQueryKey('vm-numa-config', vm.id)
+      ?? ['connection', 'pending', 'vm-numa-config', vm.id],
     queryFn: () => api.getVmNumaConfig(vm.id),
+    enabled: !!connectionId,
   })
 
   // Local state
@@ -90,7 +95,7 @@ export function NumaEditor({ vm }: NumaEditorProps) {
       await api.setVmNumaConfig(vm.id, config)
       toast.success(`NUMA configuration applied: ${mode} mode on node(s) ${selectedNodes.join(', ')}`)
       refetchConfig()
-      queryClient.invalidateQueries({ queryKey: ['vm', vm.id] })
+      queryClient.invalidateQueries({ queryKey: resourceQueryKey('vm', vm.id) })
       setIsEditing(false)
     } catch (err) {
       toast.error(err instanceof Error ? err.message : String(err))
@@ -105,7 +110,7 @@ export function NumaEditor({ vm }: NumaEditorProps) {
       await api.clearVmNumaConfig(vm.id)
       toast.success('NUMA configuration cleared')
       refetchConfig()
-      queryClient.invalidateQueries({ queryKey: ['vm', vm.id] })
+      queryClient.invalidateQueries({ queryKey: resourceQueryKey('vm', vm.id) })
       setIsEditing(false)
     } catch (err) {
       toast.error(err instanceof Error ? err.message : String(err))

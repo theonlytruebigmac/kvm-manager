@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/tauri'
+import { useActiveConnection } from '@/hooks/useActiveConnection'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
@@ -19,6 +20,9 @@ interface ImportOvaDialogProps {
 
 export function ImportOvaDialog({ onClose, onSuccess }: ImportOvaDialogProps) {
   const queryClient = useQueryClient()
+  const { connectionId, resourceQueryKey } = useActiveConnection()
+  const poolsQueryKey = resourceQueryKey('storage-pools') ?? ['connection', 'pending', 'storage-pools']
+  const vmsQueryKey = resourceQueryKey('vms') ?? ['connection', 'pending', 'vms']
   const [step, setStep] = useState<'select' | 'preview' | 'importing'>('select')
   const [sourcePath, setSourcePath] = useState('')
   const [metadata, setMetadata] = useState<OvfMetadata | null>(null)
@@ -29,8 +33,9 @@ export function ImportOvaDialog({ onClose, onSuccess }: ImportOvaDialogProps) {
 
   // Query storage pools
   const { data: pools = [] } = useQuery({
-    queryKey: ['storage-pools'],
+    queryKey: resourceQueryKey('storage-pools') ?? ['connection', 'pending', 'storage-pools'],
     queryFn: api.getStoragePools,
+    enabled: !!connectionId,
   })
 
   // Select file mutation
@@ -89,8 +94,8 @@ export function ImportOvaDialog({ onClose, onSuccess }: ImportOvaDialogProps) {
     },
     onSuccess: (diskPath) => {
       setImportProgress(100)
-      queryClient.invalidateQueries({ queryKey: ['storage-pools'] })
-      queryClient.invalidateQueries({ queryKey: ['vms'] })
+      queryClient.invalidateQueries({ queryKey: poolsQueryKey })
+      queryClient.invalidateQueries({ queryKey: vmsQueryKey })
       toast.success(`Successfully imported "${vmName}". Disk saved to: ${diskPath}`)
 
       // Note: The import just extracts and converts the disk.

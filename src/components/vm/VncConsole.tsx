@@ -1,5 +1,10 @@
 import { useQuery, useMutation } from '@tanstack/react-query'
 import { api } from '@/lib/tauri'
+import {
+  hasConnectionCapability,
+  useActiveConnection,
+  useActiveOperationContext,
+} from '@/hooks/useActiveConnection'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -11,12 +16,17 @@ interface VncConsoleProps {
 }
 
 export function VncConsole({ vmId, vmName }: VncConsoleProps) {
+  const { connectionId, resourceQueryKey } = useActiveConnection()
+  const { data: operationContext, isLoading: loadingOperationContext } = useActiveOperationContext()
+  const consoleAvailable = hasConnectionCapability(operationContext, 'console')
+
   // Get VNC connection info
   const { data: vncInfo, isLoading, error, refetch } = useQuery({
-    queryKey: ['vnc-info', vmId],
+    queryKey: resourceQueryKey('vnc-info', vmId) ?? ['connection', 'pending', 'vnc-info', vmId],
     queryFn: () => api.getVncInfo(vmId),
     retry: 2,
     refetchOnWindowFocus: false,
+    enabled: !!connectionId && consoleAvailable,
   })
 
   // Open external VNC viewer mutation
@@ -29,6 +39,25 @@ export function VncConsole({ vmId, vmName }: VncConsoleProps) {
       toast.error(`Failed to open VNC viewer: ${error}`)
     },
   })
+
+  if (!consoleAvailable && !loadingOperationContext) {
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Monitor className="h-5 w-5" />
+            VNC Console Access
+          </CardTitle>
+          <CardDescription>Remote desktop access to {vmName}</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <p className="py-4 text-sm text-muted-foreground">
+            Graphical console access requires a local system connection. Select a local host to open this console.
+          </p>
+        </CardContent>
+      </Card>
+    )
+  }
 
   if (isLoading) {
     return (
@@ -98,6 +127,7 @@ export function VncConsole({ vmId, vmName }: VncConsoleProps) {
               size="sm"
               variant="outline"
               onClick={() => refetch()}
+              disabled={!consoleAvailable}
               title="Refresh connection info"
             >
               <RefreshCw className="h-4 w-4" />
@@ -105,7 +135,7 @@ export function VncConsole({ vmId, vmName }: VncConsoleProps) {
             <Button
               size="sm"
               onClick={() => openVncMutation.mutate()}
-              disabled={openVncMutation.isPending}
+              disabled={!consoleAvailable || openVncMutation.isPending}
             >
               <ExternalLink className="mr-2 h-4 w-4" />
               {openVncMutation.isPending ? 'Opening...' : 'Open VNC Viewer'}

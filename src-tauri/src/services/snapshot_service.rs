@@ -1,30 +1,31 @@
+use crate::models::snapshot::{Snapshot, SnapshotConfig, SnapshotState};
+use crate::services::libvirt::ConnectionProvider;
+use crate::utils::error::{map_libvirt_error, AppError};
 use virt::domain::Domain;
 use virt::domain_snapshot::DomainSnapshot;
-use crate::models::snapshot::{Snapshot, SnapshotConfig, SnapshotState};
-use crate::services::libvirt::LibvirtService;
-use crate::utils::error::{AppError, map_libvirt_error};
 
 /// SnapshotService provides VM snapshot management operations
 pub struct SnapshotService;
 
 impl SnapshotService {
     /// List all snapshots for a VM
-    pub fn list_snapshots(libvirt: &LibvirtService, vm_id: &str) -> Result<Vec<Snapshot>, AppError> {
+    pub fn list_snapshots(
+        libvirt: &impl ConnectionProvider,
+        vm_id: &str,
+    ) -> Result<Vec<Snapshot>, AppError> {
         tracing::debug!("Listing snapshots for VM: {}", vm_id);
 
         let conn = libvirt.get_connection();
         let domain = Domain::lookup_by_uuid_string(conn, vm_id)
             .map_err(|_| AppError::VmNotFound(vm_id.to_string()))?;
 
-        let snapshot_count = DomainSnapshot::num(&domain, 0)
-            .map_err(map_libvirt_error)?;
+        let snapshot_count = DomainSnapshot::num(&domain, 0).map_err(map_libvirt_error)?;
 
         if snapshot_count == 0 {
             return Ok(Vec::new());
         }
 
-        let domain_snapshots = domain.list_all_snapshots(0)
-            .map_err(map_libvirt_error)?;
+        let domain_snapshots = domain.list_all_snapshots(0).map_err(map_libvirt_error)?;
 
         let mut snapshots = Vec::new();
 
@@ -42,7 +43,7 @@ impl SnapshotService {
 
     /// Create a new snapshot
     pub fn create_snapshot(
-        libvirt: &LibvirtService,
+        libvirt: &impl ConnectionProvider,
         vm_id: &str,
         config: SnapshotConfig,
     ) -> Result<String, AppError> {
@@ -75,11 +76,9 @@ impl SnapshotService {
             )
         };
 
-        let snapshot = DomainSnapshot::create_xml(&domain, &xml, 0)
-            .map_err(map_libvirt_error)?;
+        let snapshot = DomainSnapshot::create_xml(&domain, &xml, 0).map_err(map_libvirt_error)?;
 
-        let snap_name = snapshot.get_name()
-            .map_err(map_libvirt_error)?;
+        let snap_name = snapshot.get_name().map_err(map_libvirt_error)?;
 
         tracing::info!("Snapshot created successfully: {}", snap_name);
         Ok(snap_name)
@@ -87,7 +86,7 @@ impl SnapshotService {
 
     /// Delete a snapshot
     pub fn delete_snapshot(
-        libvirt: &LibvirtService,
+        libvirt: &impl ConnectionProvider,
         vm_id: &str,
         snapshot_name: &str,
     ) -> Result<(), AppError> {
@@ -97,11 +96,11 @@ impl SnapshotService {
         let domain = Domain::lookup_by_uuid_string(conn, vm_id)
             .map_err(|_| AppError::VmNotFound(vm_id.to_string()))?;
 
-        let snapshot = DomainSnapshot::lookup_by_name(&domain, snapshot_name, 0)
-            .map_err(|_| AppError::LibvirtError(format!("Snapshot not found: {}", snapshot_name)))?;
+        let snapshot = DomainSnapshot::lookup_by_name(&domain, snapshot_name, 0).map_err(|_| {
+            AppError::LibvirtError(format!("Snapshot not found: {}", snapshot_name))
+        })?;
 
-        snapshot.delete(0)
-            .map_err(map_libvirt_error)?;
+        snapshot.delete(0).map_err(map_libvirt_error)?;
 
         tracing::info!("Snapshot deleted successfully: {}", snapshot_name);
         Ok(())
@@ -109,7 +108,7 @@ impl SnapshotService {
 
     /// Revert VM to a snapshot
     pub fn revert_snapshot(
-        libvirt: &LibvirtService,
+        libvirt: &impl ConnectionProvider,
         vm_id: &str,
         snapshot_name: &str,
     ) -> Result<(), AppError> {
@@ -119,11 +118,11 @@ impl SnapshotService {
         let domain = Domain::lookup_by_uuid_string(conn, vm_id)
             .map_err(|_| AppError::VmNotFound(vm_id.to_string()))?;
 
-        let snapshot = DomainSnapshot::lookup_by_name(&domain, snapshot_name, 0)
-            .map_err(|_| AppError::LibvirtError(format!("Snapshot not found: {}", snapshot_name)))?;
+        let snapshot = DomainSnapshot::lookup_by_name(&domain, snapshot_name, 0).map_err(|_| {
+            AppError::LibvirtError(format!("Snapshot not found: {}", snapshot_name))
+        })?;
 
-        snapshot.revert(0)
-            .map_err(map_libvirt_error)?;
+        snapshot.revert(0).map_err(map_libvirt_error)?;
 
         tracing::info!("VM reverted to snapshot successfully: {}", snapshot_name);
         Ok(())
@@ -131,11 +130,9 @@ impl SnapshotService {
 
     /// Convert libvirt snapshot to our model
     fn snapshot_to_model(snap: &DomainSnapshot, _domain: &Domain) -> Result<Snapshot, AppError> {
-        let name = snap.get_name()
-            .map_err(map_libvirt_error)?;
+        let name = snap.get_name().map_err(map_libvirt_error)?;
 
-        let xml = snap.get_xml_desc(0)
-            .map_err(map_libvirt_error)?;
+        let xml = snap.get_xml_desc(0).map_err(map_libvirt_error)?;
 
         // Parse creation time from XML
         let creation_time = Self::parse_creation_time(&xml);
@@ -150,7 +147,8 @@ impl SnapshotService {
         let state = Self::parse_state(&xml);
 
         // Check if this is the current snapshot
-        let is_current = snap.is_current(0).unwrap_or(false);        Ok(Snapshot {
+        let is_current = snap.is_current(0).unwrap_or(false);
+        Ok(Snapshot {
             name,
             description,
             creation_time,
@@ -204,10 +202,9 @@ impl SnapshotService {
             SnapshotState::Running
         } else if xml.contains("<state>paused</state>") {
             SnapshotState::Paused
-        } else if xml.contains("<state>shutoff</state>") || xml.contains("<state>shut off</state>") {
+        } else if xml.contains("<state>shutoff</state>") || xml.contains("<state>shut off</state>")
+        {
             SnapshotState::Shutoff
-        } else if xml.contains("<memory snapshot='no'/>") || xml.contains("<memory snapshot='external'/>") {
-            SnapshotState::DiskSnapshot
         } else {
             SnapshotState::DiskSnapshot
         }

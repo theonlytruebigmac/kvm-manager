@@ -1,6 +1,5 @@
 # Rust / Cargo
 target/
-Cargo.lock
 **/*.rs.bk
 *.pdb
 
@@ -47,6 +46,7 @@ src-tauri/gen/
 
 # Environment files
 .env
+.env*
 .env.local
 .env.*.local
 *.local
@@ -90,6 +90,10 @@ Desktop.ini
 # Vite
 .vite/
 vite.config.ts.timestamp-*
+
+# Generated local console bundles
+public/novnc-bundle.js
+public/spice-bundle.js
 
 # Documentation builds
 docs/_build/

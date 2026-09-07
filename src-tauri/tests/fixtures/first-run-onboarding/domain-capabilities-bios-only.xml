@@ -1,0 +1,1 @@
+<domainCapabilities><os supported='yes'><enum name='firmware'><value>bios</value></enum></os><devices><tpm supported='no'/></devices></domainCapabilities>

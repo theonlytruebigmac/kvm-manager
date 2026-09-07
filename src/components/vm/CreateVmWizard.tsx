@@ -1,6 +1,7 @@
-import { useState } from 'react'
-import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { useEffect, useState } from 'react'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/tauri'
+import { useActiveConnection } from '@/hooks/useActiveConnection'
 import { toast } from 'sonner'
 import { open } from '@tauri-apps/plugin-dialog'
 import { Button } from '@/components/ui/button'
@@ -12,13 +13,27 @@ import { Checkbox } from '@/components/ui/checkbox'
 import { ChevronLeft, ChevronRight, Check, FolderOpen, ChevronDown, ChevronUp } from 'lucide-react'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import { CloudInitConfig, defaultCloudInitConfig } from './CloudInitConfig'
-import type { CloudInitConfig as CloudInitConfigType } from '@/lib/types'
+import type { CloudInitConfig as CloudInitConfigType, GuestCapabilityReview, Volume } from '@/lib/types'
+
+export function poolIsoVolumes(volumes: Volume[] = []) {
+  return volumes.filter((volume) =>
+    volume.format.toLowerCase() === 'iso'
+    || volume.name.toLowerCase().endsWith('.iso')
+    || volume.path.toLowerCase().endsWith('.iso'))
+}
+
+export function findPoolIsoByName(volumes: Volume[] = [], volumeName?: string) {
+  return volumeName
+    ? poolIsoVolumes(volumes).find((volume) => volume.name === volumeName)
+    : undefined
+}
 
 interface VmFormData {
   name: string
   cpuCount: number
   memoryMb: number
   diskSizeGb: number
+  storagePoolId?: string
   osType: 'linux' | 'windows' | 'other'
   network: string
   diskFormat: 'qcow2' | 'raw'
@@ -50,18 +65,53 @@ interface CreateVmWizardProps {
   onClose: () => void
 }
 
+export function GuestCapabilityReviewPanel({
+  review,
+  isLoading,
+  connectionLabel,
+  expectedConnectionId,
+}: {
+  review?: GuestCapabilityReview
+  isLoading: boolean
+  connectionLabel: string
+  expectedConnectionId?: string
+}) {
+  const stale = !!review && review.connectionId !== expectedConnectionId
+  return (
+    <div className="rounded-lg border p-4 text-sm" aria-label="Guest capability review">
+      <h4 className="font-medium">Selected connection preflight</h4>
+      <p className="mt-1 text-muted-foreground">
+        {connectionLabel} · {isLoading || stale ? 'Checking…' : review?.canCreate ? 'Ready to create' : 'Action required'}
+      </p>
+      {stale && <p className="mt-2 text-amber-700">Connection changed. Refreshing prerequisites…</p>}
+      {!stale && review?.capabilities
+        .filter((capability) => capability.state !== 'available' || ['uefi', 'secure_boot', 'tpm', 'network'].includes(capability.kind))
+        .map((capability) => (
+          <div key={capability.kind} className="mt-2 rounded bg-muted p-2">
+            <p className="font-medium">{capability.summary}</p>
+            {capability.remediation && <p className="text-muted-foreground">{capability.remediation}</p>}
+          </div>
+        ))}
+    </div>
+  )
+}
+
 export function CreateVmWizard({ onClose }: CreateVmWizardProps) {
   const queryClient = useQueryClient()
+  const { data: activeConnection, connectionId, resourceQueryKey } = useActiveConnection()
+  const vmsQueryKey = resourceQueryKey('vms') ?? ['connection', 'pending', 'vms']
   const [currentStep, setCurrentStep] = useState(1)
   const [showCpuTopology, setShowCpuTopology] = useState(false)
   const [customizeBeforeInstall, setCustomizeBeforeInstall] = useState(false)
+  const [localIsoPath, setLocalIsoPath] = useState<string>()
   const [formData, setFormData] = useState<VmFormData>({
     name: '',
     cpuCount: 2,
     memoryMb: 2048,
     diskSizeGb: 20,
+    storagePoolId: undefined,
     osType: 'linux',
-    network: 'default',
+    network: '',
     diskFormat: 'qcow2',
     bootMenu: false,
     isoPath: undefined,
@@ -77,10 +127,75 @@ export function CreateVmWizard({ onClose }: CreateVmWizardProps) {
     existingDiskPath: undefined,
     networkInstallUrl: undefined,
   })
+  const needsNewDisk = formData.installationType !== 'import'
+  const diskBytes = formData.diskSizeGb * 1024 * 1024 * 1024
+  const readinessQueryKey = resourceQueryKey('vm-creation-readiness', String(diskBytes))
+    ?? ['connection', 'pending', 'vm-creation-readiness']
+  const readiness = useQuery({
+    queryKey: readinessQueryKey,
+    queryFn: () => api.getVmCreationReadiness(diskBytes),
+    enabled: !!connectionId && needsNewDisk,
+    retry: false,
+  })
+  const poolVolumesQueryKey = resourceQueryKey(
+    'storage-pool-volumes',
+    formData.storagePoolId ?? 'unselected',
+  ) ?? ['connection', 'pending', 'storage-pool-volumes']
+  const poolVolumes = useQuery({
+    queryKey: poolVolumesQueryKey,
+    queryFn: () => api.getVolumes(formData.storagePoolId!),
+    enabled: !!connectionId && !!formData.storagePoolId && formData.installationType === 'iso',
+    retry: false,
+  })
+  const existingIsos = poolIsoVolumes(poolVolumes.data)
+  const localIsoVolumeName = localIsoPath
+    ? (localIsoPath.split(/[\\/]/).pop() || 'installer.iso').replace(/[^A-Za-z0-9._-]/g, '-')
+    : undefined
+  const matchingExistingIso = findPoolIsoByName(existingIsos, localIsoVolumeName)
+  const networks = useQuery({
+    queryKey: resourceQueryKey('networks') ?? ['connection', 'pending', 'networks'],
+    queryFn: api.getNetworks,
+    enabled: !!connectionId,
+    retry: false,
+  })
+  const preflight = useQuery({
+    queryKey: resourceQueryKey('vm-preflight', JSON.stringify(formData))
+      ?? ['connection', 'pending', 'vm-preflight'],
+    queryFn: () => api.preflightVmCreation(formData),
+    enabled: !!connectionId && currentStep === 4,
+    retry: false,
+  })
+  const currentPreflight = preflight.data?.connectionId === connectionId ? preflight.data : undefined
+
+  useEffect(() => {
+    setFormData((current) => ({ ...current, storagePoolId: undefined, network: '' }))
+  }, [connectionId])
+
+  const importIsoMutation = useMutation({
+    mutationFn: async () => {
+      if (!localIsoPath || !formData.storagePoolId) {
+        throw new Error('Select an ISO and eligible storage pool first')
+      }
+      const baseName = localIsoPath.split(/[\\/]/).pop() || 'installer.iso'
+      const volumeName = baseName.replace(/[^A-Za-z0-9._-]/g, '-')
+      return api.importIsoToPool(formData.storagePoolId, volumeName, localIsoPath, true)
+    },
+    onSuccess: (volume) => {
+      setFormData((current) => ({ ...current, isoPath: volume.path }))
+      setLocalIsoPath(undefined)
+      queryClient.invalidateQueries({ queryKey: readinessQueryKey })
+      queryClient.invalidateQueries({ queryKey: poolVolumesQueryKey })
+      toast.success('ISO imported into the selected storage pool; the downloaded source was preserved')
+    },
+    onError: () => {
+      void poolVolumes.refetch()
+      toast.error('The ISO was not imported. If it already exists in this pool, select it from the ISO field suggestions.')
+    },
+  })
   const createMutation = useMutation({
     mutationFn: () => api.createVm(formData),
     onSuccess: async (vmId) => {
-      queryClient.invalidateQueries({ queryKey: ['vms'] })
+      queryClient.invalidateQueries({ queryKey: vmsQueryKey })
 
       if (customizeBeforeInstall && vmId) {
         // Open the VM details window for customization before starting
@@ -166,6 +281,14 @@ export function CreateVmWizard({ onClose }: CreateVmWizardProps) {
         toast.error('Please select a network')
         return
       }
+      if (needsNewDisk && !formData.storagePoolId) {
+        toast.error('Select an active storage pool with enough available capacity')
+        return
+      }
+      if (formData.installationType === 'iso' && localIsoPath && !formData.isoPath) {
+        toast.error('Import the selected ISO into the storage pool before continuing')
+        return
+      }
       // Validate import disk path if importing
       if (formData.installationType === 'import' && !formData.existingDiskPath?.trim()) {
         toast.error('Please specify the path to the existing disk image')
@@ -180,6 +303,10 @@ export function CreateVmWizard({ onClose }: CreateVmWizardProps) {
   }
 
   const handleSubmit = () => {
+    if (!currentPreflight?.canCreate) {
+      toast.error('Resolve the connection readiness blockers before creating the VM')
+      return
+    }
     createMutation.mutate()
   }
 
@@ -394,7 +521,7 @@ export function CreateVmWizard({ onClose }: CreateVmWizardProps) {
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-2">
                   <Label htmlFor="osType">Operating System Type *</Label>
-                  <Select value={formData.osType} onValueChange={(value: any) => setFormData({ ...formData, osType: value })}>
+                  <Select value={formData.osType} onValueChange={(value: VmFormData['osType']) => setFormData({ ...formData, osType: value })}>
                     <SelectTrigger id="osType">
                       <SelectValue />
                     </SelectTrigger>
@@ -408,13 +535,22 @@ export function CreateVmWizard({ onClose }: CreateVmWizardProps) {
 
                 <div className="space-y-2">
                   <Label htmlFor="network">Network *</Label>
-                  <Input
-                    id="network"
-                    placeholder="default"
+                  <Select
                     value={formData.network}
-                    onChange={(e) => setFormData({ ...formData, network: e.target.value })}
-                  />
-                  <p className="text-xs text-muted-foreground">Libvirt network name (e.g., 'default')</p>
+                    onValueChange={(network) => setFormData({ ...formData, network })}
+                  >
+                    <SelectTrigger id="network">
+                      <SelectValue placeholder={networks.isLoading ? 'Checking networks…' : 'Select an active network'} />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {networks.data?.map((network) => (
+                        <SelectItem key={network.uuid} value={network.name} disabled={!network.active}>
+                          {network.name} · {network.active ? 'active' : 'inactive'}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <p className="text-xs text-muted-foreground">Networks are loaded from the selected connection.</p>
                 </div>
               </div>
 
@@ -486,16 +622,56 @@ export function CreateVmWizard({ onClose }: CreateVmWizardProps) {
                 </div>
               </div>
 
+              {needsNewDisk && (
+                <div className="space-y-2 rounded-lg border p-3">
+                  <Label htmlFor="storagePool">Storage Pool *</Label>
+                  <Select
+                    value={formData.storagePoolId}
+                    onValueChange={(storagePoolId) => setFormData({
+                      ...formData,
+                      storagePoolId,
+                      isoPath: undefined,
+                    })}
+                  >
+                    <SelectTrigger id="storagePool">
+                      <SelectValue placeholder={readiness.isLoading ? 'Checking storage…' : 'Select storage'} />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {readiness.data?.storage.pools.map((pool) => (
+                        <SelectItem key={pool.id} value={pool.id} disabled={!pool.eligible}>
+                          {pool.name} · {pool.state} · {(pool.availableBytes / 1024 ** 3).toFixed(1)} GB free
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <p className="text-xs text-muted-foreground">
+                    Connection: {activeConnection?.name ?? 'No active connection'}. Storage is selected by UUID; no pool name is assumed.
+                  </p>
+                  {readiness.data?.storage.state === 'unavailable' || readiness.data?.storage.state === 'insufficient_capacity' ? (
+                    <div className="flex items-center justify-between gap-3 rounded bg-amber-50 p-2 text-xs text-amber-900 dark:bg-amber-950 dark:text-amber-100">
+                      <span>{readiness.data.storage.recoveryAction?.label ?? 'Usable storage is required.'}</span>
+                      <Button type="button" size="sm" variant="outline" onClick={() => window.location.assign('/storage')}>
+                        Open Storage
+                      </Button>
+                    </div>
+                  ) : null}
+                </div>
+              )}
+
               {/* ISO Path - only shown for ISO installation */}
               {formData.installationType === 'iso' && (
                 <div className="space-y-2">
-                  <Label htmlFor="isoPath">ISO Path</Label>
+                  <Label htmlFor="isoPath">ISO path or existing pool ISO</Label>
                   <div className="flex gap-2">
                     <Input
                       id="isoPath"
-                      placeholder="/var/lib/libvirt/images/alpine.iso"
+                      list="existing-pool-isos"
+                      placeholder={formData.storagePoolId ? 'Choose an existing ISO or browse for another' : 'Select a storage pool first'}
                       value={formData.isoPath || ''}
-                      onChange={(e) => setFormData({ ...formData, isoPath: e.target.value || undefined })}
+                      onChange={(e) => {
+                        setLocalIsoPath(undefined)
+                        setFormData({ ...formData, isoPath: e.target.value || undefined })
+                      }}
                     />
                     <Button
                       type="button"
@@ -520,9 +696,10 @@ export function CreateVmWizard({ onClose }: CreateVmWizardProps) {
                             }]
                           })
                           if (selected) {
-                            setFormData({ ...formData, isoPath: selected as string })
+                            setLocalIsoPath(selected as string)
+                            setFormData({ ...formData, isoPath: undefined })
                           }
-                        } catch (error) {
+      } catch {
                           toast.error('Failed to open file browser')
                         }
                       }}
@@ -531,9 +708,56 @@ export function CreateVmWizard({ onClose }: CreateVmWizardProps) {
                       <FolderOpen className="h-4 w-4" />
                     </Button>
                   </div>
+                  <datalist id="existing-pool-isos">
+                    {existingIsos.map((volume) => (
+                      <option key={volume.path} value={volume.path}>
+                        {volume.name} · {(volume.capacityBytes / 1024 ** 3).toFixed(1)} GB
+                      </option>
+                    ))}
+                  </datalist>
                   <p className="text-xs text-muted-foreground">
-                    Full path to an ISO image for OS installation.
+                    {poolVolumes.isLoading
+                      ? 'Loading existing ISO media from the selected pool…'
+                      : existingIsos.length > 0
+                        ? `${existingIsos.length} existing ISO ${existingIsos.length === 1 ? 'is' : 'images are'} available, or browse to import another. ISO attached from the selected libvirt storage pool.`
+                        : 'No existing ISO media was found in this pool. Browse to import one. ISO attached from the selected libvirt storage pool.'}
                   </p>
+                  {poolVolumes.isError && (
+                    <p className="text-xs text-amber-700 dark:text-amber-400">
+                      Existing ISO media could not be listed. You can still enter a connection-visible path or browse for a local ISO.
+                    </p>
+                  )}
+                  {localIsoPath && (
+                    <div className="space-y-2 rounded-md border border-blue-300 bg-blue-50 p-3 text-sm dark:bg-blue-950">
+                      <p className="font-medium">Downloaded ISO selected</p>
+                      <p className="break-all text-xs text-muted-foreground">{localIsoPath}</p>
+                      <p className="text-xs">
+                        {matchingExistingIso
+                          ? 'An ISO with this name already exists in the selected pool. Use it directly or choose a different local file.'
+                          : 'Importing creates a new volume in the selected pool through libvirt, never overwrites an existing volume, and preserves the downloaded file.'}
+                      </p>
+                      <Button
+                        type="button"
+                        size="sm"
+                        disabled={!formData.storagePoolId || importIsoMutation.isPending || poolVolumes.isLoading}
+                        onClick={() => {
+                          if (matchingExistingIso) {
+                            setFormData((current) => ({ ...current, isoPath: matchingExistingIso.path }))
+                            setLocalIsoPath(undefined)
+                            toast.success('Using the existing ISO from the selected storage pool')
+                          } else {
+                            importIsoMutation.mutate()
+                          }
+                        }}
+                      >
+                        {matchingExistingIso
+                          ? 'Use existing ISO from selected pool'
+                          : poolVolumes.isLoading
+                            ? 'Checking selected pool…'
+                            : importIsoMutation.isPending ? 'Importing…' : 'Confirm and import into selected storage pool'}
+                      </Button>
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -566,7 +790,7 @@ export function CreateVmWizard({ onClose }: CreateVmWizardProps) {
                           if (selected) {
                             setFormData({ ...formData, existingDiskPath: selected as string })
                           }
-                        } catch (error) {
+      } catch {
                           toast.error('Failed to open file browser')
                         }
                       }}
@@ -621,7 +845,7 @@ export function CreateVmWizard({ onClose }: CreateVmWizardProps) {
                 {formData.installationType !== 'import' && (
                   <div className="space-y-2">
                     <Label htmlFor="diskFormat">Disk Format *</Label>
-                    <Select value={formData.diskFormat} onValueChange={(value: any) => setFormData({ ...formData, diskFormat: value })}>
+                    <Select value={formData.diskFormat} onValueChange={(value: VmFormData['diskFormat']) => setFormData({ ...formData, diskFormat: value })}>
                       <SelectTrigger id="diskFormat">
                         <SelectValue />
                       </SelectTrigger>
@@ -664,7 +888,7 @@ export function CreateVmWizard({ onClose }: CreateVmWizardProps) {
             <div className="space-y-4">
               <div className="space-y-2">
                 <Label htmlFor="firmware">Firmware</Label>
-                <Select value={formData.firmware} onValueChange={(value: any) => setFormData({ ...formData, firmware: value })}>
+                <Select value={formData.firmware} onValueChange={(value: VmFormData['firmware']) => setFormData({ ...formData, firmware: value })}>
                   <SelectTrigger id="firmware">
                     <SelectValue />
                   </SelectTrigger>
@@ -683,7 +907,7 @@ export function CreateVmWizard({ onClose }: CreateVmWizardProps) {
 
               <div className="space-y-2">
                 <Label htmlFor="chipset">Chipset</Label>
-                <Select value={formData.chipset} onValueChange={(value: any) => setFormData({ ...formData, chipset: value })}>
+                <Select value={formData.chipset} onValueChange={(value: VmFormData['chipset']) => setFormData({ ...formData, chipset: value })}>
                   <SelectTrigger id="chipset">
                     <SelectValue />
                   </SelectTrigger>
@@ -726,7 +950,7 @@ export function CreateVmWizard({ onClose }: CreateVmWizardProps) {
                 </p>
                 <ul className="text-amber-800 dark:text-amber-200 space-y-1 ml-4 list-disc">
                   <li>Windows 11 requires: UEFI with Secure Boot + TPM 2.0 + Q35 chipset</li>
-                  <li>UEFI/Secure Boot requires OVMF firmware (install via: sudo apt install ovmf)</li>
+                  <li>UEFI and Secure Boot availability is checked through the selected libvirt connection</li>
                   <li>Secure Boot requires compatible OS (Windows 8+, recent Linux with signed kernel)</li>
                   <li>Changing firmware after OS installation will prevent boot</li>
                   <li>Q35 chipset is required for GPU passthrough and modern features</li>
@@ -853,6 +1077,14 @@ export function CreateVmWizard({ onClose }: CreateVmWizardProps) {
                     <span className="text-muted-foreground">Network:</span>
                     <span className="font-medium">{formData.network}</span>
                   </div>
+                  {needsNewDisk && (
+                    <div className="flex justify-between">
+                      <span className="text-muted-foreground">Storage Pool:</span>
+                      <span className="font-medium">
+                        {readiness.data?.storage.pools.find((pool) => pool.id === formData.storagePoolId)?.name ?? 'Not selected'}
+                      </span>
+                    </div>
+                  )}
                   {formData.isoPath && (
                     <div className="flex justify-between">
                       <span className="text-muted-foreground">ISO:</span>
@@ -910,6 +1142,13 @@ export function CreateVmWizard({ onClose }: CreateVmWizardProps) {
                 </div>
               </div>
 
+              <GuestCapabilityReviewPanel
+                review={preflight.data}
+                isLoading={preflight.isLoading}
+                connectionLabel={activeConnection?.name ?? 'No active connection'}
+                expectedConnectionId={connectionId}
+              />
+
               <div className="bg-blue-50 dark:bg-blue-950 p-4 rounded-lg text-sm">
                 <p className="text-blue-900 dark:text-blue-100">
                   <strong>Note:</strong> The VM will be created in a stopped state.
@@ -956,7 +1195,7 @@ export function CreateVmWizard({ onClose }: CreateVmWizardProps) {
                   <ChevronRight className="w-4 h-4 ml-1" />
                 </Button>
               ) : (
-                <Button onClick={handleSubmit} disabled={createMutation.isPending}>
+                <Button onClick={handleSubmit} disabled={createMutation.isPending || preflight.isLoading || !currentPreflight?.canCreate}>
                   {createMutation.isPending ? (
                     'Creating...'
                   ) : (

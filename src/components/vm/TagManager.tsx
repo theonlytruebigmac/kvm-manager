@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/tauri'
+import { useActiveConnection } from '@/hooks/useActiveConnection'
 import { toast } from 'sonner'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
@@ -15,14 +16,17 @@ interface TagManagerProps {
 
 export function TagManager({ vmId, currentTags }: TagManagerProps) {
   const queryClient = useQueryClient()
+  const { resourceQueryKey } = useActiveConnection()
+  const vmQueryKey = resourceQueryKey('vm', vmId) ?? ['connection', 'pending', 'vm', vmId]
+  const vmsQueryKey = resourceQueryKey('vms') ?? ['connection', 'pending', 'vms']
   const [newTag, setNewTag] = useState('')
   const [isAdding, setIsAdding] = useState(false)
 
   const addTagMutation = useMutation({
     mutationFn: (tag: string) => api.addVmTags(vmId, [tag]),
     onSuccess: (_data, tag) => {
-      queryClient.invalidateQueries({ queryKey: ['vm', vmId] })
-      queryClient.invalidateQueries({ queryKey: ['vms'] })
+      queryClient.invalidateQueries({ queryKey: vmQueryKey })
+      queryClient.invalidateQueries({ queryKey: vmsQueryKey })
       toast.success(`Tag "${tag}" added`)
       setNewTag('')
       setIsAdding(false)
@@ -35,8 +39,8 @@ export function TagManager({ vmId, currentTags }: TagManagerProps) {
   const removeTagMutation = useMutation({
     mutationFn: (tag: string) => api.removeVmTags(vmId, [tag]),
     onSuccess: (_data, tag) => {
-      queryClient.invalidateQueries({ queryKey: ['vm', vmId] })
-      queryClient.invalidateQueries({ queryKey: ['vms'] })
+      queryClient.invalidateQueries({ queryKey: vmQueryKey })
+      queryClient.invalidateQueries({ queryKey: vmsQueryKey })
       toast.success(`Tag "${tag}" removed`)
     },
     onError: (error, tag) => {

@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useMutation, useQueryClient, useQuery } from '@tanstack/react-query'
 import { api } from '@/lib/tauri'
+import { useActiveConnection } from '@/hooks/useActiveConnection'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -47,12 +48,15 @@ export function CloneVmDialog({ vmId, vmName, trigger }: CloneVmDialogProps) {
   const [description, setDescription] = useState('')
   const [showAdvanced, setShowAdvanced] = useState(false)
   const queryClient = useQueryClient()
+  const { connectionId, resourceQueryKey } = useActiveConnection()
+  const poolsQueryKey = resourceQueryKey('storage-pools') ?? ['connection', 'pending', 'storage-pools']
+  const vmsQueryKey = resourceQueryKey('vms') ?? ['connection', 'pending', 'vms']
 
   // Fetch storage pools for target pool selection
   const { data: storagePools = [] } = useQuery<StoragePool[]>({
-    queryKey: ['storage-pools'],
+    queryKey: poolsQueryKey,
     queryFn: () => api.getStoragePools(),
-    enabled: open && showAdvanced,
+    enabled: !!connectionId && open && showAdvanced,
   })
 
   // Reset form when dialog opens
@@ -78,7 +82,7 @@ export function CloneVmDialog({ vmId, vmName, trigger }: CloneVmDialogProps) {
       return api.cloneVmWithOptions(vmId, config)
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['vms'] })
+      queryClient.invalidateQueries({ queryKey: vmsQueryKey })
       toast.success('VM Cloned', {
         description: `Successfully cloned ${vmName} to ${newName}`,
       })

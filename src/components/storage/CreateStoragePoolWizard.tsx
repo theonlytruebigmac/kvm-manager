@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/tauri'
+import { useActiveConnection } from '@/hooks/useActiveConnection'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
@@ -9,6 +10,7 @@ import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Checkbox } from '@/components/ui/checkbox'
 import { ChevronLeft, ChevronRight, Check, Info } from 'lucide-react'
+import type { StoragePoolConfig } from '@/lib/types'
 
 interface StoragePoolFormData {
   name: string
@@ -46,11 +48,16 @@ interface CreateStoragePoolWizardProps {
 
 export function CreateStoragePoolWizard({ onClose }: CreateStoragePoolWizardProps) {
   const queryClient = useQueryClient()
+  const { data: activeConnection, connectionId, resourceQueryKey } = useActiveConnection()
+  const poolsQueryKey = resourceQueryKey('storage-pools') ?? ['connection', 'pending', 'storage-pools']
+  const connectionScope = activeConnection?.connectionType === 'local'
+    ? activeConnection.path === 'session' ? 'local session' : 'local system'
+    : activeConnection ? 'remote' : 'unavailable'
   const [currentStep, setCurrentStep] = useState(1)
   const [formData, setFormData] = useState<StoragePoolFormData>({
     name: '',
     poolType: 'dir',
-    targetPath: '/var/lib/libvirt/images',
+    targetPath: '',
     autostart: true,
     sourceDevices: [],
     deviceInput: '',
@@ -68,7 +75,7 @@ export function CreateStoragePoolWizard({ onClose }: CreateStoragePoolWizardProp
 
   const createMutation = useMutation({
     mutationFn: () => {
-      const config: any = {
+      const config: StoragePoolConfig = {
         name: formData.name,
         poolType: formData.poolType,
         targetPath: formData.targetPath,
@@ -106,7 +113,8 @@ export function CreateStoragePoolWizard({ onClose }: CreateStoragePoolWizardProp
       return api.createStoragePool(config)
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['storage-pools'] })
+      queryClient.invalidateQueries({ queryKey: poolsQueryKey })
+      if (connectionId) queryClient.invalidateQueries({ queryKey: ['connection', connectionId] })
       toast.success(`Storage pool "${formData.name}" created successfully`)
       onClose()
     },
@@ -218,7 +226,7 @@ export function CreateStoragePoolWizard({ onClose }: CreateStoragePoolWizardProp
 
               <div className="space-y-2">
                 <Label htmlFor="poolType">Pool Type *</Label>
-                <Select value={formData.poolType} onValueChange={(value: any) => setFormData({ ...formData, poolType: value })}>
+                <Select value={formData.poolType} onValueChange={(value: StoragePoolFormData['poolType']) => setFormData({ ...formData, poolType: value })}>
                   <SelectTrigger id="poolType">
                     <SelectValue />
                   </SelectTrigger>
@@ -261,7 +269,7 @@ export function CreateStoragePoolWizard({ onClose }: CreateStoragePoolWizardProp
                   <Label htmlFor="targetPath">Target Path *</Label>
                   <Input
                     id="targetPath"
-                    placeholder="/var/lib/libvirt/images"
+                    placeholder="Enter the target approved for this host"
                     value={formData.targetPath}
                     onChange={(e) => setFormData({ ...formData, targetPath: e.target.value })}
                   />
@@ -510,6 +518,10 @@ export function CreateStoragePoolWizard({ onClose }: CreateStoragePoolWizardProp
                 <h4 className="font-medium">Storage Pool Configuration Summary</h4>
                 <div className="space-y-2 text-sm">
                   <div className="flex justify-between">
+                    <span className="text-muted-foreground">Connection:</span>
+                    <span className="font-medium">{activeConnection?.name ?? 'No active connection'} · {connectionScope}</span>
+                  </div>
+                  <div className="flex justify-between">
                     <span className="text-muted-foreground">Name:</span>
                     <span className="font-medium">{formData.name}</span>
                   </div>
@@ -613,6 +625,10 @@ export function CreateStoragePoolWizard({ onClose }: CreateStoragePoolWizardProp
                     <span className="text-muted-foreground">Autostart:</span>
                     <span className="font-medium">{formData.autostart ? 'Enabled' : 'Disabled'}</span>
                   </div>
+                  <div className="flex justify-between gap-4">
+                    <span className="text-muted-foreground">Effects:</span>
+                    <span className="text-right font-medium">Define, build, and activate this pool{formData.autostart ? '; enable autostart' : ''}</span>
+                  </div>
                 </div>
               </div>
 
@@ -622,9 +638,9 @@ export function CreateStoragePoolWizard({ onClose }: CreateStoragePoolWizardProp
                   {formData.poolType === 'dir' && ' Ensure the target path exists and has proper permissions.'}
                   {formData.poolType === 'logical' && ' Make sure the specified devices are available and not in use.'}
                   {formData.poolType === 'netfs' && ' Verify that the NFS server is accessible and the export is configured.'}
-                  {formData.poolType === 'iscsi' && ' Verify the iSCSI target is accessible and the host has the open-iscsi package installed.'}
-                  {formData.poolType === 'gluster' && ' Verify the Gluster volume is accessible and the glusterfs-client package is installed.'}
-                  {formData.poolType === 'rbd' && ' Verify the Ceph cluster is accessible and the ceph-common package is installed.'}
+                  {formData.poolType === 'iscsi' && ' Verify the iSCSI target is accessible and required host tooling is configured.'}
+                  {formData.poolType === 'gluster' && ' Verify the Gluster volume is accessible and required host tooling is configured.'}
+                  {formData.poolType === 'rbd' && ' Verify the Ceph cluster is accessible and required host tooling is configured.'}
                 </p>
               </div>
             </div>
@@ -656,7 +672,7 @@ export function CreateStoragePoolWizard({ onClose }: CreateStoragePoolWizardProp
                   ) : (
                     <>
                       <Check className="w-4 h-4 mr-1" />
-                      Create Pool
+                      Confirm, create, and activate pool
                     </>
                   )}
                 </Button>

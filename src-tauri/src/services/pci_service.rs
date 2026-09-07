@@ -1,9 +1,9 @@
+use crate::models::pci::{IommuGroup, IommuStatus, PciDevice, PciDeviceType};
+use crate::services::libvirt::ConnectionProvider;
+use crate::utils::error::AppError;
 use std::fs;
 use std::path::Path;
 use virt::domain::Domain;
-use crate::models::pci::{PciDevice, PciDeviceType, IommuGroup, IommuStatus};
-use crate::services::libvirt::LibvirtService;
-use crate::utils::error::AppError;
 
 /// PciService provides PCI device management operations
 pub struct PciService;
@@ -14,8 +14,7 @@ impl PciService {
         tracing::debug!("Checking IOMMU status");
 
         // Check if IOMMU is enabled by checking kernel parameters
-        let cmdline = fs::read_to_string("/proc/cmdline")
-            .unwrap_or_default();
+        let cmdline = fs::read_to_string("/proc/cmdline").unwrap_or_default();
 
         let mut enabled = false;
         let mut iommu_type = None;
@@ -51,7 +50,7 @@ impl PciService {
     }
 
     /// List all PCI devices on the host
-    pub fn list_pci_devices(libvirt: &LibvirtService) -> Result<Vec<PciDevice>, AppError> {
+    pub fn list_pci_devices(libvirt: &impl ConnectionProvider) -> Result<Vec<PciDevice>, AppError> {
         tracing::debug!("Listing PCI devices");
 
         let mut devices = Vec::new();
@@ -86,7 +85,10 @@ impl PciService {
     }
 
     /// Parse a single PCI device
-    fn parse_pci_device(libvirt: &LibvirtService, address: &str) -> Result<PciDevice, AppError> {
+    fn parse_pci_device(
+        libvirt: &impl ConnectionProvider,
+        address: &str,
+    ) -> Result<PciDevice, AppError> {
         let device_path = format!("/sys/bus/pci/devices/{}", address);
 
         // Read vendor ID
@@ -124,11 +126,12 @@ impl PciService {
         let device_type = Self::classify_device(&class);
 
         // Get vendor and device names from libvirt nodedev API
-        let (vendor, device_name) = Self::get_device_names(libvirt, address)
-            .unwrap_or_else(|| (
+        let (vendor, device_name) = Self::get_device_names(libvirt, address).unwrap_or_else(|| {
+            (
                 format!("Vendor {}", vendor_id),
-                format!("Device {}", device_id)
-            ));
+                format!("Device {}", device_id),
+            )
+        });
 
         // Determine device class name
         let device_class = Self::get_device_class(&class);
@@ -166,8 +169,8 @@ impl PciService {
         if class.len() >= 4 {
             let class_code = &class[2..4];
             match class_code {
-                "03" => PciDeviceType::Gpu,           // Display controller
-                "04" => PciDeviceType::Audio,         // Multimedia controller
+                "03" => PciDeviceType::Gpu,   // Display controller
+                "04" => PciDeviceType::Audio, // Multimedia controller
                 "0c" => {
                     // Serial bus controller - check subclass
                     if class.len() >= 6 {
@@ -178,7 +181,7 @@ impl PciService {
                     }
                     PciDeviceType::Other
                 }
-                "02" => PciDeviceType::NetworkAdapter,    // Network controller
+                "02" => PciDeviceType::NetworkAdapter, // Network controller
                 "01" => PciDeviceType::StorageController, // Mass storage controller
                 _ => PciDeviceType::Other,
             }
@@ -216,7 +219,10 @@ impl PciService {
     }
 
     /// Get device vendor and name from libvirt
-    fn get_device_names(libvirt: &LibvirtService, address: &str) -> Option<(String, String)> {
+    fn get_device_names(
+        libvirt: &impl ConnectionProvider,
+        address: &str,
+    ) -> Option<(String, String)> {
         // Try to use libvirt's nodedev API to get better names
         let conn = libvirt.get_connection();
 
@@ -254,12 +260,17 @@ impl PciService {
     }
 
     /// Check which VM this device is attached to
-    fn get_attached_vm(libvirt: &LibvirtService, address: &str) -> Result<Option<String>, AppError> {
+    fn get_attached_vm(
+        libvirt: &impl ConnectionProvider,
+        address: &str,
+    ) -> Result<Option<String>, AppError> {
         let conn = libvirt.get_connection();
 
         // List all VMs
-        let flags = virt::sys::VIR_CONNECT_LIST_DOMAINS_ACTIVE | virt::sys::VIR_CONNECT_LIST_DOMAINS_INACTIVE;
-        let domains = conn.list_all_domains(flags)
+        let flags = virt::sys::VIR_CONNECT_LIST_DOMAINS_ACTIVE
+            | virt::sys::VIR_CONNECT_LIST_DOMAINS_INACTIVE;
+        let domains = conn
+            .list_all_domains(flags)
             .map_err(|e| AppError::LibvirtError(format!("Failed to list domains: {}", e)))?;
 
         for domain in domains {
@@ -276,8 +287,10 @@ impl PciService {
                         let slot = slot_func[0];
                         let func = slot_func[1];
 
-                        let search = format!("domain='0x{}' bus='0x{}' slot='0x{}' function='0x{}'",
-                            domain_part, bus, slot, func);
+                        let search = format!(
+                            "domain='0x{}' bus='0x{}' slot='0x{}' function='0x{}'",
+                            domain_part, bus, slot, func
+                        );
 
                         if xml.contains(&search) {
                             if let Ok(name) = domain.get_name() {
@@ -296,10 +309,10 @@ impl PciService {
     fn is_passthrough_safe(device_type: &PciDeviceType, driver: &Option<String>) -> bool {
         // Some devices should not be passed through
         match device_type {
-            PciDeviceType::Gpu |
-            PciDeviceType::Audio |
-            PciDeviceType::UsbController |
-            PciDeviceType::NetworkAdapter => {
+            PciDeviceType::Gpu
+            | PciDeviceType::Audio
+            | PciDeviceType::UsbController
+            | PciDeviceType::NetworkAdapter => {
                 // If it's using vfio-pci driver, it's already prepared for passthrough
                 if let Some(d) = driver {
                     if d == "vfio-pci" {
@@ -346,10 +359,8 @@ impl PciService {
                 let mut devices = Vec::new();
 
                 if let Ok(device_entries) = fs::read_dir(devices_path) {
-                    for device_entry in device_entries {
-                        if let Ok(device_entry) = device_entry {
-                            devices.push(device_entry.file_name().to_string_lossy().to_string());
-                        }
+                    for device_entry in device_entries.flatten() {
+                        devices.push(device_entry.file_name().to_string_lossy().to_string());
                     }
                 }
 
@@ -372,12 +383,17 @@ impl PciService {
 
     /// Attach a PCI device to a VM
     pub fn attach_pci_device(
-        libvirt: &LibvirtService,
+        libvirt: &impl ConnectionProvider,
         vm_id: &str,
         pci_address: &str,
         managed: bool,
     ) -> Result<(), AppError> {
-        tracing::info!("Attaching PCI device {} to VM {} (managed: {})", pci_address, vm_id, managed);
+        tracing::info!(
+            "Attaching PCI device {} to VM {} (managed: {})",
+            pci_address,
+            vm_id,
+            managed
+        );
 
         let conn = libvirt.get_connection();
         let domain = Domain::lookup_by_uuid_string(conn, vm_id)
@@ -386,7 +402,10 @@ impl PciService {
         // Parse PCI address (format: 0000:01:00.0)
         let parts: Vec<&str> = pci_address.split(':').collect();
         if parts.len() != 3 {
-            return Err(AppError::InvalidConfig(format!("Invalid PCI address format: {}", pci_address)));
+            return Err(AppError::InvalidConfig(format!(
+                "Invalid PCI address format: {}",
+                pci_address
+            )));
         }
 
         let domain_part = parts[0];
@@ -394,7 +413,10 @@ impl PciService {
         let slot_func: Vec<&str> = parts[2].split('.').collect();
 
         if slot_func.len() != 2 {
-            return Err(AppError::InvalidConfig(format!("Invalid PCI address format: {}", pci_address)));
+            return Err(AppError::InvalidConfig(format!(
+                "Invalid PCI address format: {}",
+                pci_address
+            )));
         }
 
         let slot = slot_func[0];
@@ -412,39 +434,51 @@ impl PciService {
         );
 
         // Attach device (persistent and live if VM is running)
-        let flags = if domain.is_active().map_err(|e| AppError::LibvirtError(e.to_string()))? {
+        let flags = if domain
+            .is_active()
+            .map_err(|e| AppError::LibvirtError(e.to_string()))?
+        {
             virt::sys::VIR_DOMAIN_AFFECT_LIVE | virt::sys::VIR_DOMAIN_AFFECT_CONFIG
         } else {
             virt::sys::VIR_DOMAIN_AFFECT_CONFIG
         };
 
-        domain.attach_device_flags(&hostdev_xml, flags)
+        domain
+            .attach_device_flags(&hostdev_xml, flags)
             .map_err(|e| AppError::LibvirtError(format!("Failed to attach PCI device: {}", e)))?;
 
-        tracing::info!("Successfully attached PCI device {} to VM {}", pci_address, vm_id);
+        tracing::info!(
+            "Successfully attached PCI device {} to VM {}",
+            pci_address,
+            vm_id
+        );
         Ok(())
     }
 
     /// Detach a PCI device from a VM
     pub fn detach_pci_device(
-        libvirt: &LibvirtService,
+        libvirt: &impl ConnectionProvider,
         vm_id: &str,
         pci_address: &str,
     ) -> Result<(), AppError> {
-        tracing::info!("Detaching PCI device {} from VM {}", pci_address, vm_id);
+        tracing::info!("Detaching PCI device from VM");
 
         let conn = libvirt.get_connection();
         let domain = Domain::lookup_by_uuid_string(conn, vm_id)
             .map_err(|_| AppError::VmNotFound(vm_id.to_string()))?;
 
         // Get current XML to find the hostdev
-        let xml = domain.get_xml_desc(0)
+        let xml = domain
+            .get_xml_desc(0)
             .map_err(|e| AppError::LibvirtError(e.to_string()))?;
 
         // Parse PCI address
         let parts: Vec<&str> = pci_address.split(':').collect();
         if parts.len() != 3 {
-            return Err(AppError::InvalidConfig(format!("Invalid PCI address format: {}", pci_address)));
+            return Err(AppError::InvalidConfig(format!(
+                "Invalid PCI address format: {}",
+                pci_address
+            )));
         }
 
         let domain_part = parts[0];
@@ -452,15 +486,20 @@ impl PciService {
         let slot_func: Vec<&str> = parts[2].split('.').collect();
 
         if slot_func.len() != 2 {
-            return Err(AppError::InvalidConfig(format!("Invalid PCI address format: {}", pci_address)));
+            return Err(AppError::InvalidConfig(format!(
+                "Invalid PCI address format: {}",
+                pci_address
+            )));
         }
 
         let slot = slot_func[0];
         let func = slot_func[1];
 
         // Find hostdev device XML by PCI address
-        let search = format!("domain='0x{}' bus='0x{}' slot='0x{}' function='0x{}'",
-            domain_part, bus, slot, func);
+        let search = format!(
+            "domain='0x{}' bus='0x{}' slot='0x{}' function='0x{}'",
+            domain_part, bus, slot, func
+        );
 
         let mut hostdev_xml = None;
         let mut search_pos = 0;
@@ -486,29 +525,40 @@ impl PciService {
         })?;
 
         // Detach device (persistent and live if VM is running)
-        let flags = if domain.is_active().map_err(|e| AppError::LibvirtError(e.to_string()))? {
+        let flags = if domain
+            .is_active()
+            .map_err(|e| AppError::LibvirtError(e.to_string()))?
+        {
             virt::sys::VIR_DOMAIN_AFFECT_LIVE | virt::sys::VIR_DOMAIN_AFFECT_CONFIG
         } else {
             virt::sys::VIR_DOMAIN_AFFECT_CONFIG
         };
 
-        domain.detach_device_flags(&hostdev_xml, flags)
+        domain
+            .detach_device_flags(&hostdev_xml, flags)
             .map_err(|e| AppError::LibvirtError(format!("Failed to detach PCI device: {}", e)))?;
 
-        tracing::info!("Successfully detached PCI device {} from VM {}", pci_address, vm_id);
+        tracing::info!(
+            "Successfully detached PCI device {} from VM {}",
+            pci_address,
+            vm_id
+        );
         Ok(())
     }
 
     /// Bind a PCI device to the vfio-pci driver for passthrough
     /// This is required before a device can be passed through to a VM
     pub fn bind_to_vfio(pci_address: &str) -> Result<(), AppError> {
-        tracing::info!("Binding PCI device {} to vfio-pci driver", pci_address);
+        tracing::info!("Binding PCI device to vfio-pci driver");
 
         let device_path = format!("/sys/bus/pci/devices/{}", pci_address);
 
         // Check if device exists
         if !Path::new(&device_path).exists() {
-            return Err(AppError::Other(format!("PCI device {} not found", pci_address)));
+            return Err(AppError::Other(format!(
+                "PCI device {} not found",
+                pci_address
+            )));
         }
 
         // Get vendor and device IDs for vfio binding
@@ -532,7 +582,7 @@ impl PciService {
         // If already bound to vfio-pci, nothing to do
         if let Some(ref driver) = current_driver {
             if driver == "vfio-pci" {
-                tracing::info!("Device {} already bound to vfio-pci", pci_address);
+                tracing::info!("Device already bound to vfio-pci");
                 return Ok(());
             }
         }
@@ -547,30 +597,34 @@ impl PciService {
 
         // Step 3: Add device ID to vfio-pci new_id
         let new_id = format!("{} {}", vendor_id, device_id);
-        fs::write("/sys/bus/pci/drivers/vfio-pci/new_id", &new_id)
-            .map_err(|e| AppError::Other(format!(
-                "Failed to add device to vfio-pci. Are you running as root? Error: {}", e
-            )))?;
+        fs::write("/sys/bus/pci/drivers/vfio-pci/new_id", &new_id).map_err(|e| {
+            AppError::Other(format!(
+                "Failed to add device to vfio-pci. Are you running as root? Error: {}",
+                e
+            ))
+        })?;
 
         // Step 4: Bind to vfio-pci
-        fs::write("/sys/bus/pci/drivers/vfio-pci/bind", pci_address)
-            .map_err(|e| AppError::Other(format!(
-                "Failed to bind {} to vfio-pci: {}", pci_address, e
-            )))?;
+        fs::write("/sys/bus/pci/drivers/vfio-pci/bind", pci_address).map_err(|e| {
+            AppError::Other(format!("Failed to bind {} to vfio-pci: {}", pci_address, e))
+        })?;
 
-        tracing::info!("Successfully bound device {} to vfio-pci", pci_address);
+        tracing::info!("Successfully bound device to vfio-pci");
         Ok(())
     }
 
     /// Unbind a PCI device from vfio-pci and rebind to original driver
     pub fn unbind_from_vfio(pci_address: &str) -> Result<(), AppError> {
-        tracing::info!("Unbinding PCI device {} from vfio-pci driver", pci_address);
+        tracing::info!("Unbinding PCI device from vfio-pci driver");
 
         let device_path = format!("/sys/bus/pci/devices/{}", pci_address);
 
         // Check if device exists
         if !Path::new(&device_path).exists() {
-            return Err(AppError::Other(format!("PCI device {} not found", pci_address)));
+            return Err(AppError::Other(format!(
+                "PCI device {} not found",
+                pci_address
+            )));
         }
 
         // Check current driver
@@ -581,11 +635,15 @@ impl PciService {
         // If not bound to vfio-pci, nothing to do
         if let Some(ref driver) = current_driver {
             if driver != "vfio-pci" {
-                tracing::info!("Device {} not bound to vfio-pci (current: {})", pci_address, driver);
+                tracing::info!(
+                    "Device {} not bound to vfio-pci (current: {})",
+                    pci_address,
+                    driver
+                );
                 return Ok(());
             }
         } else {
-            tracing::info!("Device {} has no driver bound", pci_address);
+            tracing::info!("Device has no driver bound");
             return Ok(());
         }
 
@@ -593,15 +651,19 @@ impl PciService {
         Self::unbind_device(pci_address)?;
 
         // Trigger driver probe to let kernel find the right driver
-        fs::write(format!("{}/driver_override", device_path), "")
-            .ok(); // Ignore errors - some devices don't support driver_override
+        fs::write(format!("{}/driver_override", device_path), "").ok(); // Ignore errors - some devices don't support driver_override
 
-        fs::write("/sys/bus/pci/drivers_probe", pci_address)
-            .map_err(|e| AppError::Other(format!(
-                "Failed to trigger driver probe for {}: {}", pci_address, e
-            )))?;
+        fs::write("/sys/bus/pci/drivers_probe", pci_address).map_err(|e| {
+            AppError::Other(format!(
+                "Failed to trigger driver probe for {}: {}",
+                pci_address, e
+            ))
+        })?;
 
-        tracing::info!("Successfully unbound device {} from vfio-pci and triggered driver probe", pci_address);
+        tracing::info!(
+            "Successfully unbound device {} from vfio-pci and triggered driver probe",
+            pci_address
+        );
         Ok(())
     }
 
@@ -617,12 +679,14 @@ impl PciService {
 
         let unbind_path = driver_path.join("unbind");
 
-        fs::write(&unbind_path, pci_address)
-            .map_err(|e| AppError::Other(format!(
-                "Failed to unbind {} from driver: {}. Are you running as root?", pci_address, e
-            )))?;
+        fs::write(&unbind_path, pci_address).map_err(|e| {
+            AppError::Other(format!(
+                "Failed to unbind {} from driver: {}. Are you running as root?",
+                pci_address, e
+            ))
+        })?;
 
-        tracing::debug!("Unbound device {} from driver", pci_address);
+        tracing::debug!("Unbound device from driver");
         Ok(())
     }
 
@@ -642,7 +706,7 @@ impl PciService {
 
         if !output.status.success() {
             return Err(AppError::Other(
-                "Failed to load vfio-pci module. Is the vfio-pci driver installed?".to_string()
+                "Failed to load vfio-pci module. Is the vfio-pci driver installed?".to_string(),
             ));
         }
 
@@ -655,7 +719,10 @@ impl PciService {
         let device_path = format!("/sys/bus/pci/devices/{}", pci_address);
 
         if !Path::new(&device_path).exists() {
-            return Err(AppError::Other(format!("PCI device {} not found", pci_address)));
+            return Err(AppError::Other(format!(
+                "PCI device {} not found",
+                pci_address
+            )));
         }
 
         // Get current driver
@@ -663,7 +730,7 @@ impl PciService {
             .ok()
             .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()));
 
-        let bound_to_vfio = current_driver.as_ref().map_or(false, |d| d == "vfio-pci");
+        let bound_to_vfio = current_driver.as_ref().is_some_and(|d| d == "vfio-pci");
 
         // Check if IOMMU is enabled
         let iommu_status = Self::check_iommu_status()?;

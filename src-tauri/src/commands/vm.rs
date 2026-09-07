@@ -1,8 +1,14 @@
-use tauri::{AppHandle, State, Emitter};
-use serde::Serialize;
-use crate::models::vm::{VM, VmState, VmStats};
-use crate::services::vm_service::{VmService, KernelBootSettings, HugepagesSettings, HugepageInfo, UsbRedirectionInfo, EvdevDevice, CpuModelConfig};
+use crate::models::operation::{OperationKind, TargetIdentity};
+use crate::models::vm::{VmState, VmStats, VM};
+use crate::services::vm_service::{
+    CpuModelConfig, EvdevDevice, HugepageInfo, HugepagesSettings, KernelBootSettings,
+    UsbRedirectionInfo, VmService,
+};
 use crate::state::app_state::AppState;
+use crate::utils::error::SafeFailure;
+use crate::utils::xml::validate_document_root;
+use serde::Serialize;
+use tauri::{AppHandle, Emitter, State};
 
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -14,22 +20,38 @@ struct VmStateChangedPayload {
     timestamp: i64,
 }
 
+fn vm_target(vm_id: &str) -> TargetIdentity {
+    TargetIdentity {
+        resource_kind: "vm".to_string(),
+        stable_id: vm_id.to_string(),
+        display_name: None,
+    }
+}
+
 /// Get all VMs (active and inactive)
 #[tauri::command]
-pub async fn get_vms(state: State<'_, AppState>) -> Result<Vec<VM>, String> {
+pub async fn get_vms(state: State<'_, AppState>) -> Result<Vec<VM>, SafeFailure> {
     tracing::debug!("get_vms command called");
 
-    VmService::list_vms(&state.libvirt)
-        .map_err(|e| e.to_string())
+    let operation = state
+        .resolve_operation(OperationKind::Query, None)
+        .map_err(SafeFailure::from)?;
+    VmService::list_vms(&operation.connection)
+        .map_err(SafeFailure::from)
+        .map_err(|failure| failure.with_context(&operation.context))
 }
 
 /// Get a single VM by ID
 #[tauri::command]
-pub async fn get_vm(state: State<'_, AppState>, vm_id: String) -> Result<VM, String> {
+pub async fn get_vm(state: State<'_, AppState>, vm_id: String) -> Result<VM, SafeFailure> {
     tracing::debug!("get_vm command called for VM: {}", vm_id);
 
-    VmService::get_vm(&state.libvirt, &vm_id)
-        .map_err(|e| e.to_string())
+    let operation = state
+        .resolve_operation(OperationKind::Query, Some(vm_target(&vm_id)))
+        .map_err(SafeFailure::from)?;
+    VmService::get_vm(&operation.connection, &vm_id)
+        .map_err(SafeFailure::from)
+        .map_err(|failure| failure.with_context(&operation.context))
 }
 
 /// Start a VM
@@ -38,26 +60,34 @@ pub async fn start_vm(
     app: AppHandle,
     state: State<'_, AppState>,
     vm_id: String,
-) -> Result<(), String> {
+) -> Result<(), SafeFailure> {
     tracing::info!("start_vm command called for VM: {}", vm_id);
 
-    // Get VM info before state change
-    let vm = VmService::get_vm(&state.libvirt, &vm_id)
-        .map_err(|e| e.to_string())?;
+    let operation = state
+        .resolve_operation(OperationKind::Mutation, Some(vm_target(&vm_id)))
+        .map_err(SafeFailure::from)?;
+    // Get VM info before state change from the same captured connection.
+    let vm = VmService::get_vm(&operation.connection, &vm_id)
+        .map_err(SafeFailure::from)
+        .map_err(|failure| failure.with_context(&operation.context))?;
     let old_state = vm.state.clone();
     let vm_name = vm.name.clone();
 
-    VmService::start_vm(&state.libvirt, &vm_id)
-        .map_err(|e| e.to_string())?;
+    VmService::start_vm(&operation.connection, &vm_id)
+        .map_err(SafeFailure::from)
+        .map_err(|failure| failure.with_context(&operation.context))?;
 
     // Emit event
-    let _ = app.emit("vm-state-changed", VmStateChangedPayload {
-        vm_id: vm_id.clone(),
-        vm_name,
-        old_state,
-        new_state: VmState::Running,
-        timestamp: chrono::Utc::now().timestamp_millis(),
-    });
+    let _ = app.emit(
+        "vm-state-changed",
+        VmStateChangedPayload {
+            vm_id: vm_id.clone(),
+            vm_name,
+            old_state,
+            new_state: VmState::Running,
+            timestamp: chrono::Utc::now().timestamp_millis(),
+        },
+    );
 
     Ok(())
 }
@@ -68,26 +98,34 @@ pub async fn stop_vm(
     app: AppHandle,
     state: State<'_, AppState>,
     vm_id: String,
-) -> Result<(), String> {
+) -> Result<(), SafeFailure> {
     tracing::info!("stop_vm command called for VM: {}", vm_id);
 
-    // Get VM info before state change
-    let vm = VmService::get_vm(&state.libvirt, &vm_id)
-        .map_err(|e| e.to_string())?;
+    let operation = state
+        .resolve_operation(OperationKind::Mutation, Some(vm_target(&vm_id)))
+        .map_err(SafeFailure::from)?;
+    // Get VM info before state change from the same captured connection.
+    let vm = VmService::get_vm(&operation.connection, &vm_id)
+        .map_err(SafeFailure::from)
+        .map_err(|failure| failure.with_context(&operation.context))?;
     let old_state = vm.state.clone();
     let vm_name = vm.name.clone();
 
-    VmService::stop_vm(&state.libvirt, &vm_id)
-        .map_err(|e| e.to_string())?;
+    VmService::stop_vm(&operation.connection, &vm_id)
+        .map_err(SafeFailure::from)
+        .map_err(|failure| failure.with_context(&operation.context))?;
 
     // Emit event
-    let _ = app.emit("vm-state-changed", VmStateChangedPayload {
-        vm_id: vm_id.clone(),
-        vm_name,
-        old_state,
-        new_state: VmState::Stopped,
-        timestamp: chrono::Utc::now().timestamp_millis(),
-    });
+    let _ = app.emit(
+        "vm-state-changed",
+        VmStateChangedPayload {
+            vm_id: vm_id.clone(),
+            vm_name,
+            old_state,
+            new_state: VmState::Stopped,
+            timestamp: chrono::Utc::now().timestamp_millis(),
+        },
+    );
 
     Ok(())
 }
@@ -98,26 +136,45 @@ pub async fn force_stop_vm(
     app: AppHandle,
     state: State<'_, AppState>,
     vm_id: String,
-) -> Result<(), String> {
+    confirmation_token: String,
+) -> Result<(), SafeFailure> {
     tracing::info!("force_stop_vm command called for VM: {}", vm_id);
 
-    // Get VM info before state change
-    let vm = VmService::get_vm(&state.libvirt, &vm_id)
-        .map_err(|e| e.to_string())?;
+    let operation = state
+        .resolve_operation(OperationKind::Mutation, Some(vm_target(&vm_id)))
+        .map_err(SafeFailure::from)?;
+    // Get VM info before state change from the same captured connection.
+    let vm = VmService::get_vm(&operation.connection, &vm_id)
+        .map_err(SafeFailure::from)
+        .map_err(|failure| failure.with_context(&operation.context))?;
     let old_state = vm.state.clone();
     let vm_name = vm.name.clone();
+    crate::commands::confirmation::require_destructive_confirmation(
+        &state,
+        &confirmation_token,
+        "force_stop_vm",
+        "vm",
+        &vm_id,
+        None,
+        "force-stop",
+    )
+    .map_err(SafeFailure::from)?;
 
-    VmService::force_stop_vm(&state.libvirt, &vm_id)
-        .map_err(|e| e.to_string())?;
+    VmService::force_stop_vm(&operation.connection, &vm_id)
+        .map_err(SafeFailure::from)
+        .map_err(|failure| failure.with_context(&operation.context))?;
 
     // Emit event
-    let _ = app.emit("vm-state-changed", VmStateChangedPayload {
-        vm_id: vm_id.clone(),
-        vm_name,
-        old_state,
-        new_state: VmState::Stopped,
-        timestamp: chrono::Utc::now().timestamp_millis(),
-    });
+    let _ = app.emit(
+        "vm-state-changed",
+        VmStateChangedPayload {
+            vm_id: vm_id.clone(),
+            vm_name,
+            old_state,
+            new_state: VmState::Stopped,
+            timestamp: chrono::Utc::now().timestamp_millis(),
+        },
+    );
 
     Ok(())
 }
@@ -128,26 +185,34 @@ pub async fn pause_vm(
     app: AppHandle,
     state: State<'_, AppState>,
     vm_id: String,
-) -> Result<(), String> {
+) -> Result<(), SafeFailure> {
     tracing::info!("pause_vm command called for VM: {}", vm_id);
 
-    // Get VM info before state change
-    let vm = VmService::get_vm(&state.libvirt, &vm_id)
-        .map_err(|e| e.to_string())?;
+    let operation = state
+        .resolve_operation(OperationKind::Mutation, Some(vm_target(&vm_id)))
+        .map_err(SafeFailure::from)?;
+    // Get VM info before state change from the same captured connection.
+    let vm = VmService::get_vm(&operation.connection, &vm_id)
+        .map_err(SafeFailure::from)
+        .map_err(|failure| failure.with_context(&operation.context))?;
     let old_state = vm.state.clone();
     let vm_name = vm.name.clone();
 
-    VmService::pause_vm(&state.libvirt, &vm_id)
-        .map_err(|e| e.to_string())?;
+    VmService::pause_vm(&operation.connection, &vm_id)
+        .map_err(SafeFailure::from)
+        .map_err(|failure| failure.with_context(&operation.context))?;
 
     // Emit event
-    let _ = app.emit("vm-state-changed", VmStateChangedPayload {
-        vm_id: vm_id.clone(),
-        vm_name,
-        old_state,
-        new_state: VmState::Paused,
-        timestamp: chrono::Utc::now().timestamp_millis(),
-    });
+    let _ = app.emit(
+        "vm-state-changed",
+        VmStateChangedPayload {
+            vm_id: vm_id.clone(),
+            vm_name,
+            old_state,
+            new_state: VmState::Paused,
+            timestamp: chrono::Utc::now().timestamp_millis(),
+        },
+    );
 
     Ok(())
 }
@@ -158,26 +223,34 @@ pub async fn resume_vm(
     app: AppHandle,
     state: State<'_, AppState>,
     vm_id: String,
-) -> Result<(), String> {
+) -> Result<(), SafeFailure> {
     tracing::info!("resume_vm command called for VM: {}", vm_id);
 
-    // Get VM info before state change
-    let vm = VmService::get_vm(&state.libvirt, &vm_id)
-        .map_err(|e| e.to_string())?;
+    let operation = state
+        .resolve_operation(OperationKind::Mutation, Some(vm_target(&vm_id)))
+        .map_err(SafeFailure::from)?;
+    // Get VM info before state change from the same captured connection.
+    let vm = VmService::get_vm(&operation.connection, &vm_id)
+        .map_err(SafeFailure::from)
+        .map_err(|failure| failure.with_context(&operation.context))?;
     let old_state = vm.state.clone();
     let vm_name = vm.name.clone();
 
-    VmService::resume_vm(&state.libvirt, &vm_id)
-        .map_err(|e| e.to_string())?;
+    VmService::resume_vm(&operation.connection, &vm_id)
+        .map_err(SafeFailure::from)
+        .map_err(|failure| failure.with_context(&operation.context))?;
 
     // Emit event
-    let _ = app.emit("vm-state-changed", VmStateChangedPayload {
-        vm_id: vm_id.clone(),
-        vm_name,
-        old_state,
-        new_state: VmState::Running,
-        timestamp: chrono::Utc::now().timestamp_millis(),
-    });
+    let _ = app.emit(
+        "vm-state-changed",
+        VmStateChangedPayload {
+            vm_id: vm_id.clone(),
+            vm_name,
+            old_state,
+            new_state: VmState::Running,
+            timestamp: chrono::Utc::now().timestamp_millis(),
+        },
+    );
 
     Ok(())
 }
@@ -188,26 +261,34 @@ pub async fn hibernate_vm(
     app: AppHandle,
     state: State<'_, AppState>,
     vm_id: String,
-) -> Result<(), String> {
+) -> Result<(), SafeFailure> {
     tracing::info!("hibernate_vm command called for VM: {}", vm_id);
 
-    // Get VM info before state change
-    let vm = VmService::get_vm(&state.libvirt, &vm_id)
-        .map_err(|e| e.to_string())?;
+    let operation = state
+        .resolve_operation(OperationKind::Mutation, Some(vm_target(&vm_id)))
+        .map_err(SafeFailure::from)?;
+    // Get VM info before state change from the same captured connection.
+    let vm = VmService::get_vm(&operation.connection, &vm_id)
+        .map_err(SafeFailure::from)
+        .map_err(|failure| failure.with_context(&operation.context))?;
     let old_state = vm.state.clone();
     let vm_name = vm.name.clone();
 
-    VmService::hibernate_vm(&state.libvirt, &vm_id)
-        .map_err(|e| e.to_string())?;
+    VmService::hibernate_vm(&operation.connection, &vm_id)
+        .map_err(SafeFailure::from)
+        .map_err(|failure| failure.with_context(&operation.context))?;
 
     // Emit event - VM is now stopped but with saved state
-    let _ = app.emit("vm-state-changed", VmStateChangedPayload {
-        vm_id: vm_id.clone(),
-        vm_name,
-        old_state,
-        new_state: VmState::Stopped,
-        timestamp: chrono::Utc::now().timestamp_millis(),
-    });
+    let _ = app.emit(
+        "vm-state-changed",
+        VmStateChangedPayload {
+            vm_id: vm_id.clone(),
+            vm_name,
+            old_state,
+            new_state: VmState::Stopped,
+            timestamp: chrono::Utc::now().timestamp_millis(),
+        },
+    );
 
     Ok(())
 }
@@ -217,11 +298,15 @@ pub async fn hibernate_vm(
 pub async fn has_managed_save(
     state: State<'_, AppState>,
     vm_id: String,
-) -> Result<bool, String> {
+) -> Result<bool, SafeFailure> {
     tracing::debug!("has_managed_save command called for VM: {}", vm_id);
 
-    VmService::has_managed_save(&state.libvirt, &vm_id)
-        .map_err(|e| e.to_string())
+    let operation = state
+        .resolve_operation(OperationKind::Query, Some(vm_target(&vm_id)))
+        .map_err(SafeFailure::from)?;
+    VmService::has_managed_save(&operation.connection, &vm_id)
+        .map_err(SafeFailure::from)
+        .map_err(|failure| failure.with_context(&operation.context))
 }
 
 /// Remove managed save (discard hibernated state)
@@ -229,20 +314,39 @@ pub async fn has_managed_save(
 pub async fn remove_managed_save(
     state: State<'_, AppState>,
     vm_id: String,
-) -> Result<(), String> {
+    confirmation_token: String,
+) -> Result<(), SafeFailure> {
     tracing::info!("remove_managed_save command called for VM: {}", vm_id);
 
-    VmService::remove_managed_save(&state.libvirt, &vm_id)
-        .map_err(|e| e.to_string())
+    crate::commands::confirmation::require_destructive_confirmation(
+        &state,
+        &confirmation_token,
+        "remove_managed_save",
+        "vm",
+        &vm_id,
+        None,
+        "discard-managed-save",
+    )
+    .map_err(SafeFailure::from)?;
+    let operation = state
+        .resolve_operation(OperationKind::Mutation, Some(vm_target(&vm_id)))
+        .map_err(SafeFailure::from)?;
+    VmService::remove_managed_save(&operation.connection, &vm_id)
+        .map_err(SafeFailure::from)
+        .map_err(|failure| failure.with_context(&operation.context))
 }
 
 /// Reboot a VM
 #[tauri::command]
-pub async fn reboot_vm(state: State<'_, AppState>, vm_id: String) -> Result<(), String> {
+pub async fn reboot_vm(state: State<'_, AppState>, vm_id: String) -> Result<(), SafeFailure> {
     tracing::info!("reboot_vm command called for VM: {}", vm_id);
 
-    VmService::reboot_vm(&state.libvirt, &vm_id)
-        .map_err(|e| e.to_string())
+    let operation = state
+        .resolve_operation(OperationKind::Mutation, Some(vm_target(&vm_id)))
+        .map_err(SafeFailure::from)?;
+    VmService::reboot_vm(&operation.connection, &vm_id)
+        .map_err(SafeFailure::from)
+        .map_err(|failure| failure.with_context(&operation.context))
 }
 
 /// Delete a VM
@@ -253,46 +357,76 @@ pub async fn delete_vm(
     vm_id: String,
     delete_disks: bool,
     delete_snapshots: bool,
-) -> Result<(), String> {
-    tracing::info!("delete_vm command called for VM: {} (delete_disks: {}, delete_snapshots: {})", vm_id, delete_disks, delete_snapshots);
+    confirmation_token: String,
+) -> Result<(), SafeFailure> {
+    tracing::info!(
+        "delete_vm command called for VM: {} (delete_disks: {}, delete_snapshots: {})",
+        vm_id,
+        delete_disks,
+        delete_snapshots
+    );
 
-    // Get VM info before deletion
-    let vm = VmService::get_vm(&state.libvirt, &vm_id)
-        .map_err(|e| e.to_string())?;
+    let operation = state
+        .resolve_operation(OperationKind::Mutation, Some(vm_target(&vm_id)))
+        .map_err(SafeFailure::from)?;
+    // Get VM info before deletion so the confirmation is tied to the immutable target label.
+    let vm = VmService::get_vm(&operation.connection, &vm_id)
+        .map_err(SafeFailure::from)
+        .map_err(|failure| failure.with_context(&operation.context))?;
     let vm_name = vm.name.clone();
+    crate::commands::confirmation::require_destructive_confirmation(
+        &state,
+        &confirmation_token,
+        "delete_vm",
+        "vm",
+        &vm_id,
+        None,
+        &format!("delete-disks={delete_disks};delete-snapshots={delete_snapshots}"),
+    )
+    .map_err(SafeFailure::from)?;
 
     // Delete snapshots if requested
     if delete_snapshots {
         tracing::info!("Deleting all snapshots for VM: {}", vm_id);
         use crate::services::snapshot_service::SnapshotService;
 
-        match SnapshotService::list_snapshots(&state.libvirt, &vm_id) {
+        match SnapshotService::list_snapshots(&operation.connection, &vm_id) {
             Ok(snapshots) => {
                 for snapshot in snapshots {
-                    if let Err(e) = SnapshotService::delete_snapshot(&state.libvirt, &vm_id, &snapshot.name) {
-                        tracing::warn!("Failed to delete snapshot {}: {}", snapshot.name, e);
+                    if SnapshotService::delete_snapshot(
+                        &operation.connection,
+                        &vm_id,
+                        &snapshot.name,
+                    )
+                    .is_err()
+                    {
+                        tracing::warn!("A VM snapshot could not be deleted");
                     } else {
                         tracing::info!("Deleted snapshot: {}", snapshot.name);
                     }
                 }
             }
-            Err(e) => {
-                tracing::warn!("Failed to list snapshots for deletion: {}", e);
+            Err(_) => {
+                tracing::warn!("VM snapshots could not be listed for deletion");
             }
         }
     }
 
-    VmService::delete_vm(&state.libvirt, &vm_id, delete_disks)
-        .map_err(|e| e.to_string())?;
+    VmService::delete_vm(&operation.connection, &vm_id, delete_disks)
+        .map_err(SafeFailure::from)
+        .map_err(|failure| failure.with_context(&operation.context))?;
 
     // Emit event (use a custom event for deletion)
-    let _ = app.emit("vm-deleted", serde_json::json!({
-        "vmId": vm_id,
-        "vmName": vm_name,
-        "deleteDisks": delete_disks,
-        "deleteSnapshots": delete_snapshots,
-        "timestamp": chrono::Utc::now().timestamp_millis(),
-    }));
+    let _ = app.emit(
+        "vm-deleted",
+        serde_json::json!({
+            "vmId": vm_id,
+            "vmName": vm_name,
+            "deleteDisks": delete_disks,
+            "deleteSnapshots": delete_snapshots,
+            "timestamp": chrono::Utc::now().timestamp_millis(),
+        }),
+    );
 
     Ok(())
 }
@@ -304,19 +438,30 @@ pub async fn clone_vm(
     state: State<'_, AppState>,
     source_vm_id: String,
     new_name: String,
-) -> Result<String, String> {
-    tracing::info!("clone_vm command called: source_vm_id={}, new_name={}", source_vm_id, new_name);
+) -> Result<String, SafeFailure> {
+    tracing::info!(
+        "clone_vm command called: source_vm_id={}, new_name={}",
+        source_vm_id,
+        new_name
+    );
 
-    let cloned_vm_id = VmService::clone_vm(&state.libvirt, &source_vm_id, &new_name)
-        .map_err(|e| e.to_string())?;
+    let operation = state
+        .resolve_host_local_operation(Some(vm_target(&source_vm_id)))
+        .map_err(SafeFailure::from)?;
+    let cloned_vm_id = VmService::clone_vm(&operation.connection, &source_vm_id, &new_name)
+        .map_err(SafeFailure::from)
+        .map_err(|failure| failure.with_context(&operation.context))?;
 
     // Emit event
-    let _ = app.emit("vm-cloned", serde_json::json!({
-        "sourceVmId": source_vm_id,
-        "clonedVmId": cloned_vm_id,
-        "newName": new_name,
-        "timestamp": chrono::Utc::now().timestamp_millis(),
-    }));
+    let _ = app.emit(
+        "vm-cloned",
+        serde_json::json!({
+            "sourceVmId": source_vm_id,
+            "clonedVmId": cloned_vm_id,
+            "newName": new_name,
+            "timestamp": chrono::Utc::now().timestamp_millis(),
+        }),
+    );
 
     Ok(cloned_vm_id)
 }
@@ -328,21 +473,33 @@ pub async fn clone_vm_with_options(
     state: State<'_, AppState>,
     source_vm_id: String,
     config: crate::models::vm::CloneConfig,
-) -> Result<String, String> {
-    tracing::info!("clone_vm_with_options command called: source_vm_id={}, config={:?}", source_vm_id, config);
+) -> Result<String, SafeFailure> {
+    tracing::info!(
+        "clone_vm_with_options command called: source_vm_id={}, config={:?}",
+        source_vm_id,
+        config
+    );
 
-    let cloned_vm_id = VmService::clone_vm_with_options(&state.libvirt, &source_vm_id, &config)
-        .map_err(|e| e.to_string())?;
+    let operation = state
+        .resolve_host_local_operation(Some(vm_target(&source_vm_id)))
+        .map_err(SafeFailure::from)?;
+    let cloned_vm_id =
+        VmService::clone_vm_with_options(&operation.connection, &source_vm_id, &config)
+            .map_err(SafeFailure::from)
+            .map_err(|failure| failure.with_context(&operation.context))?;
 
     // Emit event
-    let _ = app.emit("vm-cloned", serde_json::json!({
-        "sourceVmId": source_vm_id,
-        "clonedVmId": cloned_vm_id,
-        "newName": config.new_name,
-        "cloneDisks": config.clone_disks,
-        "cloneSnapshots": config.clone_snapshots,
-        "timestamp": chrono::Utc::now().timestamp_millis(),
-    }));
+    let _ = app.emit(
+        "vm-cloned",
+        serde_json::json!({
+            "sourceVmId": source_vm_id,
+            "clonedVmId": cloned_vm_id,
+            "newName": config.new_name,
+            "cloneDisks": config.clone_disks,
+            "cloneSnapshots": config.clone_snapshots,
+            "timestamp": chrono::Utc::now().timestamp_millis(),
+        }),
+    );
 
     Ok(cloned_vm_id)
 }
@@ -353,28 +510,42 @@ pub async fn create_vm(
     app: AppHandle,
     state: State<'_, AppState>,
     config: crate::models::vm::VmConfig,
-) -> Result<String, String> {
+) -> Result<String, SafeFailure> {
     tracing::info!("create_vm command called for VM: {}", config.name);
 
-    let vm_id = VmService::create_vm(&state.libvirt, config)
-        .map_err(|e| e.to_string())?;
+    let operation = state
+        .resolve_operation(OperationKind::Mutation, Some(vm_target(&config.name)))
+        .map_err(SafeFailure::from)?;
+    let vm_id = VmService::create_vm(&operation.connection, &operation.context, config)
+        .map_err(SafeFailure::from)
+        .map_err(|failure| failure.with_context(&operation.context))?;
 
     // Emit event
-    let _ = app.emit("vm-created", serde_json::json!({
-        "vmId": vm_id,
-        "timestamp": chrono::Utc::now().timestamp_millis(),
-    }));
+    let _ = app.emit(
+        "vm-created",
+        serde_json::json!({
+            "vmId": vm_id,
+            "timestamp": chrono::Utc::now().timestamp_millis(),
+        }),
+    );
 
     Ok(vm_id)
 }
 
 /// Get VM performance statistics
 #[tauri::command]
-pub async fn get_vm_stats(state: State<'_, AppState>, vm_id: String) -> Result<VmStats, String> {
+pub async fn get_vm_stats(
+    state: State<'_, AppState>,
+    vm_id: String,
+) -> Result<VmStats, SafeFailure> {
     tracing::debug!("get_vm_stats command called for VM: {}", vm_id);
 
-    VmService::get_vm_stats(&state.libvirt, &vm_id)
-        .map_err(|e| e.to_string())
+    let operation = state
+        .resolve_operation(OperationKind::Query, Some(vm_target(&vm_id)))
+        .map_err(SafeFailure::from)?;
+    VmService::get_vm_stats(&operation.connection, &vm_id)
+        .map_err(SafeFailure::from)
+        .map_err(|failure| failure.with_context(&operation.context))
 }
 
 /// Add tags to a VM
@@ -384,18 +555,25 @@ pub async fn add_vm_tags(
     state: State<'_, AppState>,
     vm_id: String,
     tags: Vec<String>,
-) -> Result<(), String> {
+) -> Result<(), SafeFailure> {
     tracing::info!("add_vm_tags command called for VM: {}", vm_id);
 
-    VmService::add_vm_tags(&state.libvirt, &vm_id, tags.clone())
-        .map_err(|e| e.to_string())?;
+    let operation = state
+        .resolve_operation(OperationKind::Mutation, Some(vm_target(&vm_id)))
+        .map_err(SafeFailure::from)?;
+    VmService::add_vm_tags(&operation.connection, &vm_id, tags.clone())
+        .map_err(SafeFailure::from)
+        .map_err(|failure| failure.with_context(&operation.context))?;
 
     // Emit event
-    let _ = app.emit("vm-tags-updated", serde_json::json!({
-        "vmId": vm_id,
-        "tags": tags,
-        "timestamp": chrono::Utc::now().timestamp_millis(),
-    }));
+    let _ = app.emit(
+        "vm-tags-updated",
+        serde_json::json!({
+            "vmId": vm_id,
+            "tags": tags,
+            "timestamp": chrono::Utc::now().timestamp_millis(),
+        }),
+    );
 
     Ok(())
 }
@@ -407,32 +585,54 @@ pub async fn remove_vm_tags(
     state: State<'_, AppState>,
     vm_id: String,
     tags: Vec<String>,
-) -> Result<(), String> {
+    confirmation_token: String,
+) -> Result<(), SafeFailure> {
     tracing::info!("remove_vm_tags command called for VM: {}", vm_id);
 
-    VmService::remove_vm_tags(&state.libvirt, &vm_id, tags.clone())
-        .map_err(|e| e.to_string())?;
+    let mut reviewed_tags = tags.clone();
+    reviewed_tags.sort();
+    crate::commands::confirmation::require_destructive_confirmation(
+        &state,
+        &confirmation_token,
+        "remove_vm_tags",
+        "vm",
+        &vm_id,
+        None,
+        &format!("remove-tags={}", reviewed_tags.join(",")),
+    )
+    .map_err(SafeFailure::from)?;
+
+    let operation = state
+        .resolve_operation(OperationKind::Mutation, Some(vm_target(&vm_id)))
+        .map_err(SafeFailure::from)?;
+    VmService::remove_vm_tags(&operation.connection, &vm_id, tags.clone())
+        .map_err(SafeFailure::from)
+        .map_err(|failure| failure.with_context(&operation.context))?;
 
     // Emit event
-    let _ = app.emit("vm-tags-updated", serde_json::json!({
-        "vmId": vm_id,
-        "removedTags": tags,
-        "timestamp": chrono::Utc::now().timestamp_millis(),
-    }));
+    let _ = app.emit(
+        "vm-tags-updated",
+        serde_json::json!({
+            "vmId": vm_id,
+            "removedTags": tags,
+            "timestamp": chrono::Utc::now().timestamp_millis(),
+        }),
+    );
 
     Ok(())
 }
 
 /// Export VM configuration to XML
 #[tauri::command]
-pub async fn export_vm(
-    state: State<'_, AppState>,
-    vm_id: String,
-) -> Result<String, String> {
+pub async fn export_vm(state: State<'_, AppState>, vm_id: String) -> Result<String, SafeFailure> {
     tracing::info!("export_vm command called for VM: {}", vm_id);
 
-    VmService::export_vm(&state.libvirt, &vm_id)
-        .map_err(|e| e.to_string())
+    let operation = state
+        .resolve_operation(OperationKind::Query, Some(vm_target(&vm_id)))
+        .map_err(SafeFailure::from)?;
+    VmService::export_vm(&operation.connection, &vm_id)
+        .map_err(SafeFailure::from)
+        .map_err(|failure| failure.with_context(&operation.context))
 }
 
 /// Import VM from XML configuration
@@ -441,17 +641,26 @@ pub async fn import_vm(
     app: AppHandle,
     state: State<'_, AppState>,
     xml: String,
-) -> Result<String, String> {
+) -> Result<String, SafeFailure> {
     tracing::info!("import_vm command called");
 
-    let vm_id = VmService::import_vm(&state.libvirt, &xml)
-        .map_err(|e| e.to_string())?;
+    validate_document_root(&xml, "domain").map_err(SafeFailure::from)?;
+
+    let operation = state
+        .resolve_operation(OperationKind::Mutation, None)
+        .map_err(SafeFailure::from)?;
+    let vm_id = VmService::import_vm(&operation.connection, &xml)
+        .map_err(SafeFailure::from)
+        .map_err(|failure| failure.with_context(&operation.context))?;
 
     // Emit event
-    let _ = app.emit("vm-imported", serde_json::json!({
-        "vmId": vm_id,
-        "timestamp": chrono::Utc::now().timestamp_millis(),
-    }));
+    let _ = app.emit(
+        "vm-imported",
+        serde_json::json!({
+            "vmId": vm_id,
+            "timestamp": chrono::Utc::now().timestamp_millis(),
+        }),
+    );
 
     Ok(vm_id)
 }
@@ -465,19 +674,32 @@ pub async fn attach_disk(
     disk_path: String,
     device_target: String,
     bus_type: String,
-) -> Result<(), String> {
+) -> Result<(), SafeFailure> {
     tracing::info!("attach_disk command called for VM: {}", vm_id);
 
-    VmService::attach_disk(&state.libvirt, &vm_id, &disk_path, &device_target, &bus_type)
-        .map_err(|e| e.to_string())?;
+    let operation = state
+        .resolve_operation(OperationKind::Mutation, Some(vm_target(&vm_id)))
+        .map_err(SafeFailure::from)?;
+    VmService::attach_disk(
+        &operation.connection,
+        &vm_id,
+        &disk_path,
+        &device_target,
+        &bus_type,
+    )
+    .map_err(SafeFailure::from)
+    .map_err(|failure| failure.with_context(&operation.context))?;
 
     // Emit event
-    let _ = app.emit("vm-disk-attached", serde_json::json!({
-        "vmId": vm_id,
-        "diskPath": disk_path,
-        "deviceTarget": device_target,
-        "timestamp": chrono::Utc::now().timestamp_millis(),
-    }));
+    let _ = app.emit(
+        "vm-disk-attached",
+        serde_json::json!({
+            "vmId": vm_id,
+            "diskPath": disk_path,
+            "deviceTarget": device_target,
+            "timestamp": chrono::Utc::now().timestamp_millis(),
+        }),
+    );
 
     Ok(())
 }
@@ -489,24 +711,44 @@ pub async fn detach_disk(
     state: State<'_, AppState>,
     vm_id: String,
     device_target: String,
-) -> Result<(), String> {
+    confirmation_token: String,
+) -> Result<(), SafeFailure> {
     tracing::info!("detach_disk command called for VM: {}", vm_id);
 
-    VmService::detach_disk(&state.libvirt, &vm_id, &device_target)
-        .map_err(|e| e.to_string())?;
+    let stable_id = format!("{vm_id}/{device_target}");
+    crate::commands::confirmation::require_destructive_confirmation(
+        &state,
+        &confirmation_token,
+        "detach_disk",
+        "disk",
+        &stable_id,
+        None,
+        "detach",
+    )
+    .map_err(SafeFailure::from)?;
+    let operation = state
+        .resolve_operation(OperationKind::Mutation, Some(vm_target(&vm_id)))
+        .map_err(SafeFailure::from)?;
+    VmService::detach_disk(&operation.connection, &vm_id, &device_target)
+        .map_err(SafeFailure::from)
+        .map_err(|failure| failure.with_context(&operation.context))?;
 
     // Emit event
-    let _ = app.emit("vm-disk-detached", serde_json::json!({
-        "vmId": vm_id,
-        "deviceTarget": device_target,
-        "timestamp": chrono::Utc::now().timestamp_millis(),
-    }));
+    let _ = app.emit(
+        "vm-disk-detached",
+        serde_json::json!({
+            "vmId": vm_id,
+            "deviceTarget": device_target,
+            "timestamp": chrono::Utc::now().timestamp_millis(),
+        }),
+    );
 
     Ok(())
 }
 
 /// Update disk I/O settings (cache, io mode, discard, throttling)
 #[tauri::command]
+#[allow(clippy::too_many_arguments)] // Tauri IPC preserves the existing field-level client contract.
 pub async fn update_disk_settings(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -520,11 +762,18 @@ pub async fn update_disk_settings(
     write_iops_sec: Option<u64>,
     read_bytes_sec: Option<u64>,
     write_bytes_sec: Option<u64>,
-) -> Result<(), String> {
-    tracing::info!("update_disk_settings command called for VM: {}, disk: {}", vm_id, device_target);
+) -> Result<(), SafeFailure> {
+    tracing::info!(
+        "update_disk_settings command called for VM: {}, disk: {}",
+        vm_id,
+        device_target
+    );
 
+    let operation = state
+        .resolve_operation(OperationKind::Mutation, Some(vm_target(&vm_id)))
+        .map_err(SafeFailure::from)?;
     VmService::update_disk_settings(
-        &state.libvirt,
+        &operation.connection,
         &vm_id,
         &device_target,
         cache.clone(),
@@ -536,17 +785,21 @@ pub async fn update_disk_settings(
         read_bytes_sec,
         write_bytes_sec,
     )
-    .map_err(|e| e.to_string())?;
+    .map_err(SafeFailure::from)
+    .map_err(|failure| failure.with_context(&operation.context))?;
 
     // Emit event
-    let _ = app.emit("vm-disk-settings-updated", serde_json::json!({
-        "vmId": vm_id,
-        "deviceTarget": device_target,
-        "cache": cache,
-        "io": io,
-        "discard": discard,
-        "timestamp": chrono::Utc::now().timestamp_millis(),
-    }));
+    let _ = app.emit(
+        "vm-disk-settings-updated",
+        serde_json::json!({
+            "vmId": vm_id,
+            "deviceTarget": device_target,
+            "cache": cache,
+            "io": io,
+            "discard": discard,
+            "timestamp": chrono::Utc::now().timestamp_millis(),
+        }),
+    );
 
     Ok(())
 }
@@ -556,13 +809,19 @@ pub async fn update_disk_settings(
 pub async fn get_kernel_boot_settings(
     state: State<'_, AppState>,
     vm_id: String,
-) -> Result<KernelBootSettings, String> {
+) -> Result<KernelBootSettings, SafeFailure> {
     tracing::info!("get_kernel_boot_settings command called for VM: {}", vm_id);
-    VmService::get_kernel_boot_settings(&state.libvirt, &vm_id).map_err(|e| e.to_string())
+    let operation = state
+        .resolve_operation(OperationKind::Query, Some(vm_target(&vm_id)))
+        .map_err(SafeFailure::from)?;
+    VmService::get_kernel_boot_settings(&operation.connection, &vm_id)
+        .map_err(SafeFailure::from)
+        .map_err(|failure| failure.with_context(&operation.context))
 }
 
 /// Update direct kernel boot settings for a VM (VM must be shut off)
 #[tauri::command]
+#[allow(clippy::too_many_arguments)] // Tauri IPC preserves the existing field-level client contract.
 pub async fn set_kernel_boot_settings(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -572,7 +831,7 @@ pub async fn set_kernel_boot_settings(
     initrd_path: Option<String>,
     kernel_args: Option<String>,
     dtb_path: Option<String>,
-) -> Result<(), String> {
+) -> Result<(), SafeFailure> {
     tracing::info!("set_kernel_boot_settings command called for VM: {}", vm_id);
 
     let settings = KernelBootSettings {
@@ -583,17 +842,25 @@ pub async fn set_kernel_boot_settings(
         dtb_path: dtb_path.clone(),
     };
 
-    VmService::set_kernel_boot_settings(&state.libvirt, &vm_id, settings).map_err(|e| e.to_string())?;
+    let operation = state
+        .resolve_operation(OperationKind::Mutation, Some(vm_target(&vm_id)))
+        .map_err(SafeFailure::from)?;
+    VmService::set_kernel_boot_settings(&operation.connection, &vm_id, settings)
+        .map_err(SafeFailure::from)
+        .map_err(|failure| failure.with_context(&operation.context))?;
 
     // Emit event
-    let _ = app.emit("vm-kernel-boot-updated", serde_json::json!({
-        "vmId": vm_id,
-        "enabled": enabled,
-        "kernelPath": kernel_path,
-        "initrdPath": initrd_path,
-        "kernelArgs": kernel_args,
-        "timestamp": chrono::Utc::now().timestamp_millis(),
-    }));
+    let _ = app.emit(
+        "vm-kernel-boot-updated",
+        serde_json::json!({
+            "vmId": vm_id,
+            "enabled": enabled,
+            "kernelPath": kernel_path,
+            "initrdPath": initrd_path,
+            "kernelArgs": kernel_args,
+            "timestamp": chrono::Utc::now().timestamp_millis(),
+        }),
+    );
 
     Ok(())
 }
@@ -603,9 +870,14 @@ pub async fn set_kernel_boot_settings(
 pub async fn get_hugepages_settings(
     state: State<'_, AppState>,
     vm_id: String,
-) -> Result<HugepagesSettings, String> {
+) -> Result<HugepagesSettings, SafeFailure> {
     tracing::info!("get_hugepages_settings command called for VM: {}", vm_id);
-    VmService::get_hugepages_settings(&state.libvirt, &vm_id).map_err(|e| e.to_string())
+    let operation = state
+        .resolve_operation(OperationKind::Query, Some(vm_target(&vm_id)))
+        .map_err(SafeFailure::from)?;
+    VmService::get_hugepages_settings(&operation.connection, &vm_id)
+        .map_err(SafeFailure::from)
+        .map_err(|failure| failure.with_context(&operation.context))
 }
 
 /// Set hugepages memory backing for a VM (VM must be shut off)
@@ -615,32 +887,46 @@ pub async fn set_hugepages(
     state: State<'_, AppState>,
     vm_id: String,
     enabled: bool,
-    size: Option<u64>,  // Size in KiB
-) -> Result<(), String> {
-    tracing::info!("set_hugepages command called for VM: {} enabled={} size={:?}", vm_id, enabled, size);
+    size: Option<u64>, // Size in KiB
+) -> Result<(), SafeFailure> {
+    tracing::info!(
+        "set_hugepages command called for VM: {} enabled={} size={:?}",
+        vm_id,
+        enabled,
+        size
+    );
 
-    VmService::set_hugepages(&state.libvirt, &vm_id, enabled, size).map_err(|e| e.to_string())?;
+    let operation = state
+        .resolve_operation(OperationKind::Mutation, Some(vm_target(&vm_id)))
+        .map_err(SafeFailure::from)?;
+    VmService::set_hugepages(&operation.connection, &vm_id, enabled, size)
+        .map_err(SafeFailure::from)
+        .map_err(|failure| failure.with_context(&operation.context))?;
 
     // Emit event
-    let _ = app.emit("vm-hugepages-updated", serde_json::json!({
-        "vmId": vm_id,
-        "enabled": enabled,
-        "size": size,
-        "timestamp": chrono::Utc::now().timestamp_millis(),
-    }));
+    let _ = app.emit(
+        "vm-hugepages-updated",
+        serde_json::json!({
+            "vmId": vm_id,
+            "enabled": enabled,
+            "size": size,
+            "timestamp": chrono::Utc::now().timestamp_millis(),
+        }),
+    );
 
     Ok(())
 }
 
 /// Get available hugepage sizes on the host system
 #[tauri::command]
-pub async fn get_host_hugepage_info() -> Result<Vec<HugepageInfo>, String> {
+pub async fn get_host_hugepage_info() -> Result<Vec<HugepageInfo>, SafeFailure> {
     tracing::info!("get_host_hugepage_info command called");
-    VmService::get_host_hugepage_info().map_err(|e| e.to_string())
+    VmService::get_host_hugepage_info().map_err(SafeFailure::from)
 }
 
 /// Update network interface bandwidth/QoS settings
 #[tauri::command]
+#[allow(clippy::too_many_arguments)] // Tauri IPC preserves the existing field-level client contract.
 pub async fn update_interface_bandwidth(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -652,11 +938,18 @@ pub async fn update_interface_bandwidth(
     outbound_average: Option<u64>,
     outbound_peak: Option<u64>,
     outbound_burst: Option<u64>,
-) -> Result<(), String> {
-    tracing::info!("update_interface_bandwidth command called for VM: {}, interface: {}", vm_id, mac_address);
+) -> Result<(), SafeFailure> {
+    tracing::info!(
+        "update_interface_bandwidth command called for VM: {}, interface: {}",
+        vm_id,
+        mac_address
+    );
 
+    let operation = state
+        .resolve_operation(OperationKind::Mutation, Some(vm_target(&vm_id)))
+        .map_err(SafeFailure::from)?;
     VmService::update_interface_bandwidth(
-        &state.libvirt,
+        &operation.connection,
         &vm_id,
         &mac_address,
         inbound_average,
@@ -666,16 +959,20 @@ pub async fn update_interface_bandwidth(
         outbound_peak,
         outbound_burst,
     )
-    .map_err(|e| e.to_string())?;
+    .map_err(SafeFailure::from)
+    .map_err(|failure| failure.with_context(&operation.context))?;
 
     // Emit event
-    let _ = app.emit("vm-interface-bandwidth-updated", serde_json::json!({
-        "vmId": vm_id,
-        "macAddress": mac_address,
-        "inboundAverage": inbound_average,
-        "outboundAverage": outbound_average,
-        "timestamp": chrono::Utc::now().timestamp_millis(),
-    }));
+    let _ = app.emit(
+        "vm-interface-bandwidth-updated",
+        serde_json::json!({
+            "vmId": vm_id,
+            "macAddress": mac_address,
+            "inboundAverage": inbound_average,
+            "outboundAverage": outbound_average,
+            "timestamp": chrono::Utc::now().timestamp_millis(),
+        }),
+    );
 
     Ok(())
 }
@@ -688,24 +985,31 @@ pub async fn set_interface_link_state(
     vm_id: String,
     mac_address: String,
     link_up: bool,
-) -> Result<(), String> {
-    tracing::info!("set_interface_link_state command called for VM: {}, interface: {}, up: {}", vm_id, mac_address, link_up);
+) -> Result<(), SafeFailure> {
+    tracing::info!(
+        "set_interface_link_state command called for VM: {}, interface: {}, up: {}",
+        vm_id,
+        mac_address,
+        link_up
+    );
 
-    VmService::set_interface_link_state(
-        &state.libvirt,
-        &vm_id,
-        &mac_address,
-        link_up,
-    )
-    .map_err(|e| e.to_string())?;
+    let operation = state
+        .resolve_operation(OperationKind::Mutation, Some(vm_target(&vm_id)))
+        .map_err(SafeFailure::from)?;
+    VmService::set_interface_link_state(&operation.connection, &vm_id, &mac_address, link_up)
+        .map_err(SafeFailure::from)
+        .map_err(|failure| failure.with_context(&operation.context))?;
 
     // Emit event
-    let _ = app.emit("vm-interface-link-state-changed", serde_json::json!({
-        "vmId": vm_id,
-        "macAddress": mac_address,
-        "linkUp": link_up,
-        "timestamp": chrono::Utc::now().timestamp_millis(),
-    }));
+    let _ = app.emit(
+        "vm-interface-link-state-changed",
+        serde_json::json!({
+            "vmId": vm_id,
+            "macAddress": mac_address,
+            "linkUp": link_up,
+            "timestamp": chrono::Utc::now().timestamp_millis(),
+        }),
+    );
 
     Ok(())
 }
@@ -716,15 +1020,19 @@ pub async fn get_interface_link_state(
     state: State<'_, AppState>,
     vm_id: String,
     mac_address: String,
-) -> Result<bool, String> {
-    tracing::info!("get_interface_link_state command called for VM: {}, interface: {}", vm_id, mac_address);
+) -> Result<bool, SafeFailure> {
+    tracing::info!(
+        "get_interface_link_state command called for VM: {}, interface: {}",
+        vm_id,
+        mac_address
+    );
 
-    VmService::get_interface_link_state(
-        &state.libvirt,
-        &vm_id,
-        &mac_address,
-    )
-    .map_err(|e| e.to_string())
+    let operation = state
+        .resolve_operation(OperationKind::Query, Some(vm_target(&vm_id)))
+        .map_err(SafeFailure::from)?;
+    VmService::get_interface_link_state(&operation.connection, &vm_id, &mac_address)
+        .map_err(SafeFailure::from)
+        .map_err(|failure| failure.with_context(&operation.context))
 }
 
 #[derive(Serialize)]
@@ -733,7 +1041,7 @@ pub struct BatchOperationResult {
     vm_id: String,
     vm_name: String,
     success: bool,
-    error: Option<String>,
+    error: Option<SafeFailure>,
 }
 
 /// Start multiple VMs in batch
@@ -742,20 +1050,23 @@ pub async fn batch_start_vms(
     app: AppHandle,
     state: State<'_, AppState>,
     vm_ids: Vec<String>,
-) -> Result<Vec<BatchOperationResult>, String> {
+) -> Result<Vec<BatchOperationResult>, SafeFailure> {
     tracing::info!("batch_start_vms command called for {} VMs", vm_ids.len());
 
+    let operation = state
+        .resolve_operation(OperationKind::Mutation, None)
+        .map_err(SafeFailure::from)?;
     let mut results = Vec::new();
 
     for vm_id in vm_ids {
-        let vm = match VmService::get_vm(&state.libvirt, &vm_id) {
+        let vm = match VmService::get_vm(&operation.connection, &vm_id) {
             Ok(v) => v,
             Err(e) => {
                 results.push(BatchOperationResult {
                     vm_id: vm_id.clone(),
                     vm_name: "Unknown".to_string(),
                     success: false,
-                    error: Some(e.to_string()),
+                    error: Some(SafeFailure::from(e).with_context(&operation.context)),
                 });
                 continue;
             }
@@ -764,15 +1075,18 @@ pub async fn batch_start_vms(
         let old_state = vm.state.clone();
         let vm_name = vm.name.clone();
 
-        let result = match VmService::start_vm(&state.libvirt, &vm_id) {
+        let result = match VmService::start_vm(&operation.connection, &vm_id) {
             Ok(_) => {
-                let _ = app.emit("vm-state-changed", VmStateChangedPayload {
-                    vm_id: vm_id.clone(),
-                    vm_name: vm_name.clone(),
-                    old_state,
-                    new_state: VmState::Running,
-                    timestamp: chrono::Utc::now().timestamp_millis(),
-                });
+                let _ = app.emit(
+                    "vm-state-changed",
+                    VmStateChangedPayload {
+                        vm_id: vm_id.clone(),
+                        vm_name: vm_name.clone(),
+                        old_state,
+                        new_state: VmState::Running,
+                        timestamp: chrono::Utc::now().timestamp_millis(),
+                    },
+                );
 
                 BatchOperationResult {
                     vm_id: vm_id.clone(),
@@ -785,7 +1099,7 @@ pub async fn batch_start_vms(
                 vm_id: vm_id.clone(),
                 vm_name,
                 success: false,
-                error: Some(e.to_string()),
+                error: Some(SafeFailure::from(e).with_context(&operation.context)),
             },
         };
 
@@ -802,20 +1116,27 @@ pub async fn batch_stop_vms(
     state: State<'_, AppState>,
     vm_ids: Vec<String>,
     force: bool,
-) -> Result<Vec<BatchOperationResult>, String> {
-    tracing::info!("batch_stop_vms command called for {} VMs (force: {})", vm_ids.len(), force);
+) -> Result<Vec<BatchOperationResult>, SafeFailure> {
+    tracing::info!(
+        "batch_stop_vms command called for {} VMs (force: {})",
+        vm_ids.len(),
+        force
+    );
 
+    let operation = state
+        .resolve_operation(OperationKind::Mutation, None)
+        .map_err(SafeFailure::from)?;
     let mut results = Vec::new();
 
     for vm_id in vm_ids {
-        let vm = match VmService::get_vm(&state.libvirt, &vm_id) {
+        let vm = match VmService::get_vm(&operation.connection, &vm_id) {
             Ok(v) => v,
             Err(e) => {
                 results.push(BatchOperationResult {
                     vm_id: vm_id.clone(),
                     vm_name: "Unknown".to_string(),
                     success: false,
-                    error: Some(e.to_string()),
+                    error: Some(SafeFailure::from(e).with_context(&operation.context)),
                 });
                 continue;
             }
@@ -825,15 +1146,18 @@ pub async fn batch_stop_vms(
         let vm_name = vm.name.clone();
 
         let result = if force {
-            match VmService::force_stop_vm(&state.libvirt, &vm_id) {
+            match VmService::force_stop_vm(&operation.connection, &vm_id) {
                 Ok(_) => {
-                    let _ = app.emit("vm-state-changed", VmStateChangedPayload {
-                        vm_id: vm_id.clone(),
-                        vm_name: vm_name.clone(),
-                        old_state,
-                        new_state: VmState::Stopped,
-                        timestamp: chrono::Utc::now().timestamp_millis(),
-                    });
+                    let _ = app.emit(
+                        "vm-state-changed",
+                        VmStateChangedPayload {
+                            vm_id: vm_id.clone(),
+                            vm_name: vm_name.clone(),
+                            old_state,
+                            new_state: VmState::Stopped,
+                            timestamp: chrono::Utc::now().timestamp_millis(),
+                        },
+                    );
 
                     BatchOperationResult {
                         vm_id: vm_id.clone(),
@@ -846,19 +1170,22 @@ pub async fn batch_stop_vms(
                     vm_id: vm_id.clone(),
                     vm_name,
                     success: false,
-                    error: Some(e.to_string()),
+                    error: Some(SafeFailure::from(e).with_context(&operation.context)),
                 },
             }
         } else {
-            match VmService::stop_vm(&state.libvirt, &vm_id) {
+            match VmService::stop_vm(&operation.connection, &vm_id) {
                 Ok(_) => {
-                    let _ = app.emit("vm-state-changed", VmStateChangedPayload {
-                        vm_id: vm_id.clone(),
-                        vm_name: vm_name.clone(),
-                        old_state,
-                        new_state: VmState::Stopped,
-                        timestamp: chrono::Utc::now().timestamp_millis(),
-                    });
+                    let _ = app.emit(
+                        "vm-state-changed",
+                        VmStateChangedPayload {
+                            vm_id: vm_id.clone(),
+                            vm_name: vm_name.clone(),
+                            old_state,
+                            new_state: VmState::Stopped,
+                            timestamp: chrono::Utc::now().timestamp_millis(),
+                        },
+                    );
 
                     BatchOperationResult {
                         vm_id: vm_id.clone(),
@@ -871,7 +1198,7 @@ pub async fn batch_stop_vms(
                     vm_id: vm_id.clone(),
                     vm_name,
                     success: false,
-                    error: Some(e.to_string()),
+                    error: Some(SafeFailure::from(e).with_context(&operation.context)),
                 },
             }
         };
@@ -888,20 +1215,23 @@ pub async fn batch_reboot_vms(
     app: AppHandle,
     state: State<'_, AppState>,
     vm_ids: Vec<String>,
-) -> Result<Vec<BatchOperationResult>, String> {
+) -> Result<Vec<BatchOperationResult>, SafeFailure> {
     tracing::info!("batch_reboot_vms command called for {} VMs", vm_ids.len());
 
+    let operation = state
+        .resolve_operation(OperationKind::Mutation, None)
+        .map_err(SafeFailure::from)?;
     let mut results = Vec::new();
 
     for vm_id in vm_ids {
-        let vm = match VmService::get_vm(&state.libvirt, &vm_id) {
+        let vm = match VmService::get_vm(&operation.connection, &vm_id) {
             Ok(v) => v,
             Err(e) => {
                 results.push(BatchOperationResult {
                     vm_id: vm_id.clone(),
                     vm_name: "Unknown".to_string(),
                     success: false,
-                    error: Some(e.to_string()),
+                    error: Some(SafeFailure::from(e).with_context(&operation.context)),
                 });
                 continue;
             }
@@ -909,13 +1239,16 @@ pub async fn batch_reboot_vms(
 
         let vm_name = vm.name.clone();
 
-        let result = match VmService::reboot_vm(&state.libvirt, &vm_id) {
+        let result = match VmService::reboot_vm(&operation.connection, &vm_id) {
             Ok(_) => {
-                let _ = app.emit("vm-rebooted", serde_json::json!({
-                    "vmId": vm_id.clone(),
-                    "vmName": vm_name.clone(),
-                    "timestamp": chrono::Utc::now().timestamp_millis(),
-                }));
+                let _ = app.emit(
+                    "vm-rebooted",
+                    serde_json::json!({
+                        "vmId": vm_id.clone(),
+                        "vmName": vm_name.clone(),
+                        "timestamp": chrono::Utc::now().timestamp_millis(),
+                    }),
+                );
 
                 BatchOperationResult {
                     vm_id: vm_id.clone(),
@@ -928,7 +1261,7 @@ pub async fn batch_reboot_vms(
                 vm_id: vm_id.clone(),
                 vm_name,
                 success: false,
-                error: Some(e.to_string()),
+                error: Some(SafeFailure::from(e).with_context(&operation.context)),
             },
         };
 
@@ -945,30 +1278,54 @@ pub async fn mount_iso(
     state: State<'_, AppState>,
     vm_id: String,
     iso_path: String,
-) -> Result<(), String> {
-    tracing::info!("mount_iso command called for VM: {} with ISO: {}", vm_id, iso_path);
+    confirmation_token: String,
+) -> Result<(), SafeFailure> {
+    tracing::info!("mount_iso command called for VM: {}", vm_id);
 
-    VmService::mount_cd_iso(&state.libvirt, &vm_id, &iso_path)
-        .map_err(|e| e.to_string())
+    crate::commands::confirmation::require_destructive_confirmation(
+        &state,
+        &confirmation_token,
+        "mount_iso",
+        "vm",
+        &vm_id,
+        None,
+        "mount-iso",
+    )
+    .map_err(SafeFailure::from)?;
+
+    let operation = state
+        .resolve_host_local_operation(Some(vm_target(&vm_id)))
+        .map_err(SafeFailure::from)?;
+    VmService::mount_cd_iso(&operation.connection, &vm_id, &iso_path)
+        .map_err(SafeFailure::from)
+        .map_err(|failure| failure.with_context(&operation.context))
 }
 
 #[tauri::command]
 pub async fn mount_guest_agent_iso(
     state: State<'_, AppState>,
     vm_id: String,
-) -> Result<(), String> {
+) -> Result<(), SafeFailure> {
     tracing::info!("mount_guest_agent_iso command called for VM: {}", vm_id);
 
+    let operation = state
+        .resolve_host_local_operation(Some(vm_target(&vm_id)))
+        .map_err(SafeFailure::from)?;
     // First, try to add the KVM Manager agent channel if it doesn't exist
     // This is a best-effort attempt - the VM might need to be stopped first
-    match VmService::attach_channel(&state.libvirt, &vm_id, "kvmmanager-agent") {
+    match VmService::attach_channel(&operation.connection, &vm_id, "kvmmanager-agent") {
         Ok(_) => tracing::info!("Added KVM Manager agent channel to VM {}", vm_id),
-        Err(e) => tracing::debug!("Could not add agent channel (may already exist): {}", e),
+        Err(_) => tracing::debug!("VM agent channel was not added"),
     }
 
     // Mount the ISO
-    VmService::mount_cd_iso(&state.libvirt, &vm_id, "/var/lib/libvirt/images/kvmmanager-guest-agent.iso")
-        .map_err(|e| e.to_string())
+    VmService::mount_cd_iso(
+        &operation.connection,
+        &vm_id,
+        "/var/lib/libvirt/images/kvmmanager-guest-agent.iso",
+    )
+    .map_err(SafeFailure::from)
+    .map_err(|failure| failure.with_context(&operation.context))
 }
 
 /// Unmount (eject) ISO from a VM
@@ -976,11 +1333,26 @@ pub async fn mount_guest_agent_iso(
 pub async fn eject_cdrom(
     state: State<'_, AppState>,
     vm_id: String,
-) -> Result<(), String> {
+    confirmation_token: String,
+) -> Result<(), SafeFailure> {
     tracing::info!("eject_cdrom command called for VM: {}", vm_id);
 
-    VmService::eject_cd(&state.libvirt, &vm_id)
-        .map_err(|e| e.to_string())
+    crate::commands::confirmation::require_destructive_confirmation(
+        &state,
+        &confirmation_token,
+        "eject_cdrom",
+        "vm",
+        &vm_id,
+        None,
+        "eject-cdrom",
+    )
+    .map_err(SafeFailure::from)?;
+    let operation = state
+        .resolve_operation(OperationKind::Mutation, Some(vm_target(&vm_id)))
+        .map_err(SafeFailure::from)?;
+    VmService::eject_cd(&operation.connection, &vm_id)
+        .map_err(SafeFailure::from)
+        .map_err(|failure| failure.with_context(&operation.context))
 }
 
 /// Update VM boot order
@@ -989,11 +1361,19 @@ pub async fn update_vm_boot_order(
     state: State<'_, AppState>,
     vm_id: String,
     boot_order: Vec<String>,
-) -> Result<(), String> {
-    tracing::info!("update_vm_boot_order command called for VM: {} with order: {:?}", vm_id, boot_order);
+) -> Result<(), SafeFailure> {
+    tracing::info!(
+        "update_vm_boot_order command called for VM: {} with order: {:?}",
+        vm_id,
+        boot_order
+    );
 
-    VmService::update_boot_order(&state.libvirt, &vm_id, boot_order)
-        .map_err(|e| e.to_string())
+    let operation = state
+        .resolve_operation(OperationKind::Mutation, Some(vm_target(&vm_id)))
+        .map_err(SafeFailure::from)?;
+    VmService::update_boot_order(&operation.connection, &vm_id, boot_order)
+        .map_err(SafeFailure::from)
+        .map_err(|failure| failure.with_context(&operation.context))
 }
 
 /// Rename a VM
@@ -1003,18 +1383,29 @@ pub async fn rename_vm(
     state: State<'_, AppState>,
     vm_id: String,
     new_name: String,
-) -> Result<(), String> {
-    tracing::info!("rename_vm command called for VM: {} to new name: {}", vm_id, new_name);
+) -> Result<(), SafeFailure> {
+    tracing::info!(
+        "rename_vm command called for VM: {} to new name: {}",
+        vm_id,
+        new_name
+    );
 
-    VmService::rename_vm(&state.libvirt, &vm_id, &new_name)
-        .map_err(|e| e.to_string())?;
+    let operation = state
+        .resolve_operation(OperationKind::Mutation, Some(vm_target(&vm_id)))
+        .map_err(SafeFailure::from)?;
+    VmService::rename_vm(&operation.connection, &vm_id, &new_name)
+        .map_err(SafeFailure::from)
+        .map_err(|failure| failure.with_context(&operation.context))?;
 
     // Emit event
-    let _ = app.emit("vm-renamed", serde_json::json!({
-        "vmId": vm_id,
-        "newName": new_name,
-        "timestamp": chrono::Utc::now().timestamp_millis(),
-    }));
+    let _ = app.emit(
+        "vm-renamed",
+        serde_json::json!({
+            "vmId": vm_id,
+            "newName": new_name,
+            "timestamp": chrono::Utc::now().timestamp_millis(),
+        }),
+    );
 
     Ok(())
 }
@@ -1024,11 +1415,15 @@ pub async fn rename_vm(
 pub async fn get_vm_autostart(
     state: State<'_, AppState>,
     vm_id: String,
-) -> Result<bool, String> {
+) -> Result<bool, SafeFailure> {
     tracing::debug!("get_vm_autostart command called for VM: {}", vm_id);
 
-    VmService::get_vm_autostart(&state.libvirt, &vm_id)
-        .map_err(|e| e.to_string())
+    let operation = state
+        .resolve_operation(OperationKind::Query, Some(vm_target(&vm_id)))
+        .map_err(SafeFailure::from)?;
+    VmService::get_vm_autostart(&operation.connection, &vm_id)
+        .map_err(SafeFailure::from)
+        .map_err(|failure| failure.with_context(&operation.context))
 }
 
 /// Set VM autostart status
@@ -1037,11 +1432,19 @@ pub async fn set_vm_autostart(
     state: State<'_, AppState>,
     vm_id: String,
     enable: bool,
-) -> Result<(), String> {
-    tracing::info!("set_vm_autostart command called for VM: {} to {}", vm_id, enable);
+) -> Result<(), SafeFailure> {
+    tracing::info!(
+        "set_vm_autostart command called for VM: {} to {}",
+        vm_id,
+        enable
+    );
 
-    VmService::set_vm_autostart(&state.libvirt, &vm_id, enable)
-        .map_err(|e| e.to_string())
+    let operation = state
+        .resolve_operation(OperationKind::Mutation, Some(vm_target(&vm_id)))
+        .map_err(SafeFailure::from)?;
+    VmService::set_vm_autostart(&operation.connection, &vm_id, enable)
+        .map_err(SafeFailure::from)
+        .map_err(|failure| failure.with_context(&operation.context))
 }
 
 /// Attach a network interface to a VM
@@ -1052,15 +1455,30 @@ pub async fn attach_interface(
     network: String,
     model: String,
     mac_address: Option<String>,
-) -> Result<String, String> {
-    tracing::info!("attach_interface command called for VM: {} on network: {}", vm_id, network);
+) -> Result<String, SafeFailure> {
+    tracing::info!(
+        "attach_interface command called for VM: {} on network: {}",
+        vm_id,
+        network
+    );
 
-    VmService::attach_interface(&state.libvirt, &vm_id, &network, &model, mac_address.as_deref())
-        .map_err(|e| e.to_string())
+    let operation = state
+        .resolve_operation(OperationKind::Mutation, Some(vm_target(&vm_id)))
+        .map_err(SafeFailure::from)?;
+    VmService::attach_interface(
+        &operation.connection,
+        &vm_id,
+        &network,
+        &model,
+        mac_address.as_deref(),
+    )
+    .map_err(SafeFailure::from)
+    .map_err(|failure| failure.with_context(&operation.context))
 }
 
 /// Attach a network interface with advanced options (macvtap, bridge, OVS)
 #[tauri::command]
+#[allow(clippy::too_many_arguments)] // Tauri IPC preserves the existing field-level client contract.
 pub async fn attach_interface_advanced(
     state: State<'_, AppState>,
     vm_id: String,
@@ -1072,11 +1490,19 @@ pub async fn attach_interface_advanced(
     vlan_id: Option<u16>,
     portgroup: Option<String>,
     mtu: Option<u32>,
-) -> Result<String, String> {
-    tracing::info!("attach_interface_advanced command called for VM: {} type: {} source: {}", vm_id, interface_type, source);
+) -> Result<String, SafeFailure> {
+    tracing::info!(
+        "attach_interface_advanced command called for VM: {} type: {} source: {}",
+        vm_id,
+        interface_type,
+        source
+    );
 
+    let operation = state
+        .resolve_operation(OperationKind::Mutation, Some(vm_target(&vm_id)))
+        .map_err(SafeFailure::from)?;
     VmService::attach_interface_advanced(
-        &state.libvirt,
+        &operation.connection,
         &vm_id,
         &interface_type,
         &source,
@@ -1087,14 +1513,16 @@ pub async fn attach_interface_advanced(
         portgroup.as_deref(),
         mtu,
     )
-    .map_err(|e| e.to_string())
+    .map_err(SafeFailure::from)
+    .map_err(|failure| failure.with_context(&operation.context))
 }
 
 /// List host network interfaces available for macvtap/direct attachment
 #[tauri::command]
-pub async fn list_host_interfaces() -> Result<Vec<crate::models::vm::HostNetworkInterface>, String> {
+pub async fn list_host_interfaces(
+) -> Result<Vec<crate::models::vm::HostNetworkInterface>, SafeFailure> {
     tracing::debug!("list_host_interfaces command called");
-    VmService::list_host_interfaces().map_err(|e| e.to_string())
+    VmService::list_host_interfaces().map_err(SafeFailure::from)
 }
 
 /// Detach a network interface from a VM by MAC address
@@ -1103,11 +1531,31 @@ pub async fn detach_interface(
     state: State<'_, AppState>,
     vm_id: String,
     mac_address: String,
-) -> Result<(), String> {
-    tracing::info!("detach_interface command called for VM: {} MAC: {}", vm_id, mac_address);
+    confirmation_token: String,
+) -> Result<(), SafeFailure> {
+    tracing::info!(
+        "detach_interface command called for VM: {} MAC: {}",
+        vm_id,
+        mac_address
+    );
 
-    VmService::detach_interface(&state.libvirt, &vm_id, &mac_address)
-        .map_err(|e| e.to_string())
+    let stable_id = format!("{vm_id}/{mac_address}");
+    crate::commands::confirmation::require_destructive_confirmation(
+        &state,
+        &confirmation_token,
+        "detach_interface",
+        "interface",
+        &stable_id,
+        None,
+        "detach",
+    )
+    .map_err(SafeFailure::from)?;
+    let operation = state
+        .resolve_operation(OperationKind::Mutation, Some(vm_target(&vm_id)))
+        .map_err(SafeFailure::from)?;
+    VmService::detach_interface(&operation.connection, &vm_id, &mac_address)
+        .map_err(SafeFailure::from)
+        .map_err(|failure| failure.with_context(&operation.context))
 }
 
 /// Attach a sound device to a VM
@@ -1116,11 +1564,19 @@ pub async fn attach_sound(
     state: State<'_, AppState>,
     vm_id: String,
     model: String,
-) -> Result<(), String> {
-    tracing::info!("attach_sound command called for VM: {} model: {}", vm_id, model);
+) -> Result<(), SafeFailure> {
+    tracing::info!(
+        "attach_sound command called for VM: {} model: {}",
+        vm_id,
+        model
+    );
 
-    VmService::attach_sound(&state.libvirt, &vm_id, &model)
-        .map_err(|e| e.to_string())
+    let operation = state
+        .resolve_operation(OperationKind::Mutation, Some(vm_target(&vm_id)))
+        .map_err(SafeFailure::from)?;
+    VmService::attach_sound(&operation.connection, &vm_id, &model)
+        .map_err(SafeFailure::from)
+        .map_err(|failure| failure.with_context(&operation.context))
 }
 
 /// Detach a sound device from a VM
@@ -1128,11 +1584,26 @@ pub async fn attach_sound(
 pub async fn detach_sound(
     state: State<'_, AppState>,
     vm_id: String,
-) -> Result<(), String> {
+    confirmation_token: String,
+) -> Result<(), SafeFailure> {
     tracing::info!("detach_sound command called for VM: {}", vm_id);
 
-    VmService::detach_sound(&state.libvirt, &vm_id)
-        .map_err(|e| e.to_string())
+    crate::commands::confirmation::require_destructive_confirmation(
+        &state,
+        &confirmation_token,
+        "detach_sound",
+        "sound_device",
+        &vm_id,
+        None,
+        "detach",
+    )
+    .map_err(SafeFailure::from)?;
+    let operation = state
+        .resolve_operation(OperationKind::Mutation, Some(vm_target(&vm_id)))
+        .map_err(SafeFailure::from)?;
+    VmService::detach_sound(&operation.connection, &vm_id)
+        .map_err(SafeFailure::from)
+        .map_err(|failure| failure.with_context(&operation.context))
 }
 
 /// Attach an input device to a VM
@@ -1142,11 +1613,20 @@ pub async fn attach_input(
     vm_id: String,
     device_type: String,
     bus: String,
-) -> Result<(), String> {
-    tracing::info!("attach_input command called for VM: {} type: {} bus: {}", vm_id, device_type, bus);
+) -> Result<(), SafeFailure> {
+    tracing::info!(
+        "attach_input command called for VM: {} type: {} bus: {}",
+        vm_id,
+        device_type,
+        bus
+    );
 
-    VmService::attach_input(&state.libvirt, &vm_id, &device_type, &bus)
-        .map_err(|e| e.to_string())
+    let operation = state
+        .resolve_operation(OperationKind::Mutation, Some(vm_target(&vm_id)))
+        .map_err(SafeFailure::from)?;
+    VmService::attach_input(&operation.connection, &vm_id, &device_type, &bus)
+        .map_err(SafeFailure::from)
+        .map_err(|failure| failure.with_context(&operation.context))
 }
 
 /// Attach an RNG device to a VM
@@ -1155,11 +1635,19 @@ pub async fn attach_rng(
     state: State<'_, AppState>,
     vm_id: String,
     backend: String,
-) -> Result<(), String> {
-    tracing::info!("attach_rng command called for VM: {} backend: {}", vm_id, backend);
+) -> Result<(), SafeFailure> {
+    tracing::info!(
+        "attach_rng command called for VM: {} backend: {}",
+        vm_id,
+        backend
+    );
 
-    VmService::attach_rng(&state.libvirt, &vm_id, &backend)
-        .map_err(|e| e.to_string())
+    let operation = state
+        .resolve_operation(OperationKind::Mutation, Some(vm_target(&vm_id)))
+        .map_err(SafeFailure::from)?;
+    VmService::attach_rng(&operation.connection, &vm_id, &backend)
+        .map_err(SafeFailure::from)
+        .map_err(|failure| failure.with_context(&operation.context))
 }
 
 /// Attach a watchdog device to a VM
@@ -1169,11 +1657,20 @@ pub async fn attach_watchdog(
     vm_id: String,
     model: String,
     action: String,
-) -> Result<(), String> {
-    tracing::info!("attach_watchdog command called for VM: {} model: {} action: {}", vm_id, model, action);
+) -> Result<(), SafeFailure> {
+    tracing::info!(
+        "attach_watchdog command called for VM: {} model: {} action: {}",
+        vm_id,
+        model,
+        action
+    );
 
-    VmService::attach_watchdog(&state.libvirt, &vm_id, &model, &action)
-        .map_err(|e| e.to_string())
+    let operation = state
+        .resolve_operation(OperationKind::Mutation, Some(vm_target(&vm_id)))
+        .map_err(SafeFailure::from)?;
+    VmService::attach_watchdog(&operation.connection, &vm_id, &model, &action)
+        .map_err(SafeFailure::from)
+        .map_err(|failure| failure.with_context(&operation.context))
 }
 
 /// Attach a channel device to a VM (QEMU Guest Agent or Spice)
@@ -1182,11 +1679,19 @@ pub async fn attach_channel(
     state: State<'_, AppState>,
     vm_id: String,
     channel_type: String,
-) -> Result<(), String> {
-    tracing::info!("attach_channel command called for VM: {} type: {}", vm_id, channel_type);
+) -> Result<(), SafeFailure> {
+    tracing::info!(
+        "attach_channel command called for VM: {} type: {}",
+        vm_id,
+        channel_type
+    );
 
-    VmService::attach_channel(&state.libvirt, &vm_id, &channel_type)
-        .map_err(|e| e.to_string())
+    let operation = state
+        .resolve_operation(OperationKind::Mutation, Some(vm_target(&vm_id)))
+        .map_err(SafeFailure::from)?;
+    VmService::attach_channel(&operation.connection, &vm_id, &channel_type)
+        .map_err(SafeFailure::from)
+        .map_err(|failure| failure.with_context(&operation.context))
 }
 
 /// Attach a filesystem share to a VM
@@ -1198,12 +1703,22 @@ pub async fn attach_filesystem(
     target_mount: String,
     fs_type: String,
     readonly: bool,
-) -> Result<(), String> {
-    tracing::info!("attach_filesystem command called for VM: {} path: {} -> {}",
-        vm_id, source_path, target_mount);
+) -> Result<(), SafeFailure> {
+    tracing::info!("attach_filesystem command called for VM: {}", vm_id);
 
-    VmService::attach_filesystem(&state.libvirt, &vm_id, &source_path, &target_mount, &fs_type, readonly)
-        .map_err(|e| e.to_string())
+    let operation = state
+        .resolve_host_local_operation(Some(vm_target(&vm_id)))
+        .map_err(SafeFailure::from)?;
+    VmService::attach_filesystem(
+        &operation.connection,
+        &vm_id,
+        &source_path,
+        &target_mount,
+        &fs_type,
+        readonly,
+    )
+    .map_err(SafeFailure::from)
+    .map_err(|failure| failure.with_context(&operation.context))
 }
 
 /// Attach a graphics device to a VM (VNC or Spice)
@@ -1214,17 +1729,25 @@ pub async fn attach_graphics(
     graphics_type: String,
     listen_address: Option<String>,
     port: Option<i32>,
-) -> Result<(), String> {
-    tracing::info!("attach_graphics command called for VM: {} type: {}", vm_id, graphics_type);
+) -> Result<(), SafeFailure> {
+    tracing::info!(
+        "attach_graphics command called for VM: {} type: {}",
+        vm_id,
+        graphics_type
+    );
 
+    let operation = state
+        .resolve_operation(OperationKind::Mutation, Some(vm_target(&vm_id)))
+        .map_err(SafeFailure::from)?;
     VmService::attach_graphics(
-        &state.libvirt,
+        &operation.connection,
         &vm_id,
         &graphics_type,
         listen_address.as_deref(),
         port,
     )
-    .map_err(|e| e.to_string())
+    .map_err(SafeFailure::from)
+    .map_err(|failure| failure.with_context(&operation.context))
 }
 
 /// Attach a video device to a VM
@@ -1236,18 +1759,26 @@ pub async fn attach_video(
     vram: Option<u32>,
     heads: Option<u32>,
     acceleration_3d: Option<bool>,
-) -> Result<(), String> {
-    tracing::info!("attach_video command called for VM: {} model: {}", vm_id, model);
+) -> Result<(), SafeFailure> {
+    tracing::info!(
+        "attach_video command called for VM: {} model: {}",
+        vm_id,
+        model
+    );
 
+    let operation = state
+        .resolve_operation(OperationKind::Mutation, Some(vm_target(&vm_id)))
+        .map_err(SafeFailure::from)?;
     VmService::attach_video(
-        &state.libvirt,
+        &operation.connection,
         &vm_id,
         &model,
         vram,
         heads,
         acceleration_3d.unwrap_or(false),
     )
-    .map_err(|e| e.to_string())
+    .map_err(SafeFailure::from)
+    .map_err(|failure| failure.with_context(&operation.context))
 }
 
 /// Set VM vCPU count
@@ -1256,11 +1787,19 @@ pub async fn set_vm_vcpus(
     state: State<'_, AppState>,
     vm_id: String,
     vcpus: u32,
-) -> Result<(), String> {
-    tracing::info!("set_vm_vcpus command called for VM: {} vcpus: {}", vm_id, vcpus);
+) -> Result<(), SafeFailure> {
+    tracing::info!(
+        "set_vm_vcpus command called for VM: {} vcpus: {}",
+        vm_id,
+        vcpus
+    );
 
-    VmService::set_vcpus(&state.libvirt, &vm_id, vcpus)
-        .map_err(|e| e.to_string())
+    let operation = state
+        .resolve_operation(OperationKind::Mutation, Some(vm_target(&vm_id)))
+        .map_err(SafeFailure::from)?;
+    VmService::set_vcpus(&operation.connection, &vm_id, vcpus)
+        .map_err(SafeFailure::from)
+        .map_err(|failure| failure.with_context(&operation.context))
 }
 
 /// Set VM memory allocation
@@ -1269,11 +1808,19 @@ pub async fn set_vm_memory(
     state: State<'_, AppState>,
     vm_id: String,
     memory_mb: u64,
-) -> Result<(), String> {
-    tracing::info!("set_vm_memory command called for VM: {} memory_mb: {}", vm_id, memory_mb);
+) -> Result<(), SafeFailure> {
+    tracing::info!(
+        "set_vm_memory command called for VM: {} memory_mb: {}",
+        vm_id,
+        memory_mb
+    );
 
-    VmService::set_memory(&state.libvirt, &vm_id, memory_mb)
-        .map_err(|e| e.to_string())
+    let operation = state
+        .resolve_operation(OperationKind::Mutation, Some(vm_target(&vm_id)))
+        .map_err(SafeFailure::from)?;
+    VmService::set_memory(&operation.connection, &vm_id, memory_mb)
+        .map_err(SafeFailure::from)
+        .map_err(|failure| failure.with_context(&operation.context))
 }
 
 /// Set VM CPU topology (sockets, cores, threads)
@@ -1284,12 +1831,21 @@ pub async fn set_vm_cpu_topology(
     sockets: u32,
     cores: u32,
     threads: u32,
-) -> Result<(), String> {
-    tracing::info!("set_vm_cpu_topology command called for VM: {} topology: {}s/{}c/{}t",
-        vm_id, sockets, cores, threads);
+) -> Result<(), SafeFailure> {
+    tracing::info!(
+        "set_vm_cpu_topology command called for VM: {} topology: {}s/{}c/{}t",
+        vm_id,
+        sockets,
+        cores,
+        threads
+    );
 
-    VmService::set_cpu_topology(&state.libvirt, &vm_id, sockets, cores, threads)
-        .map_err(|e| e.to_string())
+    let operation = state
+        .resolve_operation(OperationKind::Mutation, Some(vm_target(&vm_id)))
+        .map_err(SafeFailure::from)?;
+    VmService::set_cpu_topology(&operation.connection, &vm_id, sockets, cores, threads)
+        .map_err(SafeFailure::from)
+        .map_err(|failure| failure.with_context(&operation.context))
 }
 
 /// Get CPU model configuration for a VM
@@ -1297,11 +1853,15 @@ pub async fn set_vm_cpu_topology(
 pub async fn get_cpu_model(
     state: State<'_, AppState>,
     vm_id: String,
-) -> Result<CpuModelConfig, String> {
+) -> Result<CpuModelConfig, SafeFailure> {
     tracing::info!("get_cpu_model command called for VM: {}", vm_id);
 
-    VmService::get_cpu_model(&state.libvirt, &vm_id)
-        .map_err(|e| e.to_string())
+    let operation = state
+        .resolve_operation(OperationKind::Query, Some(vm_target(&vm_id)))
+        .map_err(SafeFailure::from)?;
+    VmService::get_cpu_model(&operation.connection, &vm_id)
+        .map_err(SafeFailure::from)
+        .map_err(|failure| failure.with_context(&operation.context))
 }
 
 /// Set CPU model for a VM
@@ -1311,22 +1871,33 @@ pub async fn set_cpu_model(
     vm_id: String,
     mode: String,
     model: Option<String>,
-) -> Result<(), String> {
-    tracing::info!("set_cpu_model command called for VM: {} mode: {} model: {:?}", vm_id, mode, model);
+) -> Result<(), SafeFailure> {
+    tracing::info!(
+        "set_cpu_model command called for VM: {} mode: {} model: {:?}",
+        vm_id,
+        mode,
+        model
+    );
 
-    VmService::set_cpu_model(&state.libvirt, &vm_id, &mode, model.as_deref())
-        .map_err(|e| e.to_string())
+    let operation = state
+        .resolve_operation(OperationKind::Mutation, Some(vm_target(&vm_id)))
+        .map_err(SafeFailure::from)?;
+    VmService::set_cpu_model(&operation.connection, &vm_id, &mode, model.as_deref())
+        .map_err(SafeFailure::from)
+        .map_err(|failure| failure.with_context(&operation.context))
 }
 
 /// Get available CPU models from libvirt
 #[tauri::command]
 pub async fn get_available_cpu_models(
     state: State<'_, AppState>,
-) -> Result<Vec<String>, String> {
+) -> Result<Vec<String>, SafeFailure> {
     tracing::info!("get_available_cpu_models command called");
 
-    VmService::get_available_cpu_models(&state.libvirt)
-        .map_err(|e| e.to_string())
+    let operation = state
+        .resolve_host_local_operation(None)
+        .map_err(SafeFailure::from)?;
+    VmService::get_available_cpu_models(&operation.connection).map_err(SafeFailure::from)
 }
 
 /// Get CPU pinning configuration for a VM
@@ -1334,11 +1905,15 @@ pub async fn get_available_cpu_models(
 pub async fn get_cpu_pinning(
     state: State<'_, AppState>,
     vm_id: String,
-) -> Result<Vec<(u32, Vec<u32>)>, String> {
+) -> Result<Vec<(u32, Vec<u32>)>, SafeFailure> {
     tracing::info!("get_cpu_pinning command called for VM: {}", vm_id);
 
-    VmService::get_cpu_pinning(&state.libvirt, &vm_id)
-        .map_err(|e| e.to_string())
+    let operation = state
+        .resolve_operation(OperationKind::Query, Some(vm_target(&vm_id)))
+        .map_err(SafeFailure::from)?;
+    VmService::get_cpu_pinning(&operation.connection, &vm_id)
+        .map_err(SafeFailure::from)
+        .map_err(|failure| failure.with_context(&operation.context))
 }
 
 /// Set CPU pinning for a specific vCPU
@@ -1348,11 +1923,20 @@ pub async fn set_cpu_pin(
     vm_id: String,
     vcpu: u32,
     host_cpus: Vec<u32>,
-) -> Result<(), String> {
-    tracing::info!("set_cpu_pin command called for VM: {} vCPU: {} -> CPUs: {:?}", vm_id, vcpu, host_cpus);
+) -> Result<(), SafeFailure> {
+    tracing::info!(
+        "set_cpu_pin command called for VM: {} vCPU: {} -> CPUs: {:?}",
+        vm_id,
+        vcpu,
+        host_cpus
+    );
 
-    VmService::set_cpu_pin(&state.libvirt, &vm_id, vcpu, host_cpus)
-        .map_err(|e| e.to_string())
+    let operation = state
+        .resolve_operation(OperationKind::Mutation, Some(vm_target(&vm_id)))
+        .map_err(SafeFailure::from)?;
+    VmService::set_cpu_pin(&operation.connection, &vm_id, vcpu, host_cpus)
+        .map_err(SafeFailure::from)
+        .map_err(|failure| failure.with_context(&operation.context))
 }
 
 /// Clear CPU pinning for a specific vCPU
@@ -1361,11 +1945,19 @@ pub async fn clear_cpu_pin(
     state: State<'_, AppState>,
     vm_id: String,
     vcpu: u32,
-) -> Result<(), String> {
-    tracing::info!("clear_cpu_pin command called for VM: {} vCPU: {}", vm_id, vcpu);
+) -> Result<(), SafeFailure> {
+    tracing::info!(
+        "clear_cpu_pin command called for VM: {} vCPU: {}",
+        vm_id,
+        vcpu
+    );
 
-    VmService::clear_cpu_pin(&state.libvirt, &vm_id, vcpu)
-        .map_err(|e| e.to_string())
+    let operation = state
+        .resolve_operation(OperationKind::Mutation, Some(vm_target(&vm_id)))
+        .map_err(SafeFailure::from)?;
+    VmService::clear_cpu_pin(&operation.connection, &vm_id, vcpu)
+        .map_err(SafeFailure::from)
+        .map_err(|failure| failure.with_context(&operation.context))
 }
 
 /// Attach a serial port to a VM
@@ -1375,11 +1967,20 @@ pub async fn attach_serial(
     vm_id: String,
     port_type: String,
     target_port: u32,
-) -> Result<(), String> {
-    tracing::info!("attach_serial command called for VM: {} type: {} port: {}", vm_id, port_type, target_port);
+) -> Result<(), SafeFailure> {
+    tracing::info!(
+        "attach_serial command called for VM: {} type: {} port: {}",
+        vm_id,
+        port_type,
+        target_port
+    );
 
-    VmService::attach_serial(&state.libvirt, &vm_id, &port_type, target_port)
-        .map_err(|e| e.to_string())
+    let operation = state
+        .resolve_operation(OperationKind::Mutation, Some(vm_target(&vm_id)))
+        .map_err(SafeFailure::from)?;
+    VmService::attach_serial(&operation.connection, &vm_id, &port_type, target_port)
+        .map_err(SafeFailure::from)
+        .map_err(|failure| failure.with_context(&operation.context))
 }
 
 /// Attach a console device to a VM
@@ -1389,11 +1990,20 @@ pub async fn attach_console(
     vm_id: String,
     target_port: u32,
     target_type: String,
-) -> Result<(), String> {
-    tracing::info!("attach_console command called for VM: {} type: {} port: {}", vm_id, target_type, target_port);
+) -> Result<(), SafeFailure> {
+    tracing::info!(
+        "attach_console command called for VM: {} type: {} port: {}",
+        vm_id,
+        target_type,
+        target_port
+    );
 
-    VmService::attach_console(&state.libvirt, &vm_id, target_port, &target_type)
-        .map_err(|e| e.to_string())
+    let operation = state
+        .resolve_operation(OperationKind::Mutation, Some(vm_target(&vm_id)))
+        .map_err(SafeFailure::from)?;
+    VmService::attach_console(&operation.connection, &vm_id, target_port, &target_type)
+        .map_err(SafeFailure::from)
+        .map_err(|failure| failure.with_context(&operation.context))
 }
 
 /// Attach a TPM device to a VM
@@ -1403,11 +2013,20 @@ pub async fn attach_tpm(
     vm_id: String,
     model: String,
     version: String,
-) -> Result<(), String> {
-    tracing::info!("attach_tpm command called for VM: {} model: {} version: {}", vm_id, model, version);
+) -> Result<(), SafeFailure> {
+    tracing::info!(
+        "attach_tpm command called for VM: {} model: {} version: {}",
+        vm_id,
+        model,
+        version
+    );
 
-    VmService::attach_tpm(&state.libvirt, &vm_id, &model, &version)
-        .map_err(|e| e.to_string())
+    let operation = state
+        .resolve_operation(OperationKind::Mutation, Some(vm_target(&vm_id)))
+        .map_err(SafeFailure::from)?;
+    VmService::attach_tpm(&operation.connection, &vm_id, &model, &version)
+        .map_err(SafeFailure::from)
+        .map_err(|failure| failure.with_context(&operation.context))
 }
 
 /// Attach a USB controller to a VM
@@ -1416,11 +2035,19 @@ pub async fn attach_usb_controller(
     state: State<'_, AppState>,
     vm_id: String,
     model: String,
-) -> Result<(), String> {
-    tracing::info!("attach_usb_controller command called for VM: {} model: {}", vm_id, model);
+) -> Result<(), SafeFailure> {
+    tracing::info!(
+        "attach_usb_controller command called for VM: {} model: {}",
+        vm_id,
+        model
+    );
 
-    VmService::attach_usb_controller(&state.libvirt, &vm_id, &model)
-        .map_err(|e| e.to_string())
+    let operation = state
+        .resolve_operation(OperationKind::Mutation, Some(vm_target(&vm_id)))
+        .map_err(SafeFailure::from)?;
+    VmService::attach_usb_controller(&operation.connection, &vm_id, &model)
+        .map_err(SafeFailure::from)
+        .map_err(|failure| failure.with_context(&operation.context))
 }
 
 /// Get USB redirection configuration for a VM
@@ -1428,9 +2055,14 @@ pub async fn attach_usb_controller(
 pub async fn get_usb_redirection(
     state: State<'_, AppState>,
     vm_id: String,
-) -> Result<UsbRedirectionInfo, String> {
+) -> Result<UsbRedirectionInfo, SafeFailure> {
     tracing::info!("get_usb_redirection command called for VM: {}", vm_id);
-    VmService::get_usb_redirection(&state.libvirt, &vm_id).map_err(|e| e.to_string())
+    let operation = state
+        .resolve_operation(OperationKind::Query, Some(vm_target(&vm_id)))
+        .map_err(SafeFailure::from)?;
+    VmService::get_usb_redirection(&operation.connection, &vm_id)
+        .map_err(SafeFailure::from)
+        .map_err(|failure| failure.with_context(&operation.context))
 }
 
 /// Attach USB redirection channels to a VM for SPICE USB passthrough
@@ -1440,16 +2072,28 @@ pub async fn attach_usb_redirection(
     state: State<'_, AppState>,
     vm_id: String,
     count: u32,
-) -> Result<(), String> {
-    tracing::info!("attach_usb_redirection command called for VM: {} count: {}", vm_id, count);
+) -> Result<(), SafeFailure> {
+    tracing::info!(
+        "attach_usb_redirection command called for VM: {} count: {}",
+        vm_id,
+        count
+    );
 
-    VmService::attach_usb_redirection(&state.libvirt, &vm_id, count).map_err(|e| e.to_string())?;
+    let operation = state
+        .resolve_operation(OperationKind::Mutation, Some(vm_target(&vm_id)))
+        .map_err(SafeFailure::from)?;
+    VmService::attach_usb_redirection(&operation.connection, &vm_id, count)
+        .map_err(SafeFailure::from)
+        .map_err(|failure| failure.with_context(&operation.context))?;
 
-    let _ = app.emit("vm-usb-redirection-updated", serde_json::json!({
-        "vmId": vm_id,
-        "count": count,
-        "timestamp": chrono::Utc::now().timestamp_millis(),
-    }));
+    let _ = app.emit(
+        "vm-usb-redirection-updated",
+        serde_json::json!({
+            "vmId": vm_id,
+            "count": count,
+            "timestamp": chrono::Utc::now().timestamp_millis(),
+        }),
+    );
 
     Ok(())
 }
@@ -1460,16 +2104,35 @@ pub async fn remove_usb_redirection(
     app: AppHandle,
     state: State<'_, AppState>,
     vm_id: String,
-) -> Result<(), String> {
+    confirmation_token: String,
+) -> Result<(), SafeFailure> {
     tracing::info!("remove_usb_redirection command called for VM: {}", vm_id);
 
-    VmService::remove_usb_redirection(&state.libvirt, &vm_id).map_err(|e| e.to_string())?;
+    crate::commands::confirmation::require_destructive_confirmation(
+        &state,
+        &confirmation_token,
+        "remove_usb_redirection",
+        "vm",
+        &vm_id,
+        None,
+        "remove-usb-redirection",
+    )
+    .map_err(SafeFailure::from)?;
+    let operation = state
+        .resolve_operation(OperationKind::Mutation, Some(vm_target(&vm_id)))
+        .map_err(SafeFailure::from)?;
+    VmService::remove_usb_redirection(&operation.connection, &vm_id)
+        .map_err(SafeFailure::from)
+        .map_err(|failure| failure.with_context(&operation.context))?;
 
-    let _ = app.emit("vm-usb-redirection-updated", serde_json::json!({
-        "vmId": vm_id,
-        "count": 0,
-        "timestamp": chrono::Utc::now().timestamp_millis(),
-    }));
+    let _ = app.emit(
+        "vm-usb-redirection-updated",
+        serde_json::json!({
+            "vmId": vm_id,
+            "count": 0,
+            "timestamp": chrono::Utc::now().timestamp_millis(),
+        }),
+    );
 
     Ok(())
 }
@@ -1480,11 +2143,19 @@ pub async fn attach_scsi_controller(
     state: State<'_, AppState>,
     vm_id: String,
     model: String,
-) -> Result<(), String> {
-    tracing::info!("attach_scsi_controller command called for VM: {} model: {}", vm_id, model);
+) -> Result<(), SafeFailure> {
+    tracing::info!(
+        "attach_scsi_controller command called for VM: {} model: {}",
+        vm_id,
+        model
+    );
 
-    VmService::attach_scsi_controller(&state.libvirt, &vm_id, &model)
-        .map_err(|e| e.to_string())
+    let operation = state
+        .resolve_operation(OperationKind::Mutation, Some(vm_target(&vm_id)))
+        .map_err(SafeFailure::from)?;
+    VmService::attach_scsi_controller(&operation.connection, &vm_id, &model)
+        .map_err(SafeFailure::from)
+        .map_err(|failure| failure.with_context(&operation.context))
 }
 
 /// Attach a panic notifier device to a VM
@@ -1494,11 +2165,19 @@ pub async fn attach_panic_notifier(
     state: State<'_, AppState>,
     vm_id: String,
     model: String,
-) -> Result<(), String> {
-    tracing::info!("attach_panic_notifier command called for VM: {} model: {}", vm_id, model);
+) -> Result<(), SafeFailure> {
+    tracing::info!(
+        "attach_panic_notifier command called for VM: {} model: {}",
+        vm_id,
+        model
+    );
 
-    VmService::attach_panic_notifier(&state.libvirt, &vm_id, &model)
-        .map_err(|e| e.to_string())
+    let operation = state
+        .resolve_operation(OperationKind::Mutation, Some(vm_target(&vm_id)))
+        .map_err(SafeFailure::from)?;
+    VmService::attach_panic_notifier(&operation.connection, &vm_id, &model)
+        .map_err(SafeFailure::from)
+        .map_err(|failure| failure.with_context(&operation.context))
 }
 
 /// Attach a VirtIO VSOCK device to a VM
@@ -1508,11 +2187,15 @@ pub async fn attach_vsock(
     state: State<'_, AppState>,
     vm_id: String,
     cid: u32,
-) -> Result<(), String> {
+) -> Result<(), SafeFailure> {
     tracing::info!("attach_vsock command called for VM: {} CID: {}", vm_id, cid);
 
-    VmService::attach_vsock(&state.libvirt, &vm_id, cid)
-        .map_err(|e| e.to_string())
+    let operation = state
+        .resolve_operation(OperationKind::Mutation, Some(vm_target(&vm_id)))
+        .map_err(SafeFailure::from)?;
+    VmService::attach_vsock(&operation.connection, &vm_id, cid)
+        .map_err(SafeFailure::from)
+        .map_err(|failure| failure.with_context(&operation.context))
 }
 
 /// Attach a parallel port device to a VM
@@ -1521,11 +2204,19 @@ pub async fn attach_parallel(
     state: State<'_, AppState>,
     vm_id: String,
     target_port: u32,
-) -> Result<(), String> {
-    tracing::info!("attach_parallel command called for VM: {} port: {}", vm_id, target_port);
+) -> Result<(), SafeFailure> {
+    tracing::info!(
+        "attach_parallel command called for VM: {} port: {}",
+        vm_id,
+        target_port
+    );
 
-    VmService::attach_parallel(&state.libvirt, &vm_id, target_port)
-        .map_err(|e| e.to_string())
+    let operation = state
+        .resolve_operation(OperationKind::Mutation, Some(vm_target(&vm_id)))
+        .map_err(SafeFailure::from)?;
+    VmService::attach_parallel(&operation.connection, &vm_id, target_port)
+        .map_err(SafeFailure::from)
+        .map_err(|failure| failure.with_context(&operation.context))
 }
 
 /// Attach a smartcard reader device to a VM
@@ -1534,22 +2225,32 @@ pub async fn attach_smartcard(
     state: State<'_, AppState>,
     vm_id: String,
     mode: String,
-) -> Result<(), String> {
-    tracing::info!("attach_smartcard command called for VM: {} mode: {}", vm_id, mode);
+) -> Result<(), SafeFailure> {
+    tracing::info!(
+        "attach_smartcard command called for VM: {} mode: {}",
+        vm_id,
+        mode
+    );
 
-    VmService::attach_smartcard(&state.libvirt, &vm_id, &mode)
-        .map_err(|e| e.to_string())
+    let operation = state
+        .resolve_operation(OperationKind::Mutation, Some(vm_target(&vm_id)))
+        .map_err(SafeFailure::from)?;
+    VmService::attach_smartcard(&operation.connection, &vm_id, &mode)
+        .map_err(SafeFailure::from)
+        .map_err(|failure| failure.with_context(&operation.context))
 }
 
 /// Get host NUMA topology information
 #[tauri::command]
 pub async fn get_host_numa_topology(
     state: State<'_, AppState>,
-) -> Result<Vec<crate::models::vm::HostNumaNode>, String> {
+) -> Result<Vec<crate::models::vm::HostNumaNode>, SafeFailure> {
     tracing::info!("get_host_numa_topology command called");
 
-    VmService::get_host_numa_topology(&state.libvirt)
-        .map_err(|e| e.to_string())
+    let operation = state
+        .resolve_host_local_operation(None)
+        .map_err(SafeFailure::from)?;
+    VmService::get_host_numa_topology(&operation.connection).map_err(SafeFailure::from)
 }
 
 /// Get VM NUMA configuration
@@ -1557,11 +2258,15 @@ pub async fn get_host_numa_topology(
 pub async fn get_vm_numa_config(
     state: State<'_, AppState>,
     vm_id: String,
-) -> Result<Option<crate::models::vm::VmNumaConfig>, String> {
+) -> Result<Option<crate::models::vm::VmNumaConfig>, SafeFailure> {
     tracing::info!("get_vm_numa_config command called for VM: {}", vm_id);
 
-    VmService::get_vm_numa_config(&state.libvirt, &vm_id)
-        .map_err(|e| e.to_string())
+    let operation = state
+        .resolve_operation(OperationKind::Query, Some(vm_target(&vm_id)))
+        .map_err(SafeFailure::from)?;
+    VmService::get_vm_numa_config(&operation.connection, &vm_id)
+        .map_err(SafeFailure::from)
+        .map_err(|failure| failure.with_context(&operation.context))
 }
 
 /// Set VM NUMA configuration
@@ -1570,11 +2275,15 @@ pub async fn set_vm_numa_config(
     state: State<'_, AppState>,
     vm_id: String,
     config: crate::models::vm::VmNumaConfig,
-) -> Result<(), String> {
+) -> Result<(), SafeFailure> {
     tracing::info!("set_vm_numa_config command called for VM: {}", vm_id);
 
-    VmService::set_vm_numa_config(&state.libvirt, &vm_id, config)
-        .map_err(|e| e.to_string())
+    let operation = state
+        .resolve_operation(OperationKind::Mutation, Some(vm_target(&vm_id)))
+        .map_err(SafeFailure::from)?;
+    VmService::set_vm_numa_config(&operation.connection, &vm_id, config)
+        .map_err(SafeFailure::from)
+        .map_err(|failure| failure.with_context(&operation.context))
 }
 
 /// Clear VM NUMA configuration
@@ -1582,11 +2291,15 @@ pub async fn set_vm_numa_config(
 pub async fn clear_vm_numa_config(
     state: State<'_, AppState>,
     vm_id: String,
-) -> Result<(), String> {
+) -> Result<(), SafeFailure> {
     tracing::info!("clear_vm_numa_config command called for VM: {}", vm_id);
 
-    VmService::clear_vm_numa_config(&state.libvirt, &vm_id)
-        .map_err(|e| e.to_string())
+    let operation = state
+        .resolve_operation(OperationKind::Mutation, Some(vm_target(&vm_id)))
+        .map_err(SafeFailure::from)?;
+    VmService::clear_vm_numa_config(&operation.connection, &vm_id)
+        .map_err(SafeFailure::from)
+        .map_err(|failure| failure.with_context(&operation.context))
 }
 
 /// Migrate a VM to another host
@@ -1597,11 +2310,21 @@ pub async fn migrate_vm(
     dest_uri: String,
     live: bool,
     unsafe_migration: bool,
-) -> Result<(), String> {
-    tracing::info!("migrate_vm command called for VM: {} to {}", vm_id, dest_uri);
+) -> Result<(), SafeFailure> {
+    tracing::info!("migrate_vm command called");
 
-    VmService::migrate_vm(&state.libvirt, &vm_id, &dest_uri, live, unsafe_migration)
-        .map_err(|e| e.to_string())
+    let operation = state
+        .resolve_operation(OperationKind::Migration, Some(vm_target(&vm_id)))
+        .map_err(SafeFailure::from)?;
+    VmService::migrate_vm(
+        &operation.connection,
+        &vm_id,
+        &dest_uri,
+        live,
+        unsafe_migration,
+    )
+    .map_err(SafeFailure::from)
+    .map_err(|failure| failure.with_context(&operation.context))
 }
 
 /// Get migration info for a VM
@@ -1609,18 +2332,27 @@ pub async fn migrate_vm(
 pub async fn get_migration_info(
     state: State<'_, AppState>,
     vm_id: String,
-) -> Result<crate::services::vm_service::MigrationInfo, String> {
+) -> Result<crate::services::vm_service::MigrationInfo, SafeFailure> {
     tracing::info!("get_migration_info command called for VM: {}", vm_id);
 
-    VmService::get_migration_info(&state.libvirt, &vm_id)
-        .map_err(|e| e.to_string())
+    let operation = state
+        .resolve_operation(OperationKind::Query, Some(vm_target(&vm_id)))
+        .map_err(SafeFailure::from)?;
+    VmService::get_migration_info(&operation.connection, &vm_id)
+        .map_err(SafeFailure::from)
+        .map_err(|failure| failure.with_context(&operation.context))
 }
 
 /// List available evdev input devices on the host
 #[tauri::command]
-pub async fn list_evdev_devices() -> Result<Vec<EvdevDevice>, String> {
+pub async fn list_evdev_devices(
+    state: State<'_, AppState>,
+) -> Result<Vec<EvdevDevice>, SafeFailure> {
     tracing::info!("list_evdev_devices command called");
-    VmService::list_evdev_devices().map_err(|e| e.to_string())
+    state
+        .resolve_host_local_operation(None)
+        .map_err(SafeFailure::from)?;
+    VmService::list_evdev_devices().map_err(SafeFailure::from)
 }
 
 /// Attach an evdev input device to a VM for low-latency passthrough
@@ -1631,18 +2363,25 @@ pub async fn attach_evdev(
     vm_id: String,
     device_path: String,
     grab_all: bool,
-) -> Result<(), String> {
-    tracing::info!("attach_evdev command called for VM: {} device: {}", vm_id, device_path);
+) -> Result<(), SafeFailure> {
+    tracing::info!("attach_evdev command called for VM: {}", vm_id);
+    let operation = state
+        .resolve_host_local_operation(Some(vm_target(&vm_id)))
+        .map_err(SafeFailure::from)?;
 
-    VmService::attach_evdev(&state.libvirt, &vm_id, &device_path, grab_all)
-        .map_err(|e| e.to_string())?;
+    VmService::attach_evdev(&operation.connection, &vm_id, &device_path, grab_all)
+        .map_err(SafeFailure::from)
+        .map_err(|failure| failure.with_context(&operation.context))?;
 
-    let _ = app.emit("vm-evdev-updated", serde_json::json!({
-        "vmId": vm_id,
-        "devicePath": device_path,
-        "action": "attached",
-        "timestamp": chrono::Utc::now().timestamp_millis(),
-    }));
+    let _ = app.emit(
+        "vm-evdev-updated",
+        serde_json::json!({
+            "vmId": vm_id,
+            "devicePath": device_path,
+            "action": "attached",
+            "timestamp": chrono::Utc::now().timestamp_millis(),
+        }),
+    );
 
     Ok(())
 }
@@ -1652,9 +2391,14 @@ pub async fn attach_evdev(
 pub async fn get_vm_evdev_devices(
     state: State<'_, AppState>,
     vm_id: String,
-) -> Result<Vec<String>, String> {
+) -> Result<Vec<String>, SafeFailure> {
     tracing::info!("get_vm_evdev_devices command called for VM: {}", vm_id);
-    VmService::get_vm_evdev_devices(&state.libvirt, &vm_id).map_err(|e| e.to_string())
+    let operation = state
+        .resolve_host_local_operation(Some(vm_target(&vm_id)))
+        .map_err(SafeFailure::from)?;
+    VmService::get_vm_evdev_devices(&operation.connection, &vm_id)
+        .map_err(SafeFailure::from)
+        .map_err(|failure| failure.with_context(&operation.context))
 }
 
 /// Remove an evdev device from a VM
@@ -1664,18 +2408,37 @@ pub async fn detach_evdev(
     state: State<'_, AppState>,
     vm_id: String,
     device_path: String,
-) -> Result<(), String> {
-    tracing::info!("detach_evdev command called for VM: {} device: {}", vm_id, device_path);
+    confirmation_token: String,
+) -> Result<(), SafeFailure> {
+    tracing::info!("detach_evdev command called for VM: {}", vm_id);
+    let operation = state
+        .resolve_host_local_operation(Some(vm_target(&vm_id)))
+        .map_err(SafeFailure::from)?;
 
-    VmService::detach_evdev(&state.libvirt, &vm_id, &device_path)
-        .map_err(|e| e.to_string())?;
+    let stable_id = format!("{vm_id}/{device_path}");
+    crate::commands::confirmation::require_destructive_confirmation(
+        &state,
+        &confirmation_token,
+        "detach_evdev",
+        "evdev_device",
+        &stable_id,
+        None,
+        "detach",
+    )
+    .map_err(SafeFailure::from)?;
+    VmService::detach_evdev(&operation.connection, &vm_id, &device_path)
+        .map_err(SafeFailure::from)
+        .map_err(|failure| failure.with_context(&operation.context))?;
 
-    let _ = app.emit("vm-evdev-updated", serde_json::json!({
-        "vmId": vm_id,
-        "devicePath": device_path,
-        "action": "detached",
-        "timestamp": chrono::Utc::now().timestamp_millis(),
-    }));
+    let _ = app.emit(
+        "vm-evdev-updated",
+        serde_json::json!({
+            "vmId": vm_id,
+            "devicePath": device_path,
+            "action": "detached",
+            "timestamp": chrono::Utc::now().timestamp_millis(),
+        }),
+    );
 
     Ok(())
 }
@@ -1685,16 +2448,24 @@ pub async fn detach_evdev(
 pub async fn check_migration_compatibility(
     state: State<'_, AppState>,
     vm_id: String,
-) -> Result<(bool, Vec<String>), String> {
-    tracing::debug!("check_migration_compatibility command called for VM: {}", vm_id);
-    VmService::check_migration_compatibility(&state.libvirt, &vm_id).map_err(|e| e.to_string())
+) -> Result<(bool, Vec<String>), SafeFailure> {
+    tracing::debug!(
+        "check_migration_compatibility command called for VM: {}",
+        vm_id
+    );
+    let operation = state
+        .resolve_operation(OperationKind::Query, Some(vm_target(&vm_id)))
+        .map_err(SafeFailure::from)?;
+    VmService::check_migration_compatibility(&operation.connection, &vm_id)
+        .map_err(SafeFailure::from)
+        .map_err(|failure| failure.with_context(&operation.context))
 }
 
 /// Get list of available migration targets (saved remote connections)
 #[tauri::command]
 pub async fn get_migration_targets(
     state: State<'_, AppState>,
-) -> Result<Vec<(String, String)>, String> {
+) -> Result<Vec<(String, String)>, SafeFailure> {
     tracing::debug!("get_migration_targets command called");
-    VmService::get_migration_targets(&state.connections).map_err(|e| e.to_string())
+    VmService::get_migration_targets(&state.connections).map_err(SafeFailure::from)
 }

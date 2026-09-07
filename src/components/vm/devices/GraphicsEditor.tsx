@@ -13,6 +13,7 @@ import { api } from '@/lib/tauri'
 import { toast } from 'sonner'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import type { VM } from '@/lib/types'
+import { useActiveConnection } from '@/hooks/useActiveConnection'
 
 interface GraphicsEditorProps {
   vm: VM
@@ -20,6 +21,7 @@ interface GraphicsEditorProps {
 }
 
 export function GraphicsEditor({ vm, compact }: GraphicsEditorProps) {
+  const { connectionId, resourceQueryKey } = useActiveConnection()
   const queryClient = useQueryClient()
   const [showPassword, setShowPassword] = useState(false)
   const originalType = vm.graphics?.type || 'vnc'
@@ -37,8 +39,10 @@ export function GraphicsEditor({ vm, compact }: GraphicsEditorProps) {
 
   // Query USB redirection status
   const { data: usbRedir, refetch: refetchUsbRedir } = useQuery({
-    queryKey: ['usbRedirection', vm.id],
+    queryKey: resourceQueryKey('usb-redirection', vm.id)
+      ?? ['connection', 'pending', 'usb-redirection', vm.id],
     queryFn: () => api.getUsbRedirection(vm.id),
+    enabled: !!connectionId,
     staleTime: 5000,
   })
 
@@ -65,8 +69,8 @@ export function GraphicsEditor({ vm, compact }: GraphicsEditorProps) {
     try {
       await api.attachGraphics(vm.id, graphicsType, listenAddress)
       setSuccess(true)
-      queryClient.invalidateQueries({ queryKey: ['vm', vm.id] })
-      queryClient.invalidateQueries({ queryKey: ['vms'] })
+      queryClient.invalidateQueries({ queryKey: resourceQueryKey('vm', vm.id) })
+      queryClient.invalidateQueries({ queryKey: resourceQueryKey('vms') })
       setTimeout(() => setSuccess(false), 3000)
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))

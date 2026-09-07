@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/tauri'
+import { useActiveConnection } from '@/hooks/useActiveConnection'
 import type { BatchOperationResult } from '@/lib/types'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
@@ -15,6 +16,8 @@ interface BatchOperationsProps {
 
 export function BatchOperations({ selectedVmIds, onClearSelection }: BatchOperationsProps) {
   const queryClient = useQueryClient()
+  const { resourceQueryKey } = useActiveConnection()
+  const vmsQueryKey = resourceQueryKey('vms') ?? ['connection', 'pending', 'vms']
   const [showResults, setShowResults] = useState(false)
   const [results, setResults] = useState<BatchOperationResult[]>([])
   const [operationType, setOperationType] = useState<string>('')
@@ -26,7 +29,7 @@ export function BatchOperations({ selectedVmIds, onClearSelection }: BatchOperat
       setResults(data)
       setOperationType('Start')
       setShowResults(true)
-      queryClient.invalidateQueries({ queryKey: ['vms'] })
+      queryClient.invalidateQueries({ queryKey: vmsQueryKey })
       const successCount = data.filter(r => r.success).length
       toast.success(`Started ${successCount} of ${data.length} VMs`)
     },
@@ -43,7 +46,7 @@ export function BatchOperations({ selectedVmIds, onClearSelection }: BatchOperat
       setResults(data)
       setOperationType('Stop')
       setShowResults(true)
-      queryClient.invalidateQueries({ queryKey: ['vms'] })
+      queryClient.invalidateQueries({ queryKey: vmsQueryKey })
       const successCount = data.filter(r => r.success).length
       toast.success(`Stopped ${successCount} of ${data.length} VMs`)
     },
@@ -59,7 +62,7 @@ export function BatchOperations({ selectedVmIds, onClearSelection }: BatchOperat
       setResults(data)
       setOperationType('Reboot')
       setShowResults(true)
-      queryClient.invalidateQueries({ queryKey: ['vms'] })
+      queryClient.invalidateQueries({ queryKey: vmsQueryKey })
       const successCount = data.filter(r => r.success).length
       toast.success(`Rebooted ${successCount} of ${data.length} VMs`)
     },
@@ -199,7 +202,7 @@ export function BatchOperations({ selectedVmIds, onClearSelection }: BatchOperat
                     <div className="font-medium">{result.vmName}</div>
                     {result.error && (
                       <div className="text-xs text-muted-foreground text-red-500">
-                        {result.error}
+                        {result.error.summary}
                       </div>
                     )}
                   </div>

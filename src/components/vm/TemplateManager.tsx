@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/tauri'
+import { useActiveConnection } from '@/hooks/useActiveConnection'
 import type { VmTemplate, CreateTemplateRequest, VmConfig } from '@/lib/types'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -17,6 +18,8 @@ interface TemplateManagerProps {
 
 export function TemplateManager({ onCreateFromTemplate }: TemplateManagerProps) {
   const queryClient = useQueryClient()
+  const { connectionId, resourceQueryKey } = useActiveConnection()
+  const templatesQueryKey = resourceQueryKey('templates') ?? ['connection', 'pending', 'templates']
   const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false)
   const [isEditDialogOpen, setIsEditDialogOpen] = useState(false)
   const [selectedTemplate, setSelectedTemplate] = useState<VmTemplate | null>(null)
@@ -44,15 +47,16 @@ export function TemplateManager({ onCreateFromTemplate }: TemplateManagerProps) 
 
   // Query for templates
   const { data: templates, isLoading } = useQuery<VmTemplate[]>({
-    queryKey: ['templates'],
+    queryKey: templatesQueryKey,
     queryFn: () => api.listTemplates(),
+    enabled: !!connectionId,
   })
 
   // Create template mutation
   const createMutation = useMutation({
     mutationFn: (request: CreateTemplateRequest) => api.createTemplate(request),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['templates'] })
+      queryClient.invalidateQueries({ queryKey: templatesQueryKey })
       toast.success('Template created successfully')
       setIsCreateDialogOpen(false)
       resetForm()
@@ -67,7 +71,7 @@ export function TemplateManager({ onCreateFromTemplate }: TemplateManagerProps) 
     mutationFn: ({ id, request }: { id: string; request: CreateTemplateRequest }) =>
       api.updateTemplate(id, request),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['templates'] })
+      queryClient.invalidateQueries({ queryKey: templatesQueryKey })
       toast.success('Template updated successfully')
       setIsEditDialogOpen(false)
       resetForm()
@@ -81,7 +85,7 @@ export function TemplateManager({ onCreateFromTemplate }: TemplateManagerProps) 
   const deleteMutation = useMutation({
     mutationFn: (id: string) => api.deleteTemplate(id),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['templates'] })
+      queryClient.invalidateQueries({ queryKey: templatesQueryKey })
       toast.success('Template deleted successfully')
     },
     onError: (error: Error) => {

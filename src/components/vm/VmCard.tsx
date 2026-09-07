@@ -25,6 +25,7 @@ import {
 import { Play, Square, Pause, Trash2, Monitor, RotateCcw, Info, Copy, XCircle, Edit, Loader2 } from 'lucide-react'
 import type { VM } from '@/lib/types'
 import { api } from '@/lib/tauri'
+import { useActiveConnection } from '@/hooks/useActiveConnection'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { useState } from 'react'
@@ -37,12 +38,14 @@ interface VmCardProps {
 export function VmCard({ vm }: VmCardProps) {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
+  const { resourceQueryKey } = useActiveConnection()
+  const vmsQueryKey = resourceQueryKey('vms') ?? ['connection', 'pending', 'vms']
   const [deleteDisks, setDeleteDisks] = useState(false)
 
   const startMutation = useMutation({
     mutationFn: () => api.startVm(vm.id),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['vms'] })
+      queryClient.invalidateQueries({ queryKey: vmsQueryKey })
       toast.success(`VM "${vm.name}" started successfully`)
     },
     onError: (error) => {
@@ -53,7 +56,7 @@ export function VmCard({ vm }: VmCardProps) {
   const stopMutation = useMutation({
     mutationFn: () => api.stopVm(vm.id),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['vms'] })
+      queryClient.invalidateQueries({ queryKey: vmsQueryKey })
       toast.success(`VM "${vm.name}" stopped successfully`)
     },
     onError: (error) => {
@@ -64,7 +67,7 @@ export function VmCard({ vm }: VmCardProps) {
   const pauseMutation = useMutation({
     mutationFn: () => api.pauseVm(vm.id),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['vms'] })
+      queryClient.invalidateQueries({ queryKey: vmsQueryKey })
       toast.success(`VM "${vm.name}" paused successfully`)
     },
     onError: (error) => {
@@ -75,7 +78,7 @@ export function VmCard({ vm }: VmCardProps) {
   const resumeMutation = useMutation({
     mutationFn: () => api.resumeVm(vm.id),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['vms'] })
+      queryClient.invalidateQueries({ queryKey: vmsQueryKey })
       toast.success(`VM "${vm.name}" resumed successfully`)
     },
     onError: (error) => {
@@ -86,7 +89,7 @@ export function VmCard({ vm }: VmCardProps) {
   const deleteMutation = useMutation({
     mutationFn: () => api.deleteVm(vm.id, deleteDisks, false),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['vms'] })
+      queryClient.invalidateQueries({ queryKey: vmsQueryKey })
       const diskMsg = deleteDisks ? ' (including disks)' : ''
       toast.success(`VM "${vm.name}" deleted successfully${diskMsg}`)
       setDeleteDisks(false)
@@ -109,7 +112,7 @@ export function VmCard({ vm }: VmCardProps) {
   const rebootMutation = useMutation({
     mutationFn: () => api.rebootVm(vm.id),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['vms'] })
+      queryClient.invalidateQueries({ queryKey: vmsQueryKey })
       toast.success(`VM "${vm.name}" rebooted successfully`)
     },
     onError: (error) => {

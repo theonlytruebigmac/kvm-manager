@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/tauri'
+import { useActiveConnection } from '@/hooks/useActiveConnection'
 import { toast } from 'sonner'
 import {
   Dialog,
@@ -24,6 +25,8 @@ interface RenameVmDialogProps {
 export function RenameVmDialog({ vm, open, onOpenChange }: RenameVmDialogProps) {
   const [newName, setNewName] = useState('')
   const queryClient = useQueryClient()
+  const { resourceQueryKey } = useActiveConnection()
+  const vmsQueryKey = resourceQueryKey('vms') ?? ['connection', 'pending', 'vms']
 
   useEffect(() => {
     if (vm && open) {
@@ -34,7 +37,7 @@ export function RenameVmDialog({ vm, open, onOpenChange }: RenameVmDialogProps) 
   const renameMutation = useMutation({
     mutationFn: () => api.renameVm(vm!.id, newName.trim()),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['vms'] })
+      queryClient.invalidateQueries({ queryKey: vmsQueryKey })
       toast.success(`VM renamed to ${newName.trim()}`)
       onOpenChange(false)
     },

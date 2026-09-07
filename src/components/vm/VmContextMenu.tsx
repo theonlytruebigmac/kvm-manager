@@ -1,5 +1,6 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/tauri'
+import { useActiveConnection } from '@/hooks/useActiveConnection'
 import { toast } from 'sonner'
 import {
   ContextMenu,
@@ -44,6 +45,9 @@ interface VmContextMenuProps {
 
 export function VmContextMenu({ vm, children, onOpenDetails, onOpenRename, onOpenDelete, onOpenMigrate }: VmContextMenuProps) {
   const queryClient = useQueryClient()
+  const { resourceQueryKey } = useActiveConnection()
+  const vmsQueryKey = resourceQueryKey('vms') ?? ['connection', 'pending', 'vms']
+  const snapshotsQueryKey = resourceQueryKey('snapshots', vm.id) ?? ['connection', 'pending', 'snapshots', vm.id]
 
   const isRunning = vm.state === 'running'
   const isPaused = vm.state === 'paused'
@@ -53,7 +57,7 @@ export function VmContextMenu({ vm, children, onOpenDetails, onOpenRename, onOpe
   const startMutation = useMutation({
     mutationFn: () => api.startVm(vm.id),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['vms'] })
+      queryClient.invalidateQueries({ queryKey: vmsQueryKey })
       toast.success(`${vm.name} started`)
     },
     onError: (err) => toast.error(`Failed to start: ${err}`),
@@ -62,7 +66,7 @@ export function VmContextMenu({ vm, children, onOpenDetails, onOpenRename, onOpe
   const stopMutation = useMutation({
     mutationFn: () => api.forceStopVm(vm.id),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['vms'] })
+      queryClient.invalidateQueries({ queryKey: vmsQueryKey })
       toast.success(`${vm.name} stopped`)
     },
     onError: (err) => toast.error(`Failed to stop: ${err}`),
@@ -71,7 +75,7 @@ export function VmContextMenu({ vm, children, onOpenDetails, onOpenRename, onOpe
   const pauseMutation = useMutation({
     mutationFn: () => api.pauseVm(vm.id),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['vms'] })
+      queryClient.invalidateQueries({ queryKey: vmsQueryKey })
       toast.success(`${vm.name} paused`)
     },
     onError: (err) => toast.error(`Failed to pause: ${err}`),
@@ -80,7 +84,7 @@ export function VmContextMenu({ vm, children, onOpenDetails, onOpenRename, onOpe
   const resumeMutation = useMutation({
     mutationFn: () => api.resumeVm(vm.id),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['vms'] })
+      queryClient.invalidateQueries({ queryKey: vmsQueryKey })
       toast.success(`${vm.name} resumed`)
     },
     onError: (err) => toast.error(`Failed to resume: ${err}`),
@@ -89,7 +93,7 @@ export function VmContextMenu({ vm, children, onOpenDetails, onOpenRename, onOpe
   const rebootMutation = useMutation({
     mutationFn: () => api.rebootVm(vm.id),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['vms'] })
+      queryClient.invalidateQueries({ queryKey: vmsQueryKey })
       toast.success(`${vm.name} rebooted`)
     },
     onError: (err) => toast.error(`Failed to reboot: ${err}`),
@@ -98,7 +102,7 @@ export function VmContextMenu({ vm, children, onOpenDetails, onOpenRename, onOpe
   const hibernateMutation = useMutation({
     mutationFn: () => api.hibernateVm(vm.id),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['vms'] })
+      queryClient.invalidateQueries({ queryKey: vmsQueryKey })
       toast.success(`${vm.name} hibernated - will resume on next start`)
     },
     onError: (err) => toast.error(`Failed to hibernate: ${err}`),
@@ -107,7 +111,7 @@ export function VmContextMenu({ vm, children, onOpenDetails, onOpenRename, onOpe
   const cloneMutation = useMutation({
     mutationFn: () => api.cloneVm(vm.id, `${vm.name}-clone`),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['vms'] })
+      queryClient.invalidateQueries({ queryKey: vmsQueryKey })
       toast.success(`${vm.name} cloned`)
     },
     onError: (err) => toast.error(`Failed to clone: ${err}`),
@@ -119,7 +123,7 @@ export function VmContextMenu({ vm, children, onOpenDetails, onOpenRename, onOpe
       description: 'Quick snapshot from context menu',
     }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['snapshots', vm.id] })
+      queryClient.invalidateQueries({ queryKey: snapshotsQueryKey })
       toast.success('Snapshot created')
     },
     onError: (err) => toast.error(`Failed to create snapshot: ${err}`),

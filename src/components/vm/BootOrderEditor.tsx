@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/tauri'
+import { useActiveConnection } from '@/hooks/useActiveConnection'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -15,13 +16,15 @@ interface BootOrderEditorProps {
 
 export function BootOrderEditor({ vmId, vmName, currentBootOrder }: BootOrderEditorProps) {
   const queryClient = useQueryClient()
+  const { resourceQueryKey } = useActiveConnection()
+  const vmQueryKey = resourceQueryKey('vm', vmId) ?? ['connection', 'pending', 'vm', vmId]
   const [bootOrder, setBootOrder] = useState<string[]>(currentBootOrder.length > 0 ? currentBootOrder : ['hd'])
   const [hasChanges, setHasChanges] = useState(false)
 
   const updateMutation = useMutation({
     mutationFn: (newOrder: string[]) => api.updateVmBootOrder(vmId, newOrder),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['vm', vmId] })
+      queryClient.invalidateQueries({ queryKey: vmQueryKey })
       toast.success('Boot order updated successfully')
       setHasChanges(false)
     },

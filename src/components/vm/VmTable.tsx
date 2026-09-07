@@ -20,6 +20,7 @@ import { cn } from '@/lib/utils'
 import { Search, Play, Square, Pause, Monitor, Copy, Trash2, Edit3, ArrowRightLeft, Moon, Bot, BotOff } from 'lucide-react'
 import { toast } from 'sonner'
 import type { VM } from '@/lib/types'
+import { useActiveConnection } from '@/hooks/useActiveConnection'
 
 interface VmTableProps {
   vms: VM[]
@@ -44,38 +45,43 @@ interface VmRowProps {
 
 function VmRow({ vm, isSelected, onToggleSelect, onDoubleClick, onOpenRename, onOpenDelete, onOpenMigrate, isFocused }: VmRowProps) {
   const queryClient = useQueryClient()
+  const { connectionId, resourceQueryKey } = useActiveConnection()
+  const vmsQueryKey = resourceQueryKey('vms') ?? ['connection', 'pending', 'vms']
 
   // Poll stats for running VMs
   const { data: vmStats } = useQuery({
-    queryKey: ['vm-stats', vm.id],
+    queryKey: resourceQueryKey('vm-stats', vm.id) ?? ['connection', 'pending', 'vm-stats', vm.id],
     queryFn: () => api.getVmStats(vm.id),
-    enabled: vm.state === 'running',
+    enabled: !!connectionId && vm.state === 'running',
     refetchInterval: 2000,
   })
 
   // Check guest agent status for running VMs
   const { data: agentStatus } = useQuery({
-    queryKey: ['guestAgentStatus', vm.name],
+    queryKey: resourceQueryKey('guest-agent-status', vm.name)
+      ?? ['connection', 'pending', 'guest-agent-status', vm.name],
     queryFn: () => api.checkGuestAgentStatus(vm.name),
-    enabled: vm.state === 'running',
+    enabled: !!connectionId && vm.state === 'running',
     refetchInterval: 10000, // Check every 10 seconds
     retry: false,
   })
 
   // Get guest network info if agent is available
   const { data: guestNetworkInfo } = useQuery({
-    queryKey: ['guestNetworkInfo', vm.name],
+    queryKey: resourceQueryKey('guest-network-info', vm.name)
+      ?? ['connection', 'pending', 'guest-network-info', vm.name],
     queryFn: () => api.getGuestNetworkInfo(vm.name),
-    enabled: agentStatus?.available === true,
+    enabled: !!connectionId && agentStatus?.available === true,
     refetchInterval: 15000,
     retry: false,
   })
 
   // Get guest system info for tooltip
   const { data: guestSystemInfo } = useQuery({
-    queryKey: ['guestSystemInfo', vm.name],
+    queryKey: resourceQueryKey('guest-system-info', vm.name)
+      ?? ['connection', 'pending', 'guest-system-info', vm.name],
     queryFn: () => api.getGuestSystemInfo(vm.name),
-    enabled: agentStatus?.available === true,
+    enabled: !!connectionId && agentStatus?.available === true,
     refetchInterval: 30000,
     retry: false,
   })
@@ -84,7 +90,7 @@ function VmRow({ vm, isSelected, onToggleSelect, onDoubleClick, onOpenRename, on
   const startMutation = useMutation({
     mutationFn: () => api.startVm(vm.id),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['vms'] })
+      queryClient.invalidateQueries({ queryKey: vmsQueryKey })
       toast.success(`${vm.name} started`)
     },
     onError: (error) => toast.error(`Failed to start: ${error}`),
@@ -93,7 +99,7 @@ function VmRow({ vm, isSelected, onToggleSelect, onDoubleClick, onOpenRename, on
   const stopMutation = useMutation({
     mutationFn: () => api.forceStopVm(vm.id),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['vms'] })
+      queryClient.invalidateQueries({ queryKey: vmsQueryKey })
       toast.success(`${vm.name} stopped`)
     },
     onError: (error) => toast.error(`Failed to stop: ${error}`),
@@ -102,7 +108,7 @@ function VmRow({ vm, isSelected, onToggleSelect, onDoubleClick, onOpenRename, on
   const pauseMutation = useMutation({
     mutationFn: () => api.pauseVm(vm.id),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['vms'] })
+      queryClient.invalidateQueries({ queryKey: vmsQueryKey })
       toast.success(`${vm.name} paused`)
     },
     onError: (error) => toast.error(`Failed to pause: ${error}`),
@@ -111,7 +117,7 @@ function VmRow({ vm, isSelected, onToggleSelect, onDoubleClick, onOpenRename, on
   const resumeMutation = useMutation({
     mutationFn: () => api.resumeVm(vm.id),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['vms'] })
+      queryClient.invalidateQueries({ queryKey: vmsQueryKey })
       toast.success(`${vm.name} resumed`)
     },
     onError: (error) => toast.error(`Failed to resume: ${error}`),
@@ -120,7 +126,7 @@ function VmRow({ vm, isSelected, onToggleSelect, onDoubleClick, onOpenRename, on
   const hibernateMutation = useMutation({
     mutationFn: () => api.hibernateVm(vm.id),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['vms'] })
+      queryClient.invalidateQueries({ queryKey: vmsQueryKey })
       toast.success(`${vm.name} hibernated`)
     },
     onError: (error) => toast.error(`Failed to hibernate: ${error}`),
@@ -327,60 +333,60 @@ function VmRow({ vm, isSelected, onToggleSelect, onDoubleClick, onOpenRename, on
       <ContextMenuTrigger asChild>
         {rowContent}
       </ContextMenuTrigger>
-      <ContextMenuContent className="w-48">
+      <ContextMenuContent className="flex w-auto max-w-[calc(100vw-1rem)] flex-row items-center gap-1 overflow-x-auto p-1">
         {/* Power Actions */}
         {isStopped && (
-          <ContextMenuItem onClick={() => startMutation.mutate()}>
+          <ContextMenuItem className="shrink-0" onClick={() => startMutation.mutate()}>
             <Play className="mr-2 h-4 w-4 text-green-500" />
             Start
           </ContextMenuItem>
         )}
         {isPaused && (
-          <ContextMenuItem onClick={() => resumeMutation.mutate()}>
+          <ContextMenuItem className="shrink-0" onClick={() => resumeMutation.mutate()}>
             <Play className="mr-2 h-4 w-4 text-green-500" />
             Resume
           </ContextMenuItem>
         )}
         {isRunning && (
           <>
-            <ContextMenuItem onClick={() => pauseMutation.mutate()}>
+            <ContextMenuItem className="shrink-0" onClick={() => pauseMutation.mutate()}>
               <Pause className="mr-2 h-4 w-4 text-yellow-500" />
               Pause
             </ContextMenuItem>
-            <ContextMenuItem onClick={() => hibernateMutation.mutate()}>
+            <ContextMenuItem className="shrink-0" onClick={() => hibernateMutation.mutate()}>
               <Moon className="mr-2 h-4 w-4 text-blue-500" />
               Hibernate
             </ContextMenuItem>
-            <ContextMenuItem onClick={() => openConsoleMutation.mutate()}>
+            <ContextMenuItem className="shrink-0" onClick={() => openConsoleMutation.mutate()}>
               <Monitor className="mr-2 h-4 w-4" />
               Open Console
             </ContextMenuItem>
           </>
         )}
         {(isRunning || isPaused) && (
-          <ContextMenuItem onClick={() => stopMutation.mutate()} className="text-red-500">
+          <ContextMenuItem onClick={() => stopMutation.mutate()} className="shrink-0 text-red-500">
             <Square className="mr-2 h-4 w-4" />
             Force Stop
           </ContextMenuItem>
         )}
 
-        <ContextMenuSeparator />
+        <ContextMenuSeparator className="mx-1 h-6 w-px self-center" />
 
         {/* Management Actions */}
-        <ContextMenuItem onClick={onDoubleClick}>
+          <ContextMenuItem className="shrink-0" onClick={onDoubleClick}>
           <Monitor className="mr-2 h-4 w-4" />
           View Details
         </ContextMenuItem>
         {onOpenRename && (
-          <ContextMenuItem onClick={onOpenRename}>
+          <ContextMenuItem className="shrink-0" onClick={onOpenRename}>
             <Edit3 className="mr-2 h-4 w-4" />
             Rename
           </ContextMenuItem>
         )}
-        <ContextMenuItem onClick={async () => {
+        <ContextMenuItem className="shrink-0" onClick={async () => {
           try {
             await api.cloneVm(vm.id, `${vm.name}-clone`)
-            queryClient.invalidateQueries({ queryKey: ['vms'] })
+            queryClient.invalidateQueries({ queryKey: vmsQueryKey })
             toast.success('VM cloned successfully')
           } catch (error) {
             toast.error(`Failed to clone: ${error}`)
@@ -390,16 +396,16 @@ function VmRow({ vm, isSelected, onToggleSelect, onDoubleClick, onOpenRename, on
           Clone
         </ContextMenuItem>
         {onOpenMigrate && (
-          <ContextMenuItem onClick={onOpenMigrate}>
+          <ContextMenuItem className="shrink-0" onClick={onOpenMigrate}>
             <ArrowRightLeft className="mr-2 h-4 w-4" />
             Migrate
           </ContextMenuItem>
         )}
 
-        <ContextMenuSeparator />
+        <ContextMenuSeparator className="mx-1 h-6 w-px self-center" />
 
         {onOpenDelete && (
-          <ContextMenuItem onClick={onOpenDelete} className="text-red-500">
+          <ContextMenuItem onClick={onOpenDelete} className="shrink-0 text-red-500">
             <Trash2 className="mr-2 h-4 w-4" />
             Delete
           </ContextMenuItem>
@@ -414,7 +420,6 @@ export function VmTable({ vms, selectedIds, onSelectionChange, onVmDoubleClick, 
   const tableRef = useRef<HTMLTableElement>(null)
 
   const isAllSelected = vms.length > 0 && selectedIds.length === vms.length
-  const isSomeSelected = selectedIds.length > 0 && selectedIds.length < vms.length
 
   const handleSelectAll = () => {
     if (isAllSelected) {
@@ -469,9 +474,9 @@ export function VmTable({ vms, selectedIds, onSelectionChange, onVmDoubleClick, 
     const table = tableRef.current
     if (!table) return
 
-    table.addEventListener('keydown', handleKeyDown as any)
+    table.addEventListener('keydown', handleKeyDown)
     return () => {
-      table.removeEventListener('keydown', handleKeyDown as any)
+      table.removeEventListener('keydown', handleKeyDown)
     }
   }, [handleKeyDown])
 
@@ -506,11 +511,6 @@ export function VmTable({ vms, selectedIds, onSelectionChange, onVmDoubleClick, 
             <th className="w-12 px-4 text-center">
               <Checkbox
                 checked={isAllSelected}
-                ref={(el) => {
-                  if (el) {
-                    (el as any).indeterminate = isSomeSelected
-                  }
-                }}
                 onCheckedChange={handleSelectAll}
                 className="data-[state=checked]:bg-primary"
               />

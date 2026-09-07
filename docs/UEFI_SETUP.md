@@ -1,199 +1,56 @@
-# UEFI/Secure Boot Setup Guide
+# UEFI, Secure Boot, TPM, and Windows 11
 
-## System Requirements
+KVM Manager discovers guest capabilities from the selected libvirt connection. It does not assume
+an OVMF path, NVRAM directory, QEMU binary, storage directory, or package layout. During creation,
+libvirt selects firmware from the descriptors advertised by that connection.
 
-### Firmware Files
-The application automatically detects OVMF firmware in common locations:
-- `/usr/share/OVMF/OVMF_CODE_4M.fd` (your system ✓)
-- `/usr/share/OVMF/OVMF_CODE_4M.secboot.fd` (your system ✓)
-- `/usr/share/edk2/ovmf/` (alternative location)
-- `/usr/share/edk2-ovmf/x64/` (alternative location)
+## Windows 11 workflow
 
-### Installation
-```bash
-# Ubuntu/Debian
-sudo apt install ovmf
+1. Select the intended connection and review Host Readiness.
+2. Create or select an active storage pool with sufficient free space.
+3. Select the Windows ISO. If it is in Downloads or another private location, confirm **Import
+   into selected storage pool**; the source is preserved.
+4. Choose the Windows 11 preset: Q35, UEFI with Secure Boot, and TPM 2.0.
+5. On Review, confirm storage, firmware, Secure Boot, TPM, and network are available. Create remains
+   disabled while a required capability is missing or while results belong to an old connection.
 
-# Fedora/RHEL
-sudo dnf install edk2-ovmf
+## Distribution packages
 
-# Arch Linux
-sudo pacman -S edk2-ovmf
-```
+The Host Readiness panel shows guidance only for the detected local-system family. The verified
+profiles identify `edk2-ovmf` and `swtpm` on Arch/CachyOS and Fedora/RHEL-compatible hosts, `ovmf`
+and `swtpm-tools` on Debian/Ubuntu LTS, and `qemu-ovmf-x86_64` and `swtpm` on openSUSE. Consult the
+host administrator for remote/session/test connections and best-effort distributions.
 
-### NVRAM Directory
-The application requires write access to:
-```bash
-/var/lib/libvirt/qemu/nvram/
-```
+### Arch and CachyOS enrolled keys
 
-This directory is now configured with proper permissions (✓).
+On Arch-family hosts, `edk2-ovmf` provides Secure Boot-capable firmware but does not provide a
+Microsoft-key-enrolled variable-store template. Reinstalling `edk2-ovmf` does not change that. The
+Host Readiness dialog therefore offers two explicit paths:
 
-## Firmware Options
+1. Select plain **UEFI** in the wizard when Secure Boot enforcement is not required. This does not
+   satisfy the Windows 11 Secure Boot requirement.
+2. For enforced Secure Boot, install the VM firmware utility with
+   `sudo pacman -S --needed virt-firmware`. A host administrator must then install an enrolled-key
+   firmware template and descriptor that libvirt advertises, or create the VM externally with its
+   own enrolled NVRAM and import it. Never modify the shared system `OVMF_VARS` template.
 
-### BIOS (Traditional)
-- **Chipset**: i440FX (PC)
-- **Use Case**: Legacy systems, older Linux distributions
-- **Compatibility**: Maximum
-- **Features**: Limited
-
-### UEFI (Modern)
-- **Firmware**: `/usr/share/OVMF/OVMF_CODE_4M.fd`
-- **NVRAM Template**: `/usr/share/OVMF/OVMF_VARS_4M.fd`
-- **Chipset**: Q35 (recommended)
-- **Use Case**: Modern Linux, recent Windows versions
-- **Features**: GPT partitions, faster boot, modern drivers
-
-### UEFI with Secure Boot
-- **Firmware**: `/usr/share/OVMF/OVMF_CODE_4M.secboot.fd`
-- **NVRAM Template**: `/usr/share/OVMF/OVMF_VARS_4M.ms.fd`
-- **Chipset**: Q35 (required)
-- **Use Case**: Windows 11, security-focused deployments
-- **Features**: All UEFI features + verified boot chain
-
-## TPM 2.0 Support
-
-### Installation
-```bash
-# Ubuntu/Debian
-sudo apt install swtpm swtpm-tools
-
-# Fedora/RHEL
-sudo dnf install swtpm swtpm-tools
-
-# Arch Linux
-sudo pacman -S swtpm
-```
-
-### Use Cases
-- Windows 11 (required)
-- BitLocker encryption
-- Measured boot
-- Security compliance
-
-## Quick Presets
-
-### Windows 11 Compatible
-- **Firmware**: UEFI + Secure Boot
-- **TPM**: Enabled
-- **Chipset**: Q35
-- **Memory**: 4096 MB minimum
-- **Disk**: 64 GB minimum
-
-### Modern Linux
-- **Firmware**: UEFI
-- **TPM**: Optional
-- **Chipset**: Q35
-- **Memory**: 2048 MB minimum
-- **Disk**: 20 GB minimum
-
-### Legacy BIOS
-- **Firmware**: BIOS
-- **TPM**: Not available
-- **Chipset**: PC (i440FX)
-- **Memory**: 512 MB minimum
-- **Disk**: 8 GB minimum
-
-### Maximum Security
-- **Firmware**: UEFI + Secure Boot
-- **TPM**: Enabled
-- **Chipset**: Q35
-- **Memory**: 4096 MB minimum
-- **Disk**: 32 GB minimum
-
-## Testing UEFI/Secure Boot
-
-### 1. Create Test VM
-```
-Name: uefi-test
-Firmware: UEFI with Secure Boot
-TPM: Enabled
-Chipset: Q35
-Memory: 4096 MB
-Disk: 64 GB
-```
-
-### 2. Expected Behavior
-- VM starts without errors
-- UEFI boot menu appears
-- Secure Boot shows as "Enabled" in guest OS
-- TPM device visible in guest OS (if OS supports it)
-
-### 3. Verification (Linux Guest)
-```bash
-# Check Secure Boot status
-mokutil --sb-state
-
-# Check TPM
-ls /dev/tpm*
-
-# Check firmware type
-[ -d /sys/firmware/efi ] && echo "UEFI" || echo "BIOS"
-```
-
-### 4. Verification (Windows Guest)
-```powershell
-# Check Secure Boot
-Confirm-SecureBootUEFI
-
-# Check TPM
-Get-Tpm
-```
+The second path is deliberately not automated during first-run checks: overwriting a shared
+variable-store template can affect future VMs, while a safe per-VM NVRAM target does not exist until
+a particular VM has been defined. Recheck readiness only after libvirt advertises an enrolled-key
+template; changing one existing VM's NVRAM does not change the host-wide capability result.
 
 ## Troubleshooting
 
-### Error: "UEFI firmware not found"
-**Solution**: Install OVMF package
-```bash
-sudo apt install ovmf
-```
+- **UEFI unavailable:** refresh readiness after installing/configuring firmware on the selected
+  guest host. Do not copy a firmware path from another distribution.
+- **Secure Boot unavailable:** UEFI alone is insufficient; the connection must advertise a secure
+  firmware option and enrolled-key support appropriate to the guest.
+- **TPM unavailable:** install/configure a libvirt-supported TPM emulator on the selected guest
+  host, then reconnect and refresh.
+- **Network unavailable:** select or activate a libvirt network on the same connection.
+- **Storage unavailable:** select, activate, or explicitly create a pool. A pool named `default`
+  has no special meaning.
+- **ISO permission denied:** import it into the selected pool; do not weaken home-directory access.
 
-### Error: "Permission denied" on NVRAM directory
-**Solution**: Fix permissions
-```bash
-sudo mkdir -p /var/lib/libvirt/qemu/nvram
-sudo chown -R libvirt-qemu:kvm /var/lib/libvirt/qemu/nvram
-sudo chmod 755 /var/lib/libvirt/qemu/nvram
-```
-
-### VM fails to start with UEFI
-**Check**:
-1. OVMF firmware files exist
-2. NVRAM directory permissions
-3. Libvirt logs: `sudo journalctl -u libvirtd -f`
-
-### Secure Boot not working in guest
-**Possible causes**:
-1. Guest OS doesn't support Secure Boot
-2. Unsigned bootloader
-3. Wrong OVMF firmware path
-
-### TPM not visible in guest
-**Check**:
-1. swtpm package installed
-2. TPM enabled in VM config
-3. Guest OS has TPM drivers
-
-## Platform-Specific Notes
-
-### Ubuntu/Debian
-- OVMF packages: `ovmf`
-- Default paths work out of the box
-- SELinux not an issue
-
-### Fedora/RHEL
-- OVMF packages: `edk2-ovmf`
-- Paths: `/usr/share/edk2/ovmf/`
-- Check SELinux contexts
-
-### Arch Linux
-- OVMF packages: `edk2-ovmf`
-- Paths: `/usr/share/edk2-ovmf/x64/`
-- May need manual symlinks
-
-## References
-
-- [OVMF Documentation](https://github.com/tianocore/tianocore.github.io/wiki/OVMF)
-- [Libvirt UEFI Setup](https://wiki.archlinux.org/title/Libvirt#UEFI_support)
-- [TPM Emulation](https://www.qemu.org/docs/master/specs/tpm.html)
-- [Windows 11 Requirements](https://docs.microsoft.com/en-us/windows/whats-new/windows-11-requirements)
+Readiness and preflight checks are non-mutating. Storage creation/activation and ISO import are
+separate reviewed actions with explicit confirmation and observable outcomes.

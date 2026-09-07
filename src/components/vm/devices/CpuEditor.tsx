@@ -11,22 +11,26 @@ import { api } from '@/lib/tauri'
 import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import type { VM } from '@/lib/types'
+import { useActiveConnection } from '@/hooks/useActiveConnection'
 
 // CPU Model Section Component
 function CpuModelSection({ vm }: { vm: VM }) {
   const queryClient = useQueryClient()
+  const { connectionId, resourceQueryKey } = useActiveConnection()
   const isRunning = vm.state === 'running'
 
   // Get current CPU model
   const { data: cpuConfig, refetch: refetchCpuModel } = useQuery({
-    queryKey: ['cpuModel', vm.id],
+    queryKey: resourceQueryKey('cpu-model', vm.id) ?? ['connection', 'pending', 'cpu-model', vm.id],
     queryFn: () => api.getCpuModel(vm.id),
+    enabled: !!connectionId,
   })
 
   // Get available CPU models
   const { data: availableModels = [] } = useQuery({
-    queryKey: ['availableCpuModels'],
+    queryKey: resourceQueryKey('available-cpu-models') ?? ['connection', 'pending', 'available-cpu-models'],
     queryFn: () => api.getAvailableCpuModels(),
+    enabled: !!connectionId,
   })
 
   // Local state
@@ -57,7 +61,7 @@ function CpuModelSection({ vm }: { vm: VM }) {
     onSuccess: () => {
       toast.success('CPU model updated')
       refetchCpuModel()
-      queryClient.invalidateQueries({ queryKey: ['vm', vm.id] })
+      queryClient.invalidateQueries({ queryKey: resourceQueryKey('vm', vm.id) })
       setHasChanges(false)
     },
     onError: (error) => {
@@ -151,19 +155,22 @@ function CpuModelSection({ vm }: { vm: VM }) {
 // CPU Pinning Section Component
 function CpuPinningSection({ vm }: { vm: VM }) {
   const queryClient = useQueryClient()
+  const { connectionId, resourceQueryKey } = useActiveConnection()
   const isRunning = vm.state === 'running'
   const vcpuCount = vm.cpuCount || vm.cpus || 1
 
   // Get host CPU count
   const { data: hostInfo } = useQuery({
-    queryKey: ['hostInfo'],
+    queryKey: resourceQueryKey('host-info') ?? ['connection', 'pending', 'host-info'],
     queryFn: () => api.getHostInfo(),
+    enabled: !!connectionId,
   })
 
   // Get current pinning configuration
   const { data: pinnings = [], refetch: refetchPinning } = useQuery({
-    queryKey: ['cpuPinning', vm.id],
+    queryKey: resourceQueryKey('cpu-pinning', vm.id) ?? ['connection', 'pending', 'cpu-pinning', vm.id],
     queryFn: () => api.getCpuPinning(vm.id),
+    enabled: !!connectionId,
   })
 
   const hostCpuCount = hostInfo?.cpuCount || 8
@@ -208,7 +215,7 @@ function CpuPinningSection({ vm }: { vm: VM }) {
         toast.success(`vCPU ${editingVcpu} pinned to CPU(s) ${selectedCpus.join(', ')}`)
       }
       refetchPinning()
-      queryClient.invalidateQueries({ queryKey: ['vm', vm.id] })
+      queryClient.invalidateQueries({ queryKey: resourceQueryKey('vm', vm.id) })
       handleCancelEdit()
     } catch (err) {
       toast.error(err instanceof Error ? err.message : String(err))
@@ -223,7 +230,7 @@ function CpuPinningSection({ vm }: { vm: VM }) {
       await api.clearCpuPin(vm.id, vcpu)
       toast.success(`CPU pinning cleared for vCPU ${vcpu}`)
       refetchPinning()
-      queryClient.invalidateQueries({ queryKey: ['vm', vm.id] })
+      queryClient.invalidateQueries({ queryKey: resourceQueryKey('vm', vm.id) })
     } catch (err) {
       toast.error(err instanceof Error ? err.message : String(err))
     } finally {
@@ -365,6 +372,7 @@ interface CpuEditorProps {
 
 export function CpuEditor({ vm, compact }: CpuEditorProps) {
   const queryClient = useQueryClient()
+  const { resourceQueryKey } = useActiveConnection()
   const isRunning = vm.state === 'running'
 
   // Get actual vCPU count - backend provides cpuCount
@@ -407,8 +415,8 @@ export function CpuEditor({ vm, compact }: CpuEditorProps) {
     try {
       await api.setVmVcpus(vm.id, vcpus)
       setVcpusSuccess(true)
-      queryClient.invalidateQueries({ queryKey: ['vm', vm.id] })
-      queryClient.invalidateQueries({ queryKey: ['vms'] })
+      queryClient.invalidateQueries({ queryKey: resourceQueryKey('vm', vm.id) })
+      queryClient.invalidateQueries({ queryKey: resourceQueryKey('vms') })
       setTimeout(() => setVcpusSuccess(false), 3000)
     } catch (err) {
       setVcpusError(err instanceof Error ? err.message : String(err))
@@ -425,8 +433,8 @@ export function CpuEditor({ vm, compact }: CpuEditorProps) {
     try {
       await api.setVmCpuTopology(vm.id, sockets, cores, threads)
       setTopologySuccess(true)
-      queryClient.invalidateQueries({ queryKey: ['vm', vm.id] })
-      queryClient.invalidateQueries({ queryKey: ['vms'] })
+      queryClient.invalidateQueries({ queryKey: resourceQueryKey('vm', vm.id) })
+      queryClient.invalidateQueries({ queryKey: resourceQueryKey('vms') })
       setTimeout(() => setTopologySuccess(false), 3000)
     } catch (err) {
       setTopologyError(err instanceof Error ? err.message : String(err))

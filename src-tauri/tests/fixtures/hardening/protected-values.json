@@ -1,0 +1,6 @@
+{
+  "password": "SENTINEL_PASSWORD_DO_NOT_LOG",
+  "sshKey": "SENTINEL_SSH_KEY_DO_NOT_LOG",
+  "guestContent": "SENTINEL_GUEST_CONTENT_DO_NOT_LOG",
+  "hostPath": "/SENTINEL_HOST_PATH_DO_NOT_LOG"
+}

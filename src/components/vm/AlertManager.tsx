@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/tauri'
+import { useActiveConnection } from '@/hooks/useActiveConnection'
 import type { ResourceAlert, CreateAlertRequest, ThresholdType, AlertSeverity, VM } from '@/lib/types'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -17,6 +18,9 @@ interface AlertManagerProps {
 
 export function AlertManager({ vmId }: AlertManagerProps) {
   const queryClient = useQueryClient()
+  const { connectionId, resourceQueryKey } = useActiveConnection()
+  const vmsQueryKey = resourceQueryKey('vms') ?? ['connection', 'pending', 'vms']
+  const alertsQueryKey = resourceQueryKey('alerts') ?? ['connection', 'pending', 'alerts']
   const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false)
   const [alertForm, setAlertForm] = useState<CreateAlertRequest>({
     name: '',
@@ -29,21 +33,23 @@ export function AlertManager({ vmId }: AlertManagerProps) {
 
   // Query for VMs (to populate dropdown)
   const { data: vms } = useQuery<VM[]>({
-    queryKey: ['vms'],
+    queryKey: vmsQueryKey,
     queryFn: () => api.getVms(),
+    enabled: !!connectionId,
   })
 
   // Query for alerts
   const { data: alerts, isLoading } = useQuery<ResourceAlert[]>({
-    queryKey: vmId ? ['alerts', vmId] : ['alerts'],
+    queryKey: vmId ? [...alertsQueryKey, vmId] : alertsQueryKey,
     queryFn: () => vmId ? api.getVmAlerts(vmId) : api.listAlerts(),
+    enabled: !!connectionId,
   })
 
   // Create alert mutation
   const createMutation = useMutation({
     mutationFn: (request: CreateAlertRequest) => api.createAlert(request),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['alerts'] })
+      queryClient.invalidateQueries({ queryKey: alertsQueryKey })
       toast.success('Alert created successfully')
       setIsCreateDialogOpen(false)
       resetForm()
@@ -58,7 +64,7 @@ export function AlertManager({ vmId }: AlertManagerProps) {
     mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) =>
       api.updateAlertStatus(id, enabled),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['alerts'] })
+      queryClient.invalidateQueries({ queryKey: alertsQueryKey })
       toast.success('Alert status updated')
     },
     onError: (error: Error) => {
@@ -70,7 +76,7 @@ export function AlertManager({ vmId }: AlertManagerProps) {
   const deleteMutation = useMutation({
     mutationFn: (id: string) => api.deleteAlert(id),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['alerts'] })
+      queryClient.invalidateQueries({ queryKey: alertsQueryKey })
       toast.success('Alert deleted successfully')
     },
     onError: (error: Error) => {

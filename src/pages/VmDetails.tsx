@@ -2,6 +2,7 @@ import { useParams, useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useCallback, useMemo } from 'react'
 import { api } from '@/lib/tauri'
+import { useActiveConnection } from '@/hooks/useActiveConnection'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -20,19 +21,22 @@ export function VmDetails() {
   const { vmId } = useParams<{ vmId: string }>()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
+  const { connectionId, resourceQueryKey } = useActiveConnection()
+  const vmQueryKey = resourceQueryKey('vm', vmId ?? '') ?? ['connection', 'pending', 'vm', vmId ?? '']
+  const vmStatsQueryKey = resourceQueryKey('vm-stats', vmId ?? '') ?? ['connection', 'pending', 'vm-stats', vmId ?? '']
 
   const { data: vm, isLoading, error } = useQuery({
-    queryKey: ['vm', vmId],
+    queryKey: vmQueryKey,
     queryFn: () => api.getVm(vmId!),
-    enabled: !!vmId,
+    enabled: !!vmId && !!connectionId,
     refetchInterval: 5000,
   })
 
   // Poll live stats for running VMs
   const { data: vmStats } = useQuery({
-    queryKey: ['vm-stats', vmId],
+    queryKey: vmStatsQueryKey,
     queryFn: () => api.getVmStats(vmId!),
-    enabled: !!vmId && vm?.state === 'running',
+    enabled: !!vmId && !!connectionId && vm?.state === 'running',
     refetchInterval: 2000, // Update every 2 seconds
   })
 
@@ -40,7 +44,7 @@ export function VmDetails() {
   const startMutation = useMutation({
     mutationFn: () => api.startVm(vmId!),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['vm', vmId] })
+      queryClient.invalidateQueries({ queryKey: vmQueryKey })
       toast.success('VM started successfully')
     },
     onError: (error) => {
@@ -56,7 +60,7 @@ export function VmDetails() {
   const stopMutation = useMutation({
     mutationFn: () => api.forceStopVm(vmId!),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['vm', vmId] })
+      queryClient.invalidateQueries({ queryKey: vmQueryKey })
       toast.success('VM stopped successfully')
     },
     onError: (error) => toast.error(`Failed to stop VM: ${error}`),
@@ -65,7 +69,7 @@ export function VmDetails() {
   const pauseMutation = useMutation({
     mutationFn: () => api.pauseVm(vmId!),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['vm', vmId] })
+      queryClient.invalidateQueries({ queryKey: vmQueryKey })
       toast.success('VM paused successfully')
     },
     onError: (error) => toast.error(`Failed to pause VM: ${error}`),
@@ -74,7 +78,7 @@ export function VmDetails() {
   const resumeMutation = useMutation({
     mutationFn: () => api.resumeVm(vmId!),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['vm', vmId] })
+      queryClient.invalidateQueries({ queryKey: vmQueryKey })
       toast.success('VM resumed successfully')
     },
     onError: (error) => toast.error(`Failed to resume VM: ${error}`),
@@ -83,7 +87,7 @@ export function VmDetails() {
   const rebootMutation = useMutation({
     mutationFn: () => api.rebootVm(vmId!),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['vm', vmId] })
+      queryClient.invalidateQueries({ queryKey: vmQueryKey })
       toast.success('VM rebooting...')
     },
     onError: (error) => toast.error(`Failed to reboot VM: ${error}`),
@@ -155,7 +159,7 @@ export function VmDetails() {
 
     const isRunning = vm.state === 'running'
     const isPaused = vm.state === 'paused'
-    const isStopped = vm.state === 'stopped' || vm.state === 'shut off' as any
+    const isStopped = vm.state === 'stopped'
 
     return (
       <div className="flex items-center gap-2 flex-wrap">

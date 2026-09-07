@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/tauri'
+import { useActiveConnection, useActiveOperationContext } from '@/hooks/useActiveConnection'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -50,6 +51,13 @@ export function MigrationDialog({ vmId, vmName, isRunning, open: controlledOpen,
   const [liveMigration, setLiveMigration] = useState(isRunning)
   const [unsafeMigration, setUnsafeMigration] = useState(false)
   const queryClient = useQueryClient()
+  const { connectionId, resourceQueryKey } = useActiveConnection()
+  const vmsQueryKey = resourceQueryKey('vms') ?? ['connection', 'pending', 'vms']
+  const { data: operationContext } = useActiveOperationContext(open)
+  const migrationCapability = operationContext?.capabilities.find(
+    (capability) => capability.kind === 'migration',
+  )
+  const migrationUnavailable = migrationCapability?.state === 'unavailable'
 
   // Fetch saved connections for destination selection
   const { data: connections = [] } = useQuery({
@@ -60,9 +68,9 @@ export function MigrationDialog({ vmId, vmName, isRunning, open: controlledOpen,
 
   // Fetch migration info for the VM
   const { data: migrationInfo } = useQuery({
-    queryKey: ['migrationInfo', vmId],
+    queryKey: resourceQueryKey('migration-info', vmId) ?? ['connection', 'pending', 'migration-info', vmId],
     queryFn: () => api.getMigrationInfo(vmId),
-    enabled: open,
+    enabled: !!connectionId && open,
   })
 
   // Update live migration default when running state changes
@@ -76,7 +84,7 @@ export function MigrationDialog({ vmId, vmName, isRunning, open: controlledOpen,
       return api.migrateVm(vmId, uri, liveMigration, unsafeMigration)
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['vms'] })
+      queryClient.invalidateQueries({ queryKey: vmsQueryKey })
       toast.success('Migration Started', {
         description: `${vmName} is being migrated to the destination host`,
       })
@@ -116,6 +124,12 @@ export function MigrationDialog({ vmId, vmName, isRunning, open: controlledOpen,
   }
 
   const handleMigrate = () => {
+    if (migrationUnavailable) {
+      toast.error('Migration unavailable', {
+        description: 'The selected connection does not support migration.',
+      })
+      return
+    }
     const uri = useCustomUri ? destUri : getConnectionUri(selectedConnection)
     if (!uri.trim()) {
       toast.error('Destination Required', {
@@ -126,7 +140,7 @@ export function MigrationDialog({ vmId, vmName, isRunning, open: controlledOpen,
     migrateMutation.mutate()
   }
 
-  const canMigrate = useCustomUri ? destUri.trim() : selectedConnection
+  const canMigrate = !migrationUnavailable && (useCustomUri ? destUri.trim() : selectedConnection)
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>

@@ -1,6 +1,11 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { useQuery, useMutation } from '@tanstack/react-query'
 import { api } from '@/lib/tauri'
+import {
+  hasConnectionCapability,
+  useActiveConnection,
+  useActiveOperationContext,
+} from '@/hooks/useActiveConnection'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
@@ -13,6 +18,9 @@ interface SerialConsoleProps {
 }
 
 export function SerialConsole({ vmId, vmName }: SerialConsoleProps) {
+  const { connectionId, resourceQueryKey } = useActiveConnection()
+  const { data: operationContext, isLoading: loadingOperationContext } = useActiveOperationContext()
+  const consoleAvailable = hasConnectionCapability(operationContext, 'console')
   const [output, setOutput] = useState<string>('')
   const [inputBuffer, setInputBuffer] = useState<string>('')
   const outputRef = useRef<HTMLDivElement>(null)
@@ -21,16 +29,18 @@ export function SerialConsole({ vmId, vmName }: SerialConsoleProps) {
 
   // Get serial console info
   const { data: consoleInfo, isLoading: infoLoading } = useQuery({
-    queryKey: ['serialConsoleInfo', vmId],
+    queryKey: resourceQueryKey('serial-console-info', vmId)
+      ?? ['connection', 'pending', 'serial-console-info', vmId],
     queryFn: () => api.getSerialConsoleInfo(vmId),
-    enabled: !!vmId,
+    enabled: !!connectionId && !!vmId && consoleAvailable,
   })
 
   // Check if connected
   const { data: isConnected = false, refetch: refetchConnected } = useQuery({
-    queryKey: ['serialConsoleConnected', vmId],
+    queryKey: resourceQueryKey('serial-console-connected', vmId)
+      ?? ['connection', 'pending', 'serial-console-connected', vmId],
     queryFn: () => api.isSerialConsoleConnected(vmId),
-    enabled: !!vmId,
+    enabled: !!connectionId && !!vmId && consoleAvailable,
     refetchInterval: 2000,
   })
 
@@ -79,7 +89,7 @@ export function SerialConsole({ vmId, vmName }: SerialConsoleProps) {
           outputRef.current.scrollTop = outputRef.current.scrollHeight
         }
       }
-    } catch (error) {
+    } catch {
       // Ignore read errors during polling
     }
   }, [vmId])
@@ -165,6 +175,19 @@ export function SerialConsole({ vmId, vmName }: SerialConsoleProps) {
 
   const clearOutput = () => {
     setOutput('')
+  }
+
+  if (!consoleAvailable && !loadingOperationContext) {
+    return (
+      <Card className="flex h-full flex-col">
+        <CardHeader className="py-3 px-4 border-b flex-shrink-0">
+          <CardTitle className="text-sm font-medium">Serial Console</CardTitle>
+        </CardHeader>
+        <CardContent className="py-6 text-sm text-muted-foreground">
+          Serial console access requires a local system connection. Select a local host to open this console.
+        </CardContent>
+      </Card>
+    )
   }
 
   return (

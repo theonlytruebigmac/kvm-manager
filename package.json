@@ -2,6 +2,13 @@
   "name": "kvm-manager-app",
   "private": true,
   "version": "0.1.0",
+  "description": "Modern KVM/QEMU virtual machine manager for Linux",
+  "author": "theonlytruebigmac",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/theonlytruebigmac/kvm-manager.git"
+  },
+  "license": "MIT",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -9,7 +16,12 @@
     "build:novnc": "node build-novnc.mjs",
     "build:spice": "node build-spice.mjs",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "lint": "eslint .",
+    "test:suites": "node scripts/check-required-suites.mjs",
+    "test:truthfulness": "node scripts/test-project-truthfulness.mjs",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
     "@novnc/novnc": "^1.6.0",
@@ -48,14 +60,23 @@
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2",
+    "@testing-library/jest-dom": "^7.0.1",
+    "@testing-library/react": "^16.3.3",
+    "@eslint/js": "^10.0.1",
     "@types/react": "^19.1.8",
     "@types/react-dom": "^19.1.6",
     "@vitejs/plugin-react": "^4.6.0",
     "autoprefixer": "^10.4.22",
     "esbuild": "^0.27.1",
+    "eslint": "^10.10.0",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "eslint-plugin-react-refresh": "^0.5.6",
+    "jsdom": "^29.1.1",
     "postcss": "^8.5.6",
     "tailwindcss": "^3.4.18",
     "typescript": "~5.8.3",
-    "vite": "^7.0.4"
+    "typescript-eslint": "^8.69.0",
+    "vite": "^7.0.4",
+    "vitest": "^5.0.0"
   }
 }

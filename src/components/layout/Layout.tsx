@@ -6,6 +6,7 @@ import { KeyboardShortcutsDialog } from '@/components/ui/keyboard-shortcuts-dial
 import { Breadcrumbs } from '@/components/layout/Breadcrumbs'
 import { useQuery } from '@tanstack/react-query'
 import { api } from '@/lib/tauri'
+import { useActiveConnection } from '@/hooks/useActiveConnection'
 import { Wifi, WifiOff, Cpu, MemoryStick } from 'lucide-react'
 
 interface LayoutProps {
@@ -13,6 +14,7 @@ interface LayoutProps {
 }
 
 export function Layout({ children }: LayoutProps) {
+  const { connectionId, resourceQueryKey } = useActiveConnection()
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false)
   const [showShortcuts, setShowShortcuts] = useState(false)
 
@@ -25,9 +27,10 @@ export function Layout({ children }: LayoutProps) {
 
   // Get VM stats for status bar
   const { data: vms } = useQuery({
-    queryKey: ['vms'],
+    queryKey: resourceQueryKey('vms') ?? ['connection', 'pending', 'vms'],
     queryFn: api.getVms,
     refetchInterval: 5000,
+    enabled: !!connectionId,
   })
 
   // Get connection status
@@ -39,9 +42,10 @@ export function Layout({ children }: LayoutProps) {
 
   // Get host info for resource usage
   const { data: hostInfo } = useQuery({
-    queryKey: ['hostInfo'],
+    queryKey: resourceQueryKey('host-info') ?? ['connection', 'pending', 'host-info'],
     queryFn: api.getHostInfo,
     refetchInterval: 5000,
+    enabled: !!connectionId,
   })
 
   const vmCount = vms?.length || 0
@@ -54,7 +58,7 @@ export function Layout({ children }: LayoutProps) {
   const memoryUsedPercent = hostInfo ? Math.round((memoryUsedMb / hostInfo.memoryTotalMb) * 100) : 0
 
   return (
-    <div className="h-screen flex flex-col bg-[var(--window-bg)]">
+    <div className="h-screen overflow-hidden flex flex-col bg-[var(--window-bg)]">
       {/* Command Palette (Ctrl+K) */}
       <CommandPalette open={commandPaletteOpen} onOpenChange={setCommandPaletteOpen} />
 
@@ -68,7 +72,7 @@ export function Layout({ children }: LayoutProps) {
       <Breadcrumbs />
 
       {/* Main Content Area */}
-      <main className="flex-1 overflow-auto bg-[var(--window-bg)]">
+      <main className="min-h-0 flex-1 overflow-auto bg-[var(--window-bg)]">
         {children}
       </main>
 
