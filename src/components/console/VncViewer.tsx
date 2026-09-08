@@ -71,6 +71,7 @@ interface VncViewerProps {
   onDisconnected?: () => void
   onError?: (error: string) => void
   onInputFocusChange?: (focused: boolean) => void
+  onKeySent?: () => void
 }
 
 export interface ConsoleViewerRef {
@@ -96,11 +97,13 @@ export const VncViewer = forwardRef<VncViewerRef, VncViewerProps>(({
   onDisconnected,
   onError,
   onInputFocusChange,
+  onKeySent,
 }, ref) => {
   const canvasRef = useRef<HTMLDivElement>(null)
   const rfbRef = useRef<any>(null)
   const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const inputCaptureRequestedRef = useRef(false)
+  const forwardedKeysRef = useRef(new Map<string, number>())
 
   const [status, setStatus] = useState<'connecting' | 'connected' | 'disconnected' | 'error'>('connecting')
   const [errorMessage, setErrorMessage] = useState<string>('')
@@ -319,40 +322,52 @@ export const VncViewer = forwardRef<VncViewerRef, VncViewerProps>(({
   }, [scaleMode, status])
 
   // WebKitGTK can leave document focus on the webview even after canvas.focus(). When capture was
-  // explicitly requested, forward those otherwise-lost window events to noVNC's canvas handler.
+  // explicitly requested, translate the original event with noVNC's mapper and send it directly.
   useEffect(() => {
     if (status !== 'connected') return
 
-    const forwardToCanvas = (event: KeyboardEvent) => {
+    const releaseForwardedKeys = () => {
+      for (const [code, keysym] of forwardedKeysRef.current) {
+        rfbRef.current?.sendKey(keysym, code, false)
+      }
+      forwardedKeysRef.current.clear()
+    }
+
+    const forwardToRfb = (event: KeyboardEvent) => {
       if (!inputCaptureRequestedRef.current) return
       const canvas = canvasRef.current?.querySelector('canvas')
-      if (!canvas || event.target === canvas) return
+      if (!canvas) return
+      if (event.target === canvas) {
+        onKeySent?.()
+        return
+      }
 
-      const forwarded = new KeyboardEvent(event.type, {
-        key: event.key,
-        code: event.code,
-        location: event.location,
-        repeat: event.repeat,
-        ctrlKey: event.ctrlKey,
-        shiftKey: event.shiftKey,
-        altKey: event.altKey,
-        metaKey: event.metaKey,
-        bubbles: true,
-        cancelable: true,
-        composed: true,
-      })
-      canvas.dispatchEvent(forwarded)
+      const mapper = (window as typeof window & {
+        __noVNC_getKeysym__?: (keyboardEvent: KeyboardEvent) => number | null
+      }).__noVNC_getKeysym__
+      const code = event.code || `Platform${event.keyCode}`
+      const down = event.type === 'keydown'
+      const keysym = down ? mapper?.(event) : forwardedKeysRef.current.get(code) ?? mapper?.(event)
+      if (keysym === undefined || keysym === null) return
+
+      rfbRef.current?.sendKey(keysym, code, down)
+      if (down) forwardedKeysRef.current.set(code, keysym)
+      else forwardedKeysRef.current.delete(code)
+      onKeySent?.()
       event.preventDefault()
       event.stopImmediatePropagation()
     }
 
-    window.addEventListener('keydown', forwardToCanvas, true)
-    window.addEventListener('keyup', forwardToCanvas, true)
+    window.addEventListener('keydown', forwardToRfb, true)
+    window.addEventListener('keyup', forwardToRfb, true)
+    window.addEventListener('blur', releaseForwardedKeys)
     return () => {
-      window.removeEventListener('keydown', forwardToCanvas, true)
-      window.removeEventListener('keyup', forwardToCanvas, true)
+      window.removeEventListener('keydown', forwardToRfb, true)
+      window.removeEventListener('keyup', forwardToRfb, true)
+      window.removeEventListener('blur', releaseForwardedKeys)
+      releaseForwardedKeys()
     }
-  }, [status])
+  }, [status, onKeySent])
 
   return (
     <div

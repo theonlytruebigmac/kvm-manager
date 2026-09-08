@@ -1,4 +1,4 @@
-import { Maximize, Minimize, Camera, Send, ChevronDown, Settings2, Keyboard, RefreshCw } from 'lucide-react'
+import { Maximize, Minimize, Camera, Send, ChevronDown, Settings2, Keyboard, RefreshCw, Disc3, Loader2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
   DropdownMenu,
@@ -25,6 +25,8 @@ interface ConsoleToolbarProps {
   onReconnect: () => void
   supportsSpecialKeys: boolean
   isConnected: boolean
+  onBootInstaller: () => void
+  isBootingInstaller: boolean
 }
 
 export function ConsoleToolbar({
@@ -40,6 +42,8 @@ export function ConsoleToolbar({
   onReconnect,
   supportsSpecialKeys,
   isConnected,
+  onBootInstaller,
+  isBootingInstaller,
 }: ConsoleToolbarProps) {
   const handleSendKey = (action: string) => {
     if (!vncViewerRef.current) {
@@ -101,6 +105,20 @@ export function ConsoleToolbar({
 
       {/* Right: Actions */}
       <div className="flex shrink-0 items-center gap-1">
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={onBootInstaller}
+          disabled={!isConnected || isBootingInstaller}
+          className="text-amber-200 hover:bg-amber-400/10 hover:text-amber-100"
+          title="Restart and automatically press a key during the installation-media boot prompt"
+        >
+          {isBootingInstaller
+            ? <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
+            : <Disc3 className="mr-1.5 h-4 w-4" />}
+          <span className="text-xs">{isBootingInstaller ? 'Booting…' : 'Boot installer'}</span>
+        </Button>
+
         <Button
           variant={inputFocused ? 'secondary' : 'default'}
           size="sm"

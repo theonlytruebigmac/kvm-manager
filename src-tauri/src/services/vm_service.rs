@@ -19,6 +19,8 @@ use virt::sys;
 pub struct VmService;
 
 const LIBVIRT_TPM_UNDEFINE_MIN_VERSION: u32 = 8_009_000;
+const INSTALL_MEDIA_BOOT_KEY: u32 = 57; // Linux input-event code for Space.
+const INSTALL_MEDIA_BOOT_KEY_ATTEMPTS: usize = 7;
 
 fn deletion_undefine_flags(libvirt_version: u32) -> sys::virDomainUndefineFlagsValues {
     let mut flags = sys::VIR_DOMAIN_UNDEFINE_MANAGED_SAVE | sys::VIR_DOMAIN_UNDEFINE_NVRAM;
@@ -30,6 +32,18 @@ fn deletion_undefine_flags(libvirt_version: u32) -> sys::virDomainUndefineFlagsV
     }
 
     flags
+}
+
+fn has_attached_install_media(xml: &str) -> bool {
+    xml.split("<disk ").skip(1).any(|disk| {
+        let Some(end) = disk.find("</disk>") else {
+            return false;
+        };
+        let disk = &disk[..end];
+        let is_cdrom = disk.contains("device='cdrom'") || disk.contains("device=\"cdrom\"");
+        let has_source = disk.contains("<source ");
+        is_cdrom && has_source
+    })
 }
 
 impl VmService {
@@ -398,6 +412,65 @@ impl VmService {
             .map_err(map_libvirt_error)?;
 
         tracing::info!("VM reboot initiated: {}", vm_id);
+        Ok(())
+    }
+
+    /// Immediately restart a running VM and press Space while bootable optical media is loading.
+    ///
+    /// Windows installation media only displays its "Press any key" prompt briefly. A web
+    /// console can connect after that interval has elapsed, leaving a user looking at a stale
+    /// prompt while the firmware falls through to an empty disk. Sending the key through libvirt
+    /// during reset avoids making console connection speed part of the boot process.
+    pub fn restart_to_install_media(
+        libvirt: &impl ConnectionProvider,
+        vm_id: &str,
+    ) -> Result<(), AppError> {
+        tracing::info!(
+            "Restarting VM with installation-media boot assistance: {}",
+            vm_id
+        );
+
+        let conn = libvirt.get_connection();
+        let domain = Domain::lookup_by_uuid_string(conn, vm_id)
+            .map_err(|_| AppError::VmNotFound(vm_id.to_string()))?;
+
+        if !domain.is_active().map_err(map_libvirt_error)? {
+            return Err(AppError::InvalidVmState("not running".to_string()));
+        }
+
+        let xml = domain.get_xml_desc(0).map_err(map_libvirt_error)?;
+        if !has_attached_install_media(&xml) {
+            return Err(AppError::InvalidConfig(
+                "No installation media is attached to this VM".to_string(),
+            ));
+        }
+
+        domain.reset().map_err(map_libvirt_error)?;
+
+        // Begin after firmware initialization, then cover the short optical-media prompt window.
+        // Space is harmless once the boot loader has accepted the first press.
+        std::thread::sleep(std::time::Duration::from_millis(1_250));
+        for attempt in 0..INSTALL_MEDIA_BOOT_KEY_ATTEMPTS {
+            let mut keycodes = [INSTALL_MEDIA_BOOT_KEY];
+            domain
+                .send_key(
+                    sys::VIR_KEYCODE_SET_LINUX,
+                    80,
+                    keycodes.as_mut_ptr(),
+                    keycodes.len() as i32,
+                    0,
+                )
+                .map_err(map_libvirt_error)?;
+
+            if attempt + 1 < INSTALL_MEDIA_BOOT_KEY_ATTEMPTS {
+                std::thread::sleep(std::time::Duration::from_millis(750));
+            }
+        }
+
+        tracing::info!(
+            "Installation-media boot key sequence completed for VM: {}",
+            vm_id
+        );
         Ok(())
     }
 
@@ -6252,7 +6325,9 @@ impl VmService {
 
 #[cfg(test)]
 mod tests {
-    use super::{deletion_undefine_flags, LIBVIRT_TPM_UNDEFINE_MIN_VERSION};
+    use super::{
+        deletion_undefine_flags, has_attached_install_media, LIBVIRT_TPM_UNDEFINE_MIN_VERSION,
+    };
     use virt::sys;
 
     #[test]
@@ -6297,6 +6372,17 @@ mod tests {
             super::VmService::extract_disk_paths(xml),
             vec!["/var/lib/libvirt/images/windows-test.qcow2"]
         );
+    }
+
+    #[test]
+    fn install_media_detection_requires_a_sourced_cdrom() {
+        let with_iso = r#"<domain><devices><disk type='file' device='cdrom'><source file='/pool/windows.iso'/><target dev='sda'/></disk></devices></domain>"#;
+        let empty_drive = r#"<domain><devices><disk type="file" device="cdrom"><target dev="sda"/></disk></devices></domain>"#;
+        let disk_only = r#"<domain><devices><disk type='file' device='disk'><source file='/pool/guest.qcow2'/></disk></devices></domain>"#;
+
+        assert!(has_attached_install_media(with_iso));
+        assert!(!has_attached_install_media(empty_drive));
+        assert!(!has_attached_install_media(disk_only));
     }
 }
 

@@ -18,11 +18,9 @@ class FakeRfb {
   disconnect = vi.fn()
   sendCtrlAltDel = vi.fn()
   sendKey = vi.fn()
-  canvasKeyDown = vi.fn()
 
   constructor(target: HTMLElement) {
     const canvas = document.createElement('canvas')
-    canvas.addEventListener('keydown', this.canvasKeyDown)
     target.appendChild(canvas)
     FakeRfb.instance = this
   }
@@ -39,7 +37,9 @@ class FakeRfb {
 describe('VncViewer input capture', () => {
   it('focuses the supported RFB input target and sends special keys through the live instance', async () => {
     ;(window as typeof window & { __noVNC_RFB__?: typeof FakeRfb }).__noVNC_RFB__ = FakeRfb
+    ;(window as typeof window & { __noVNC_getKeysym__?: () => number }).__noVNC_getKeysym__ = () => 0x61
     const inputFocus = vi.fn()
+    const keySent = vi.fn()
     const ref = createRef<VncViewerRef>()
     render(
       <VncViewer
@@ -47,6 +47,7 @@ describe('VncViewer input capture', () => {
         host="127.0.0.1"
         port={5901}
         onInputFocusChange={inputFocus}
+        onKeySent={keySent}
       />,
     )
 
@@ -59,7 +60,8 @@ describe('VncViewer input capture', () => {
     expect(inputFocus).toHaveBeenCalledWith(true)
 
     fireEvent.keyDown(window, { key: 'a', code: 'KeyA' })
-    expect(FakeRfb.instance?.canvasKeyDown).toHaveBeenCalledOnce()
+    expect(FakeRfb.instance?.sendKey).toHaveBeenCalledWith(0x61, 'KeyA', true)
+    expect(keySent).toHaveBeenCalledOnce()
 
     fireEvent.mouseDown(screen.getByRole('application', { name: 'Interactive VM console' }))
     expect(FakeRfb.instance?.focus).toHaveBeenCalledTimes(2)

@@ -13563,5 +13563,6 @@ RFB.cursors = {
   }
 };
 export {
-  RFB as default
+  RFB as default,
+  getKeysym
 };

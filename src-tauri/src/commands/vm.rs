@@ -349,6 +349,34 @@ pub async fn reboot_vm(state: State<'_, AppState>, vm_id: String) -> Result<(), 
         .map_err(|failure| failure.with_context(&operation.context))
 }
 
+/// Reset a running VM and inject a boot key while attached installation media is loading.
+#[tauri::command]
+pub async fn restart_to_install_media(
+    state: State<'_, AppState>,
+    vm_id: String,
+    confirmation_token: String,
+) -> Result<(), SafeFailure> {
+    tracing::info!("restart_to_install_media command called for VM: {}", vm_id);
+
+    crate::commands::confirmation::require_destructive_confirmation(
+        &state,
+        &confirmation_token,
+        "restart_to_install_media",
+        "vm",
+        &vm_id,
+        None,
+        "immediate-reset-and-send-boot-key",
+    )
+    .map_err(SafeFailure::from)?;
+
+    let operation = state
+        .resolve_operation(OperationKind::Mutation, Some(vm_target(&vm_id)))
+        .map_err(SafeFailure::from)?;
+    VmService::restart_to_install_media(&operation.connection, &vm_id)
+        .map_err(SafeFailure::from)
+        .map_err(|failure| failure.with_context(&operation.context))
+}
+
 /// Delete a VM
 #[tauri::command]
 pub async fn delete_vm(

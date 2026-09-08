@@ -2,7 +2,7 @@ import * as esbuild from 'esbuild'
 
 // Bundle the ES module source files from public/novnc
 await esbuild.build({
-  entryPoints: ['public/novnc/rfb.js'],
+  entryPoints: ['public/novnc-entry.js'],
   bundle: true,
   format: 'esm',
   outfile: 'public/novnc-bundle.js',

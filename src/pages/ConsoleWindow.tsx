@@ -16,6 +16,16 @@ import {
   useActiveConnection,
   useActiveOperationContext,
 } from '@/hooks/useActiveConnection'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog'
 
 type ConsoleType = 'graphical' | 'serial'
 
@@ -35,6 +45,9 @@ export function ConsoleWindow() {
   const [scaleMode, setScaleMode] = useState<ScaleMode>('scale')
   const [consoleType, setConsoleType] = useState<ConsoleType>('graphical')
   const [inputFocused, setInputFocused] = useState(false)
+  const [inputDelivered, setInputDelivered] = useState(false)
+  const [showBootInstallerDialog, setShowBootInstallerDialog] = useState(false)
+  const [isBootingInstaller, setIsBootingInstaller] = useState(false)
   const {
     connectionId,
     resourceQueryKey,
@@ -165,6 +178,7 @@ export function ConsoleWindow() {
   const handleDisconnected = () => {
     setIsConnected(false)
     setInputFocused(false)
+    setInputDelivered(false)
     toast.error('Console disconnected')
   }
 
@@ -176,6 +190,23 @@ export function ConsoleWindow() {
     setScaleMode(mode)
     getActiveViewer()?.setScaleMode(mode)
     toast.success(`Display mode: ${mode === 'scale' ? 'Scale to Window' : mode === 'fit' ? '1:1 Pixel Mapping' : 'Stretch to Fill'}`)
+  }
+
+  const handleBootInstaller = async () => {
+    if (!vmId) return
+
+    setShowBootInstallerDialog(false)
+    setIsBootingInstaller(true)
+    setInputDelivered(false)
+    try {
+      await api.restartToInstallMedia(vmId)
+      toast.success('Boot key sent during restart. Windows Setup should begin now.')
+      getActiveViewer()?.focus()
+    } catch (error) {
+      toast.error(`Failed to boot installation media: ${error}`)
+    } finally {
+      setIsBootingInstaller(false)
+    }
   }
 
   // Keyboard shortcuts for window management and fullscreen
@@ -291,6 +322,8 @@ export function ConsoleWindow() {
             onReconnect={() => getActiveViewer()?.reconnect()}
             supportsSpecialKeys={graphicsType === 'vnc'}
             isConnected={isConnected}
+            onBootInstaller={() => setShowBootInstallerDialog(true)}
+            isBootingInstaller={isBootingInstaller}
           />
         )}
       </div>
@@ -323,6 +356,7 @@ export function ConsoleWindow() {
                 onDisconnected={handleDisconnected}
                 onError={handleError}
                 onInputFocusChange={setInputFocused}
+                onKeySent={() => setInputDelivered(true)}
               />
             )
           ) : (
@@ -355,12 +389,33 @@ export function ConsoleWindow() {
           <>
             <span className="mx-2">•</span>
             <span className={inputFocused ? 'text-emerald-400' : 'text-amber-300'}>
-              {inputFocused ? 'Keyboard captured by guest' : 'Click the display or Capture keyboard to type'}
+              {inputFocused
+                ? `Keyboard captured by guest${inputDelivered ? ' · Input sent' : ''}`
+                : 'Click the display or Capture keyboard to type'}
             </span>
             <span className="ml-auto text-slate-500">Use the toolbar for local console controls</span>
           </>
         )}
       </div>
+
+      <AlertDialog open={showBootInstallerDialog} onOpenChange={setShowBootInstallerDialog}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Restart and boot the installer?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This immediately resets {vm.name} without an operating-system shutdown, then sends
+              Space while the attached installation media is waiting at its brief “Press any key”
+              prompt. Unsaved guest data will be lost.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={() => void handleBootInstaller()}>
+              Restart and boot installer
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   )
 }

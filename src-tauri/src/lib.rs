@@ -50,6 +50,7 @@ pub fn run() {
             commands::vm::has_managed_save,
             commands::vm::remove_managed_save,
             commands::vm::reboot_vm,
+            commands::vm::restart_to_install_media,
             commands::vm::delete_vm,
             commands::vm::clone_vm,
             commands::vm::clone_vm_with_options,

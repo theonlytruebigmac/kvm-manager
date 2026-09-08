@@ -57,6 +57,15 @@ export const api = {
     return invoke<void>('remove_managed_save', { vmId, confirmationToken: confirmationTokenValue })
   },
   rebootVm: (vmId: string) => invoke<void>('reboot_vm', { vmId }),
+  restartToInstallMedia: async (vmId: string) => {
+    const confirmationTokenValue = await confirmationToken(
+      'restart_to_install_media',
+      'vm',
+      vmId,
+      'immediate-reset-and-send-boot-key',
+    )
+    return invoke<void>('restart_to_install_media', { vmId, confirmationToken: confirmationTokenValue })
+  },
   deleteVm: async (vmId: string, deleteDisks: boolean, deleteSnapshots: boolean) => {
     const confirmationTokenValue = await confirmationToken(
       'delete_vm',
